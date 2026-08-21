@@ -1,0 +1,177 @@
+<!doctype html>
+<html lang="th">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Machine Vision — เรียนรู้การประมวลผลภาพ</title>
+    <link rel="stylesheet" href="./styles/app.css" />
+  </head>
+  <body>
+    <!-- หน้า loading รอ OpenCV.js (wasm) โหลดเสร็จ -->
+    <div id="loading" class="loading">
+      <img src="./assets/irish-logo.jpg" alt="IRiSH — Intelligent Robot and Industrial System Hub" class="loading-logo" />
+      <div class="spinner"></div>
+      <p id="loading-text">กำลังโหลด OpenCV.js …</p>
+    </div>
+
+    <div id="app" class="app hidden">
+      <header class="topbar">
+        <div class="brand">
+          <img src="./assets/irish-mark.jpg" alt="IRiSH" class="brand-logo" />
+          <div class="brand-text">
+            <h1>Machine Vision</h1>
+            <span class="subtitle">by IRiSH </span>
+          </div>
+        </div>
+        <!-- แถบเลือกแหล่งภาพ: กล้อง / นำเข้าภาพ -->
+        <div id="source-bar" class="source-bar"></div>
+      </header>
+
+      <div class="workspace">
+        <!-- ซ้าย: palette ของ node (คลิกเพิ่มลงกระดาน) -->
+        <aside id="palette-panel" class="panel panel-left"></aside>
+
+        <!-- กลาง: บน=ภาพผลลัพธ์, ล่าง=กระดานต่อ node สไตล์ Node-RED -->
+        <main class="center-col">
+          <div class="stage">
+            <!-- หัว Live View + สถานะ (Design §5) -->
+            <div class="live-header">
+              <span class="lv-title">LIVE VIEW</span>
+              <span class="lv-status"><span class="dot dot-ok"></span><span id="lv-mode">สด</span></span>
+              <!-- ข้อมูลภาพ inline ในแถบหัว (ไม่ทับภาพ) — Design §3 -->
+              <span id="live-info" class="live-info hidden">
+                <span class="li-row"><span class="li-key">แหล่ง</span><span class="li-val" id="li-source">—</span></span>
+                <span class="li-row"><span class="li-key">ความละเอียด</span><span class="li-val" id="li-res">—</span></span>
+                <span class="li-row" id="li-fps-row"><span class="li-key">FPS</span><span class="li-val" id="li-fps">—</span></span>
+                <span class="li-row"><span class="li-key">สี</span><span class="li-val" id="li-color">—</span></span>
+              </span>
+              <span class="lv-metric" id="lv-mem"></span>
+            </div>
+            <!-- พื้นที่ภาพ (ทุก overlay อ้างอิงกล่องนี้ = อยู่ใต้แถบหัว ไม่ทับ) -->
+            <div class="stage-body">
+            <!-- ปุ่มควบคุมมุมมอง (overlay ล่าง) -->
+            <div class="live-controls">
+              <button id="lv-capture" class="lvc-btn" title="แคปภาพเข้าคลัง (เฉพาะโหมดกล้อง)">📸</button>
+              <button id="lv-original" class="lvc-btn lvc-view active" title="ดูผลลัพธ์จาก Pipeline">ภาพ</button>
+              <button id="lv-pose" class="lvc-btn lvc-view" title="เปิด Ergonomics Pose">Pose</button>
+              <button id="lv-toggle" class="lvc-btn lvc-state" title="หยุดการประมวลผลชั่วคราว">⏸</button>
+              <button id="lv-fullscreen" class="lvc-btn" title="เต็มจอ">⛶</button>
+            </div>
+            <!-- video = แหล่งเฟรม (ซ่อนไว้ ใช้ทั้ง OpenCV และ Pose) -->
+            <video id="camera" autoplay playsinline muted class="hidden"></video>
+            <!-- grid ของจอผลลัพธ์ (โหมด Original / ภาพนิ่ง) -->
+            <div id="stage-grid" class="stage-grid"></div>
+            <!-- โหมด Ergonomics Pose: วาดภาพกล้อง + skeleton ลง canvas นี้ -->
+            <canvas id="pose-canvas" class="pose-canvas hidden"></canvas>
+            <!-- โหมด Deep Learning: วาดภาพ + กล่อง detect ลง canvas นี้ -->
+            <canvas id="det-canvas" class="pose-canvas hidden"></canvas>
+            <div id="camera-error" class="camera-error hidden"></div>
+            <!-- โหมดวิดีโอ: เล่นวิดีโอปกติในแหล่งภาพ + ปุ่มแยกเฟรม -->
+            <div id="video-source" class="video-source hidden">
+              <video id="source-video" class="source-video" controls playsinline></video>
+              <div class="vs-bar">
+                <button id="vs-split" class="btn btn-primary">🎬 แยกเฟรมจากวิดีโอนี้</button>
+                <button id="vs-close" class="btn">✕ ปิดวิดีโอ</button>
+              </div>
+            </div>
+            <!-- โหมดภาพนิ่งยังไม่มีภาพ: empty state ปุ่มนำเข้าใหญ่ + คำอธิบาย -->
+            <div id="image-empty" class="image-empty hidden">
+              <div class="ie-icon">🖼️</div>
+              <div class="ie-title">โหมดภาพนิ่ง — นำเข้าภาพมาเริ่มได้เลย</div>
+              <div class="ie-desc">ภาพนิ่งอยู่กับที่ ทดลองซ้ำได้ผลเดิม เหมาะฝึกทีละหลักการ (ปรับค่า filter แล้วเพ่งดูว่าเปลี่ยนตรงไหน)</div>
+              <div class="ie-actions">
+                <button id="ie-single" class="btn btn-primary" title="เลือกภาพ หรือวิดีโอ (วิดีโอจะให้เลือกแยกเป็นเฟรม)">＋ เลือกภาพ / วิดีโอ</button>
+                <button id="ie-folder" class="btn" title="รันหลายภาพผ่าน filter เดียวกัน — ใช้ทำ dataset สำหรับ Export/เทรน YOLO ภายหลัง">📁 เลือกทั้งโฟลเดอร์ (หลายภาพพร้อมกัน)</button>
+              </div>
+              <div class="ie-hint">หรือกลับไปโหมด 📷 กล้อง แล้ว “แคปภาพ” เพื่อใช้ภาพจากกล้องเป็นแหล่งภาพนิ่งก็ได้</div>
+            </div>
+            </div><!-- /stage-body -->
+          </div>
+          <!-- ถาดภาพที่แคปไว้ (โผล่เมื่อมีภาพแคป) -->
+          <div id="capture-tray" class="capture-tray hidden"></div>
+          <div class="graph-wrap">
+            <div class="canvas-label">PIPELINE CANVAS<span class="canvas-sub"></span></div>
+            <canvas id="graph-canvas"></canvas>
+            <div class="canvas-controls">
+              <button id="cv-undo" class="lvc-btn" title="ย้อนกลับ (Ctrl+Z)">↶</button>
+              <button id="cv-redo" class="lvc-btn" title="ทำซ้ำ (Ctrl+Y)">↷</button>
+              <button id="cv-zoom-in" class="lvc-btn" title="ซูมเข้า">＋</button>
+              <button id="cv-zoom-out" class="lvc-btn" title="ซูมออก">−</button>
+              <button id="cv-fit" class="lvc-btn" title="จัดมุมมองให้พอดี">⤢</button>
+              <button id="cv-delete" class="lvc-btn" title="ลบกล่องที่เลือก (Delete)">🗑</button>
+            </div>
+          </div>
+        </main>
+
+        <!-- ขวา: รายละเอียด node ที่เลือก + พารามิเตอร์ -->
+        <aside class="panel panel-right">
+          <div class="props-header">PROPERTIES</div>
+          <div id="detail-panel" class="detail-content"></div>
+
+          <!-- ผลลัพธ์ ณ Function ที่เลือก: คลิก node ใด เห็นภาพหลัง node นั้นทันที -->
+          <section class="side-section selected-preview-panel" id="selected-preview-panel">
+            <div class="side-summary">OUTPUT PREVIEW <span id="selected-preview-name" class="selected-preview-name">No selection</span></div>
+            <div class="selected-preview-tabs" role="tablist" aria-label="Preview mode">
+              <button class="selected-preview-tab active" type="button" data-preview-view="output" role="tab" aria-selected="true">Output</button>
+              <button class="selected-preview-tab" type="button" data-preview-view="histogram" role="tab" aria-selected="false">Histogram</button>
+              <button class="selected-preview-tab" type="button" data-preview-view="metrics" role="tab" aria-selected="false">Metrics</button>
+            </div>
+            <div id="selected-preview-empty" class="selected-preview-empty">Select a Function box to preview its output</div>
+            <canvas id="selected-preview-canvas" class="selected-preview-canvas hidden" aria-label="Selected function output"></canvas>
+            <canvas id="selected-preview-histogram" class="selected-preview-histogram hidden" width="320" height="172" aria-label="Output histogram"></canvas>
+            <div id="selected-preview-metrics" class="selected-preview-metrics hidden" aria-live="polite"></div>
+          </section>
+
+          <!-- Camera Control: controls that affect the live source, replacing duplicated output preview -->
+          <section class="side-section camera-control-panel hidden" id="camera-control-panel">
+            <div class="side-summary">CAMERA CONTROL <span id="camera-control-status" class="camera-control-status">Offline</span></div>
+            <div id="camera-control-empty" class="camera-control-empty">เลือก SOURCE เป็น Camera เพื่อควบคุมกล้อง</div>
+            <div id="camera-control-body" class="camera-control-body hidden">
+              <label class="camera-control-field">Device
+                <select id="camera-control-device"></select>
+              </label>
+              <label class="camera-control-field">Processing Resolution
+                <select id="camera-control-level"></select>
+              </label>
+              <div class="camera-control-stats">
+                <span>Source <b id="camera-control-resolution">—</b></span>
+                <span>Mode <b id="camera-control-mode">Live</b></span>
+              </div>
+              <div class="camera-control-actions">
+                <button id="camera-control-capture" class="btn">📸 Capture</button>
+                <button id="camera-control-pause" class="btn btn-run running">⏸ Pause</button>
+              </div>
+            </div>
+          </section>
+
+          <!-- บันทึกการทำงาน (Design §18) — secondary, collapsible -->
+          <details class="side-section" id="logs-section">
+            <summary class="side-summary">บันทึกการทำงาน · LOGS
+              <button id="logs-clear" class="logs-clear" title="ล้างบันทึก">ล้าง</button>
+            </summary>
+            <div class="logs-list" id="logs-list"></div>
+          </details>
+        </aside>
+      </div>
+
+      <footer class="statusbar">
+        <span id="status" class="status-main">พร้อมใช้งาน</span>
+        <div class="status-metrics mono" aria-label="ประสิทธิภาพระบบ">
+          <span id="status-fps">FPS —</span>
+          <span id="status-cpu">CPU —</span>
+          <span id="status-ram">RAM —</span>
+          <span id="status-gpu">GPU —</span>
+        </div>
+        <div class="status-right">
+          <span class="status-ver" id="status-ver">Machine Vision by IRiSH</span>
+        </div>
+      </footer>
+    </div>
+
+    <input id="file-input" type="file" accept="image/*,video/*" multiple class="hidden" />
+    <input id="folder-input" type="file" webkitdirectory directory multiple class="hidden" />
+    <input id="model-input" type="file" accept=".onnx,.pt" class="hidden" />
+    <input id="labels-input" type="file" accept=".txt,.yaml,.yml,.names" class="hidden" />
+    <script type="module" src="./renderer/app.js"></script>
+  </body>
+</html>
