@@ -26,6 +26,7 @@ export const OP_PRIMARY = {
   grayscale: () => "BGR → เทา (Gray)",
   colorspace: (p) => "BGR → " + (p.space || "HSV").toUpperCase(),
   channel_split: (p) => "ช่อง: " + (p.channel || "R").toUpperCase(),
+  rgb_adjust: (p) => `R ${p.rGain ?? 1} · G ${p.gGain ?? 1} · B ${p.bGain ?? 1}`,
   brightness_contrast: (p) => `คอนทราสต์ ${p.alpha ?? 1.2} · สว่าง ${p.beta ?? 0}`,
   gamma: (p) => "gamma: " + (p.g ?? 1.5),
   hist_equalize: () => "ปรับฮิสโตแกรมทั้งภาพ",

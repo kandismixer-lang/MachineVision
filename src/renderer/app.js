@@ -51,7 +51,7 @@ let selectedPreviewLatestImage = null;
 let selectedPreviewAnalysisAt = 0;
 const selectedPreviewHistogramBins = [new Uint32Array(256), new Uint32Array(256), new Uint32Array(256)];
 const HISTOGRAM_DEFAULT_OPS = new Set([
-  "grayscale", "colorspace", "channel_split", "color_inrange", "invert",
+  "grayscale", "colorspace", "channel_split", "rgb_adjust", "color_inrange", "invert",
   "brightness_contrast", "gamma", "hist_equalize", "clahe",
   "binary_threshold", "otsu_threshold", "adaptive_threshold",
 ]);

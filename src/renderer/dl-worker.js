@@ -24,8 +24,29 @@ function nms(boxes, iouThresh) {
   }
   return kept;
 }
-// ถอดผลลัพธ์ YOLOv8: [1, 4+nc, n] → กล่องบนพิกัดภาพจริง (ใช้ r/dx/dy จาก letterbox)
-function decode(dims, d, r, dx, dy, conf, iou) {
+// ถอดผลลัพธ์แบบ end-to-end / NMS-baked export (เช่น model.export(..., nms=True)):
+// [1, จำนวนกล่องสูงสุด, 6] โดยแต่ละแถวคือ [x1, y1, x2, y2, score, class] พิกัดพิกเซลจริงบนภาพ
+// letterboxed (ก่อนหาร r/ลบ dx,dy กลับ) — ผ่าน NMS มาจากในโมเดลแล้ว ไม่ต้องทำ NMS ซ้ำ
+function decodeNmsBaked(dims, d, r, dx, dy, conf) {
+  const n = dims[1];
+  const boxes = [];
+  for (let i = 0; i < n; i++) {
+    const base = i * 6;
+    const x1 = d[base];
+    const y1 = d[base + 1];
+    const x2 = d[base + 2];
+    const y2 = d[base + 3];
+    const score = d[base + 4];
+    const cls = d[base + 5] | 0;
+    if (score < conf) continue;
+    boxes.push({ x: (x1 - dx) / r, y: (y1 - dy) / r, w: (x2 - x1) / r, h: (y2 - y1) / r, score, cls });
+  }
+  return boxes;
+}
+
+// ถอดผลลัพธ์ YOLOv8 แบบ raw detection head: [1, 4+nc, n] → กล่องบนพิกัดภาพจริง (ใช้ r/dx/dy จาก letterbox)
+// ยังไม่ผ่าน NMS จากในโมเดล ต้องทำ NMS เอง (ดู nms() ด้านบน)
+function decodeRawHead(dims, d, r, dx, dy, conf) {
   const ch = dims[1];
   const n = dims[2];
   const nc = ch - 4;
@@ -47,7 +68,17 @@ function decode(dims, d, r, dx, dy, conf, iou) {
     const h = d[3 * n + i];
     boxes.push({ x: (cx - w / 2 - dx) / r, y: (cy - h / 2 - dy) / r, w: w / r, h: h / r, score: best, cls: bi });
   }
-  return nms(boxes, iou);
+  return boxes;
+}
+
+function decode(dims, d, r, dx, dy, conf, iou) {
+  // แยกสองรูปแบบ output ด้วย "ขนาดช่องสุดท้าย": โมเดล NMS-baked จะมีเสมอ 6 ค่า/แถว
+  // (x1,y1,x2,y2,score,class) ส่วน raw head ช่องกลาง (4+nc) แทบไม่มีทางเท่ากับ 6 พอดี
+  // (nc=2 เท่านั้นถึงจะชนกัน ซึ่งเป็นไปได้ยากมากในทางปฏิบัติ)
+  if (dims.length === 3 && dims[2] === 6) {
+    return decodeNmsBaked(dims, d, r, dx, dy, conf); // ผ่าน NMS จากโมเดลแล้ว ไม่ต้อง nms() ซ้ำ
+  }
+  return nms(decodeRawHead(dims, d, r, dx, dy, conf), iou);
 }
 
 self.onmessage = async (e) => {

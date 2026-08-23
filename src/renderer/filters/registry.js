@@ -98,9 +98,59 @@ export const OPS = {
       const vec = new cv.MatVector();
       cv.split(spaceMat, vec);
       const dst = new cv.Mat();
-      vec.get(idx).copyTo(dst);
+      const ch = vec.get(idx);
+      ch.copyTo(dst);
+      ch.delete(); // MatVector.get() คืน Mat wrapper ใหม่ทุกครั้ง — ต้อง delete เอง ไม่งั้นรั่วทุกเฟรม
       vec.delete();
       spaceMat.delete();
+      rgb.delete();
+      return dst;
+    },
+  },
+
+  rgb_adjust: {
+    name: "RGB Channel Adjust",
+    needs: "any",
+    desc: "ปรับความสว่างของแต่ละช่องสี R/G/B แยกจากกัน (ใช้ผลคูณ (Gain) และการบวก (Offset) แบบเดียวกับ Brightness/Contrast แต่ทำทีละช่อง) — เพิ่ม R อย่างเดียวจะทำให้ภาพออกโทนแดง โดยไม่กระทบ G กับ B",
+    params: [
+      { key: "rGain", type: "number", label: "แดง (R) — ผลคูณ", min: 0, max: 3, step: 0.05, default: 1, desc: "คูณความสว่างเฉพาะช่องแดง" },
+      { key: "rOffset", type: "number", label: "แดง (R) — บวก/ลบ", min: -100, max: 100, step: 1, default: 0, desc: "บวก/ลบความสว่างเฉพาะช่องแดง — ค่าลบทำให้มืดลงจริง (ไม่ใช่กลับค่า)" },
+      { key: "gGain", type: "number", label: "เขียว (G) — ผลคูณ", min: 0, max: 3, step: 0.05, default: 1, desc: "คูณความสว่างเฉพาะช่องเขียว" },
+      { key: "gOffset", type: "number", label: "เขียว (G) — บวก/ลบ", min: -100, max: 100, step: 1, default: 0, desc: "บวก/ลบความสว่างเฉพาะช่องเขียว — ค่าลบทำให้มืดลงจริง (ไม่ใช่กลับค่า)" },
+      { key: "bGain", type: "number", label: "น้ำเงิน (B) — ผลคูณ", min: 0, max: 3, step: 0.05, default: 1, desc: "คูณความสว่างเฉพาะช่องน้ำเงิน" },
+      { key: "bOffset", type: "number", label: "น้ำเงิน (B) — บวก/ลบ", min: -100, max: 100, step: 1, default: 0, desc: "บวก/ลบความสว่างเฉพาะช่องน้ำเงิน — ค่าลบทำให้มืดลงจริง (ไม่ใช่กลับค่า)" },
+    ],
+    apply(cv, src, p) {
+      const rgb = new cv.Mat();
+      if (src.channels() === 1) cv.cvtColor(src, rgb, cv.COLOR_GRAY2RGB);
+      else src.copyTo(rgb);
+      const vec = new cv.MatVector();
+      cv.split(rgb, vec);
+      const rCh = vec.get(0);
+      const gCh = vec.get(1);
+      const bCh = vec.get(2);
+      const rOut = new cv.Mat();
+      const gOut = new cv.Mat();
+      const bOut = new cv.Mat();
+      // convertTo (ไม่ใช่ convertScaleAbs) — convertScaleAbs หาค่าสัมบูรณ์ก่อนตัด ทำให้ offset ติดลบ
+      // "สะท้อนค่ากลับ" แทนที่จะทำให้มืดลงจริง ส่วน convertTo คำนวณ α·x+β แล้วตัดขอบ 0–255 ตรง ๆ
+      rCh.convertTo(rOut, -1, p.rGain, p.rOffset);
+      gCh.convertTo(gOut, -1, p.gGain, p.gOffset);
+      bCh.convertTo(bOut, -1, p.bGain, p.bOffset);
+      const merged = new cv.MatVector();
+      merged.push_back(rOut);
+      merged.push_back(gOut);
+      merged.push_back(bOut);
+      const dst = new cv.Mat();
+      cv.merge(merged, dst);
+      rCh.delete();
+      gCh.delete();
+      bCh.delete();
+      rOut.delete();
+      gOut.delete();
+      bOut.delete();
+      vec.delete();
+      merged.delete();
       rgb.delete();
       return dst;
     },
@@ -976,7 +1026,7 @@ function mergeGroup(name, group, opIds, defaultMode, legacyOpIds = []) {
 // FILTERS = node ที่แสดงบน palette จริง (1 กลุ่ม = 1 node)
 export const FILTERS = {
   color_space: mergeGroup("Color Space", "Color Space",
-    ["grayscale", "colorspace", "channel_split", "color_inrange", "invert"], "grayscale"),
+    ["grayscale", "colorspace", "channel_split", "rgb_adjust", "color_inrange", "invert"], "grayscale"),
 
   image_adjust: mergeGroup("Image Adjust", "Image Adjust",
     ["brightness_contrast", "gamma", "hist_equalize", "clahe"], "brightness_contrast"),

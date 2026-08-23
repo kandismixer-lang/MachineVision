@@ -3,7 +3,7 @@ import { FILTERS, OPS, GROUP_COLORS } from "../filters/registry.js";
 import { GROUP_ICON } from "../filters/ui-meta.js";
 
 export const TOOL_SECTIONS = [
-  { title: "COLOR", ops: ["grayscale", "colorspace", "channel_split", "color_inrange", "invert"] },
+  { title: "COLOR", ops: ["grayscale", "colorspace", "channel_split", "rgb_adjust", "color_inrange", "invert"] },
   { title: "ENHANCE", ops: ["brightness_contrast", "gamma", "hist_equalize", "clahe", "unsharp", "laplacian_sharpen"] },
   { title: "FILTER & DENOISE", ops: ["salt_pepper_noise", "median_blur", "gaussian_blur", "box_blur", "bilateral"] },
   { title: "MORPHOLOGY", ops: ["morphology"] },
@@ -18,7 +18,7 @@ const VISIBLE_FILTER_IDS = [
 ];
 
 const OP_ICON = {
-  grayscale: "◐", colorspace: "🎨", channel_split: "◉", color_inrange: "🌈", invert: "◑",
+  grayscale: "◐", colorspace: "🎨", channel_split: "◉", rgb_adjust: "🎚", color_inrange: "🌈", invert: "◑",
   brightness_contrast: "☀", gamma: "γ", hist_equalize: "▥", clahe: "▦", unsharp: "✦", laplacian_sharpen: "◇",
   salt_pepper_noise: "⁙", median_blur: "●", gaussian_blur: "✺", box_blur: "▧", bilateral: "◎",
   morphology: "▣", binary_threshold: "◩", otsu_threshold: "◧", adaptive_threshold: "◨",

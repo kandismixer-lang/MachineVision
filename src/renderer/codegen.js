@@ -76,6 +76,20 @@ const GEN = {
     return lines;
   } },
 
+  rgb_adjust: { needs: "any", out: "color", gen: (p, ctx) => {
+    const lines = [];
+    if (ctx.gray) lines.push("img = cv2.cvtColor(img, cv2.COLOR_GRAY2BGR)");
+    // OpenCV เก็บภาพเป็น BGR ไม่ใช่ RGB — b=0, g=1, r=2
+    lines.push("b, g, r = cv2.split(img)");
+    // ใช้ np.clip แทน cv2.convertScaleAbs — convertScaleAbs หาค่าสัมบูรณ์ก่อนตัด ทำให้ offset ติดลบ
+    // "สะท้อนค่ากลับ" แทนที่จะทำให้มืดลงจริง (ต้องตรงกับ Mat.convertTo ฝั่งแอป)
+    lines.push(`r = np.clip(r.astype(np.float32) * ${num(p.rGain)} + ${int(p.rOffset)}, 0, 255).astype(np.uint8)`);
+    lines.push(`g = np.clip(g.astype(np.float32) * ${num(p.gGain)} + ${int(p.gOffset)}, 0, 255).astype(np.uint8)`);
+    lines.push(`b = np.clip(b.astype(np.float32) * ${num(p.bGain)} + ${int(p.bOffset)}, 0, 255).astype(np.uint8)`);
+    lines.push("img = cv2.merge([b, g, r])");
+    return lines;
+  } },
+
   // ---- ปรับปรุงภาพ ----
   brightness_contrast: { needs: "any", out: "same", gen: (p) =>
     [`img = cv2.convertScaleAbs(img, alpha=${num(p.alpha)}, beta=${int(p.beta)})`] },
