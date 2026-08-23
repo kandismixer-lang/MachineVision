@@ -136,7 +136,21 @@ export function openSettings(actions, keymap, onChange) {
     statusText.textContent = "";
     updateRow.append(checkBtn, statusText);
     updateBox.appendChild(updateRow);
+    // แถบโหลดอัปเดต — ซ่อนไว้ก่อน โผล่เฉพาะตอนกำลังโหลดไฟล์ (status === "progress")
+    const progWrap = document.createElement("div");
+    progWrap.className = "update-progress";
+    progWrap.style.display = "none";
+    const progFill = document.createElement("div");
+    progFill.className = "update-progress-fill";
+    progWrap.appendChild(progFill);
+    updateBox.appendChild(progWrap);
     modal.appendChild(updateBox);
+
+    function showProgress(percent) {
+      progWrap.style.display = "block";
+      progFill.style.width = Math.max(0, Math.min(100, percent || 0)) + "%";
+    }
+    function hideProgress() { progWrap.style.display = "none"; }
 
     // กัน "กำลังเช็ค…" ค้างตลอดไป ถ้า autoUpdater ไม่ยิง event กลับมาเลย (เช่นเช็คไม่ได้เงียบ ๆ
     // ตอนรันแบบ unpacked/dev หรือ edge case อื่น) — ตั้งเวลาสำรอง ถ้าไม่มี event ใน 15 วิ ถือว่า timeout
@@ -160,11 +174,13 @@ export function openSettings(actions, keymap, onChange) {
     // ปรับ UI เป็นโหมด "พร้อมติดตั้ง" — เรียกได้ทั้งจาก event downloaded และจาก getState ตอนเปิด
     function markDownloaded(version) {
       clearPendingTimeout();
+      hideProgress();
       downloadedReady = true;
       checkBtn.textContent = "🔄 ติดตั้งแล้วเปิดใหม่";
       checkBtn.disabled = false;
       statusText.textContent = `โหลดเสร็จแล้ว${version ? ` (v${version})` : ""} — กดปุ่มเพื่อติดตั้งและเปิดใหม่`;
     }
+    const mb = (n) => (Number(n || 0) / 1048576).toFixed(1);
 
     // event update-downloaded ยิงครั้งเดียวและมักยิงก่อนเปิดหน้านี้ — query สถานะตอนเปิดด้วย
     // ไม่งั้นถ้าโหลดเสร็จไปแล้ว ปุ่มจะค้างที่ "เช็คอัปเดต" กดติดตั้งไม่ได้
@@ -174,15 +190,19 @@ export function openSettings(actions, keymap, onChange) {
 
     unsubUpdate = window.mvUpdate.onStatus((data) => {
       clearPendingTimeout();
-      if (data.status === "checking") { statusText.textContent = "กำลังเช็ค…"; armTimeout(); }
-      else if (data.status === "available") statusText.textContent = `พบเวอร์ชันใหม่ (v${data.version}) — กำลังโหลด…`;
+      if (data.status === "checking") { statusText.textContent = "กำลังเช็ค…"; hideProgress(); armTimeout(); }
+      else if (data.status === "available") { statusText.textContent = `พบเวอร์ชันใหม่ (v${data.version}) — กำลังโหลด…`; showProgress(0); }
+      else if (data.status === "progress") {
+        statusText.textContent = `กำลังโหลด ${Math.round(data.percent || 0)}% (${mb(data.transferred)} / ${mb(data.total)} MB)`;
+        showProgress(data.percent);
+      }
       else if (data.status === "downloaded") { markDownloaded(data.version); return; }
-      else if (data.status === "not-available") statusText.textContent = "เป็นเวอร์ชันล่าสุดอยู่แล้ว ✓";
-      else if (data.status === "error") statusText.textContent = "เช็คไม่สำเร็จ: " + data.message;
-      // ระหว่าง "available" (กำลังโหลดไฟล์อัปเดต) ก็ต้อง disable ด้วย ไม่ใช่แค่ "checking" —
+      else if (data.status === "not-available") { statusText.textContent = "เป็นเวอร์ชันล่าสุดอยู่แล้ว ✓"; hideProgress(); }
+      else if (data.status === "error") { statusText.textContent = "เช็คไม่สำเร็จ: " + data.message; hideProgress(); }
+      // ระหว่าง "available"/"progress" (กำลังโหลดไฟล์อัปเดต) ก็ต้อง disable ด้วย ไม่ใช่แค่ "checking" —
       // ไม่งั้นกดซ้ำระหว่างโหลดจะไปตั้ง timeout ใหม่ทับข้อความ "กำลังโหลด…" กลายเป็น "หมดเวลา" หลอก
       // (สาขา downloaded จัดการปุ่มเองใน markDownloaded แล้ว return ออกไปก่อนถึงบรรทัดนี้)
-      checkBtn.disabled = data.status === "checking" || data.status === "available";
+      checkBtn.disabled = ["checking", "available", "progress"].includes(data.status);
     });
 
     checkBtn.addEventListener("click", async () => {

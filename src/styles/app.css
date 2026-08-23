@@ -537,6 +537,20 @@ button {
   font-size: 13px;
   color: var(--text-secondary);
 }
+.update-progress {
+  margin-top: 10px;
+  height: 8px;
+  border-radius: 999px;
+  background: rgba(126, 160, 198, 0.16);
+  overflow: hidden;
+}
+.update-progress-fill {
+  height: 100%;
+  width: 0%;
+  border-radius: 999px;
+  background: linear-gradient(90deg, var(--accent-cyan), var(--accent-blue));
+  transition: width 0.2s ease;
+}
 .keymap-info {
   flex: 1 1 auto;
   min-width: 0;

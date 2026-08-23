@@ -206,6 +206,10 @@ app.whenReady().then(() => {
     autoUpdater.on("checking-for-update", () => sendUpdateStatus("checking"));
     autoUpdater.on("update-available", (info) => sendUpdateStatus("available", { version: info?.version }));
     autoUpdater.on("update-not-available", () => sendUpdateStatus("not-available"));
+    // ความคืบหน้าการโหลดไฟล์อัปเดต — ส่ง %/ไบต์ ให้ renderer โชว์แถบโหลด
+    autoUpdater.on("download-progress", (p) => sendUpdateStatus("progress", {
+      percent: p?.percent, transferred: p?.transferred, total: p?.total, bytesPerSecond: p?.bytesPerSecond,
+    }));
     autoUpdater.on("update-downloaded", (info) => {
       // เก็บ path ไฟล์ติดตั้งที่โหลดเสร็จด้วย (info.downloadedFile) — ใช้เปิดแบบดับเบิลคลิกตอนกดติดตั้ง
       updateDownloadedInfo = { version: info?.version, file: info?.downloadedFile };
