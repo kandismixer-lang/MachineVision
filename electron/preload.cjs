@@ -39,7 +39,7 @@ contextBridge.exposeInMainWorld("mvUpdate", {
   check: () => ipcRenderer.invoke("update:check"),
   // อ่านสถานะปัจจุบัน (โหลดเสร็จหรือยัง, เป็น portable ไหม) — เรียกตอนเปิดหน้าตั้งค่า
   getState: () => ipcRenderer.invoke("update:getState"),
-  // ปิดแอป → ติดตั้งตัวใหม่ → เปิดขึ้นมาเองอัตโนมัติ (เรียกหลัง status === "downloaded")
+  // เปิดตัวติดตั้งที่โหลดไว้ (แบบดับเบิลคลิก) → ตัวติดตั้งปิดแอป-ติดตั้ง-เปิดใหม่เอง (เรียกหลัง downloaded)
   install: () => ipcRenderer.invoke("update:install"),
   onStatus: (cb) => {
     const handler = (_e, data) => cb(data);

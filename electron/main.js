@@ -1,4 +1,4 @@
-import { app, BrowserWindow, session, ipcMain, dialog, nativeImage } from "electron";
+import { app, BrowserWindow, session, ipcMain, dialog, nativeImage, shell } from "electron";
 import path from "node:path";
 import fs from "node:fs/promises";
 import { spawn } from "node:child_process";
@@ -23,7 +23,7 @@ let mainWindow = null; // อ้างอิงหน้าต่างล่า
 // เก็บสถานะ "โหลดอัปเดตเสร็จแล้ว" ระดับ process — event update-downloaded ยิงครั้งเดียว และมัก
 // ยิงตั้งแต่เปิดแอป (auto-check เบื้องหลัง) ก่อนผู้ใช้เปิดหน้าตั้งค่าด้วยซ้ำ ถ้าเก็บสถานะไว้แค่ใน
 // modal จะพลาด event นี้ ปุ่มไม่มีทางเปลี่ยนเป็น "ติดตั้ง" — จึงเก็บที่นี่ให้ renderer query ได้ทุกเมื่อ
-let updateDownloadedInfo = null; // { version } เมื่อโหลดเสร็จ, null เมื่อยังไม่มี
+let updateDownloadedInfo = null; // { version, file } เมื่อโหลดเสร็จ (file = path ตัวติดตั้ง), null เมื่อยังไม่มี
 // portable build อัปเดตอัตโนมัติไม่ได้ (ไม่มี installer) — electron-builder ตั้ง env นี้ให้เฉพาะ portable
 const isPortable = !!process.env.PORTABLE_EXECUTABLE_DIR;
 
@@ -170,16 +170,17 @@ ipcMain.handle("update:getState", () => ({
   portable: isPortable,
 }));
 
-// ---------- IPC: ปุ่ม "ติดตั้งแล้วเปิดใหม่" (หลังโหลดอัปเดตเสร็จ) ----------
-// quitAndInstall() ปิดแอป → รัน installer → เปิดแอปตัวใหม่ขึ้นมาเอง (process ใหม่หมด
-// keymap/shortcut โหลดสดหมด ไม่ต้อง refresh เอง) — เรียกได้เฉพาะหลัง event update-downloaded
-ipcMain.handle("update:install", () => {
+// ---------- IPC: ปุ่ม "ติดตั้งอัปเดต" (หลังโหลดอัปเดตเสร็จ) ----------
+// เปิดตัวติดตั้งด้วย shell.openPath (= ShellExecute เหมือนผู้ใช้ดับเบิลคลิกไฟล์เอง) แทน
+// autoUpdater.quitAndInstall() ที่ spawn แบบ silent (/S) ซึ่ง Windows Defender มักบล็อกเพราะ
+// ดูเหมือน installer เถื่อน — วิธีนี้ตัวติดตั้งเด้ง UI ปกติ (ผู้ใช้กดต่อจนจบ) แล้วมันปิด-เปิดแอป
+// ใหม่ให้เอง จบในโปรแกรม ไม่ต้องออกไปหาไฟล์เอง
+ipcMain.handle("update:install", async () => {
   if (isDev) return { ok: false, error: "โหมด dev ติดตั้งอัปเดตไม่ได้" };
   if (isPortable) return { ok: false, error: "เวอร์ชัน portable อัปเดตอัตโนมัติไม่ได้" };
-  if (!updateDownloadedInfo) return { ok: false, error: "ยังไม่มีไฟล์อัปเดตที่โหลดเสร็จ" };
-  // installer เป็น oneClick:true → isSilent=true ติดตั้งเงียบสนิทไม่มีหน้าต่างให้กด,
-  // isForceRunAfter=true บังคับเปิดแอปตัวใหม่หลังติดตั้งเสร็จ — ผู้ใช้กดปุ่มเดียวจบ
-  setImmediate(() => autoUpdater.quitAndInstall(true, true));
+  if (!updateDownloadedInfo?.file) return { ok: false, error: "ยังไม่มีไฟล์อัปเดตที่โหลดเสร็จ" };
+  const err = await shell.openPath(updateDownloadedInfo.file); // คืน "" เมื่อสำเร็จ, ข้อความ error เมื่อล้มเหลว
+  if (err) return { ok: false, error: err };
   return { ok: true };
 });
 
@@ -206,7 +207,8 @@ app.whenReady().then(() => {
     autoUpdater.on("update-available", (info) => sendUpdateStatus("available", { version: info?.version }));
     autoUpdater.on("update-not-available", () => sendUpdateStatus("not-available"));
     autoUpdater.on("update-downloaded", (info) => {
-      updateDownloadedInfo = { version: info?.version }; // จำไว้ให้ query ได้แม้ผู้ใช้ยังไม่เปิดหน้าตั้งค่า
+      // เก็บ path ไฟล์ติดตั้งที่โหลดเสร็จด้วย (info.downloadedFile) — ใช้เปิดแบบดับเบิลคลิกตอนกดติดตั้ง
+      updateDownloadedInfo = { version: info?.version, file: info?.downloadedFile };
       sendUpdateStatus("downloaded", { version: info?.version });
     });
     autoUpdater.on("error", (err) => {

@@ -188,12 +188,22 @@ export function openSettings(actions, keymap, onChange) {
     checkBtn.addEventListener("click", async () => {
       // โหมดติดตั้ง: โหลดเสร็จแล้ว → กดเพื่อปิด-ติดตั้ง-เปิดใหม่เอง (ไม่ต้องเช็คซ้ำ)
       if (downloadedReady) {
-        statusText.textContent = "กำลังติดตั้ง — แอปจะปิดและเปิดใหม่เอง…";
+        statusText.textContent = "เปิดตัวติดตั้งแล้ว — ทำตามหน้าต่างติดตั้งจนเสร็จ แอปจะปิด-เปิดใหม่เอง";
         checkBtn.disabled = true;
         const res = await window.mvUpdate.install();
         if (!res.ok) {
-          statusText.textContent = "ติดตั้งไม่สำเร็จ: " + res.error;
+          statusText.textContent = "เปิดตัวติดตั้งไม่สำเร็จ: " + res.error;
           checkBtn.disabled = false;
+        } else {
+          // openPath คืนสำเร็จแค่ "เปิดไฟล์ได้" ไม่ได้แปลว่าติดตั้งจริง — ถ้าตัวติดตั้งโดน block/
+          // quarantine เงียบ ๆ แอปจะไม่ปิด ปุ่มจะค้าง disabled ตลอด จึงเปิดปุ่มคืนหลัง 8 วิ ให้กดใหม่ได้
+          // (ถ้าติดตั้งสำเร็จ ตัวติดตั้งจะปิดแอปไปก่อนถึง 8 วิ อยู่แล้ว timeout นี้จึงไม่มีผล)
+          setTimeout(() => {
+            if (checkBtn.isConnected) {
+              checkBtn.disabled = false;
+              statusText.textContent = "ถ้าตัวติดตั้งไม่ขึ้น กดปุ่มอีกครั้งได้";
+            }
+          }, 8000);
         }
         return;
       }
