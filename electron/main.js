@@ -20,6 +20,12 @@ const openDevtools = process.env.OPEN_DEVTOOLS === "1";
 const appIcon = nativeImage.createFromPath(path.join(__dirname, "icon.ico"));
 
 let mainWindow = null; // อ้างอิงหน้าต่างล่าสุด — ใช้ส่งสถานะ auto-update กลับไป renderer
+// เก็บสถานะ "โหลดอัปเดตเสร็จแล้ว" ระดับ process — event update-downloaded ยิงครั้งเดียว และมัก
+// ยิงตั้งแต่เปิดแอป (auto-check เบื้องหลัง) ก่อนผู้ใช้เปิดหน้าตั้งค่าด้วยซ้ำ ถ้าเก็บสถานะไว้แค่ใน
+// modal จะพลาด event นี้ ปุ่มไม่มีทางเปลี่ยนเป็น "ติดตั้ง" — จึงเก็บที่นี่ให้ renderer query ได้ทุกเมื่อ
+let updateDownloadedInfo = null; // { version } เมื่อโหลดเสร็จ, null เมื่อยังไม่มี
+// portable build อัปเดตอัตโนมัติไม่ได้ (ไม่มี installer) — electron-builder ตั้ง env นี้ให้เฉพาะ portable
+const isPortable = !!process.env.PORTABLE_EXECUTABLE_DIR;
 
 function createWindow() {
   const win = new BrowserWindow({
@@ -146,12 +152,35 @@ ipcMain.handle("dl:convertPt", async (_e, ptPath) => {
 // sendUpdateStatus ส่งผลจริงกลับไปโชว์ ไม่ปล่อยให้เงียบเหมือน checkForUpdatesAndNotify() เดิม
 ipcMain.handle("update:check", async () => {
   if (isDev) return { ok: false, error: "โหมด dev ไม่มี update feed ให้เช็ค" };
+  if (isPortable) return { ok: false, error: "เวอร์ชัน portable อัปเดตอัตโนมัติไม่ได้ — โหลดตัวติดตั้ง (Setup) มาใช้แทน" };
   try {
     await autoUpdater.checkForUpdates();
     return { ok: true };
   } catch (e) {
     return { ok: false, error: e?.message || String(e) };
   }
+});
+
+// ---------- IPC: อ่านสถานะอัปเดตปัจจุบัน (เรียกตอนเปิดหน้าตั้งค่า) ----------
+// event update-downloaded ยิงครั้งเดียวและมักยิงก่อนผู้ใช้เปิดหน้าตั้งค่า — หน้าตั้งค่าจึงต้อง
+// query สถานะตอนเปิด เพื่อรู้ว่าควรโชว์ปุ่ม "ติดตั้ง" เลยไหม (ไม่งั้นพลาด event ปุ่มไม่เปลี่ยน)
+ipcMain.handle("update:getState", () => ({
+  downloaded: !!updateDownloadedInfo,
+  version: updateDownloadedInfo?.version,
+  portable: isPortable,
+}));
+
+// ---------- IPC: ปุ่ม "ติดตั้งแล้วเปิดใหม่" (หลังโหลดอัปเดตเสร็จ) ----------
+// quitAndInstall() ปิดแอป → รัน installer → เปิดแอปตัวใหม่ขึ้นมาเอง (process ใหม่หมด
+// keymap/shortcut โหลดสดหมด ไม่ต้อง refresh เอง) — เรียกได้เฉพาะหลัง event update-downloaded
+ipcMain.handle("update:install", () => {
+  if (isDev) return { ok: false, error: "โหมด dev ติดตั้งอัปเดตไม่ได้" };
+  if (isPortable) return { ok: false, error: "เวอร์ชัน portable อัปเดตอัตโนมัติไม่ได้" };
+  if (!updateDownloadedInfo) return { ok: false, error: "ยังไม่มีไฟล์อัปเดตที่โหลดเสร็จ" };
+  // installer เป็น oneClick:true → isSilent=true ติดตั้งเงียบสนิทไม่มีหน้าต่างให้กด,
+  // isForceRunAfter=true บังคับเปิดแอปตัวใหม่หลังติดตั้งเสร็จ — ผู้ใช้กดปุ่มเดียวจบ
+  setImmediate(() => autoUpdater.quitAndInstall(true, true));
+  return { ok: true };
 });
 
 app.whenReady().then(() => {
@@ -172,11 +201,14 @@ app.whenReady().then(() => {
   // เช็ค+โหลด+ติดตั้งอัปเดตจาก GitHub Releases อัตโนมัติ (เฉพาะ build จริง — dev ไม่มี feed ให้เช็ค)
   // ใช้ได้เฉพาะกับตัว NSIS installer (perMachine:false) เท่านั้น — portable/unpacked ไม่รองรับ
   // ทุก event ส่งสถานะกลับไป renderer ด้วย (sendUpdateStatus) ให้ปุ่ม "เช็คอัปเดต" ในแผงตั้งค่าโชว์ผลจริงได้
-  if (!isDev) {
+  if (!isDev && !isPortable) {
     autoUpdater.on("checking-for-update", () => sendUpdateStatus("checking"));
     autoUpdater.on("update-available", (info) => sendUpdateStatus("available", { version: info?.version }));
     autoUpdater.on("update-not-available", () => sendUpdateStatus("not-available"));
-    autoUpdater.on("update-downloaded", (info) => sendUpdateStatus("downloaded", { version: info?.version }));
+    autoUpdater.on("update-downloaded", (info) => {
+      updateDownloadedInfo = { version: info?.version }; // จำไว้ให้ query ได้แม้ผู้ใช้ยังไม่เปิดหน้าตั้งค่า
+      sendUpdateStatus("downloaded", { version: info?.version });
+    });
     autoUpdater.on("error", (err) => {
       const message = err?.message || String(err);
       console.error("[autoUpdater] error:", message);

@@ -153,19 +153,50 @@ export function openSettings(actions, keymap, onChange) {
     }
     clearUpdateTimeout = clearPendingTimeout;
 
+    // เมื่อโหลดอัปเดตเสร็จ ปุ่มจะเปลี่ยนหน้าที่จาก "เช็คอัปเดต" → "ติดตั้งแล้วเปิดใหม่"
+    // downloadedReady บอกให้ click handler รู้ว่าตอนนี้ต้องเรียก install() ไม่ใช่ check()
+    let downloadedReady = false;
+
+    // ปรับ UI เป็นโหมด "พร้อมติดตั้ง" — เรียกได้ทั้งจาก event downloaded และจาก getState ตอนเปิด
+    function markDownloaded(version) {
+      clearPendingTimeout();
+      downloadedReady = true;
+      checkBtn.textContent = "🔄 ติดตั้งแล้วเปิดใหม่";
+      checkBtn.disabled = false;
+      statusText.textContent = `โหลดเสร็จแล้ว${version ? ` (v${version})` : ""} — กดปุ่มเพื่อติดตั้งและเปิดใหม่`;
+    }
+
+    // event update-downloaded ยิงครั้งเดียวและมักยิงก่อนเปิดหน้านี้ — query สถานะตอนเปิดด้วย
+    // ไม่งั้นถ้าโหลดเสร็จไปแล้ว ปุ่มจะค้างที่ "เช็คอัปเดต" กดติดตั้งไม่ได้
+    window.mvUpdate.getState?.().then((s) => {
+      if (s?.downloaded && !downloadedReady) markDownloaded(s.version);
+    }).catch(() => { /* ไม่มี getState ก็ข้ามไป (backward compat) */ });
+
     unsubUpdate = window.mvUpdate.onStatus((data) => {
       clearPendingTimeout();
       if (data.status === "checking") { statusText.textContent = "กำลังเช็ค…"; armTimeout(); }
       else if (data.status === "available") statusText.textContent = `พบเวอร์ชันใหม่ (v${data.version}) — กำลังโหลด…`;
-      else if (data.status === "downloaded") statusText.textContent = `โหลดเสร็จแล้ว (v${data.version}) — ปิด-เปิดแอปใหม่เพื่อติดตั้ง`;
+      else if (data.status === "downloaded") { markDownloaded(data.version); return; }
       else if (data.status === "not-available") statusText.textContent = "เป็นเวอร์ชันล่าสุดอยู่แล้ว ✓";
       else if (data.status === "error") statusText.textContent = "เช็คไม่สำเร็จ: " + data.message;
       // ระหว่าง "available" (กำลังโหลดไฟล์อัปเดต) ก็ต้อง disable ด้วย ไม่ใช่แค่ "checking" —
       // ไม่งั้นกดซ้ำระหว่างโหลดจะไปตั้ง timeout ใหม่ทับข้อความ "กำลังโหลด…" กลายเป็น "หมดเวลา" หลอก
+      // (สาขา downloaded จัดการปุ่มเองใน markDownloaded แล้ว return ออกไปก่อนถึงบรรทัดนี้)
       checkBtn.disabled = data.status === "checking" || data.status === "available";
     });
 
     checkBtn.addEventListener("click", async () => {
+      // โหมดติดตั้ง: โหลดเสร็จแล้ว → กดเพื่อปิด-ติดตั้ง-เปิดใหม่เอง (ไม่ต้องเช็คซ้ำ)
+      if (downloadedReady) {
+        statusText.textContent = "กำลังติดตั้ง — แอปจะปิดและเปิดใหม่เอง…";
+        checkBtn.disabled = true;
+        const res = await window.mvUpdate.install();
+        if (!res.ok) {
+          statusText.textContent = "ติดตั้งไม่สำเร็จ: " + res.error;
+          checkBtn.disabled = false;
+        }
+        return;
+      }
       statusText.textContent = "กำลังเช็ค…";
       checkBtn.disabled = true;
       armTimeout();

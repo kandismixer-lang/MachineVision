@@ -1,6 +1,6 @@
 {
   "name": "machine-vision-app",
-  "version": "0.1.7",
+  "version": "0.1.8",
   "description": "Machine Vision Desktop App สำหรับการเรียนการสอน (Electron + OpenCV.js)",
   "main": "electron/main.js",
   "type": "module",
@@ -34,9 +34,8 @@
       ]
     },
     "nsis": {
-      "oneClick": false,
+      "oneClick": true,
       "perMachine": false,
-      "allowToChangeInstallationDirectory": true,
       "shortcutName": "Machine Vision"
     },
     "publish": {
