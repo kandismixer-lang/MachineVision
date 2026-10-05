@@ -103,7 +103,7 @@ const selectedPreviewTabs = [...document.querySelectorAll("[data-preview-view]")
 const inspectorTabs = [...document.querySelectorAll("[data-inspector-tab]")];
 let inspectorTab = "inspect";
 
-function setInspectorTab(next, { remember = true } = {}) {
+function setInspectorTab(next) {
   if (!isUiV2 || !["inspect", "preview", "dataset"].includes(next)) return;
   inspectorTab = next;
   for (const tab of inspectorTabs) {
@@ -132,9 +132,6 @@ function setInspectorTab(next, { remember = true } = {}) {
     if (classes) classes.open = true;
     if (split) split.open = true;
   }
-  if (remember) {
-    try { localStorage.setItem("mv-ui-v2-inspector-tab", next); } catch {}
-  }
 }
 
 if (isUiV2) {
@@ -150,9 +147,9 @@ if (isUiV2) {
       next.focus();
     });
   }
-  let initialInspectorTab = "inspect";
-  try { initialInspectorTab = localStorage.getItem("mv-ui-v2-inspector-tab") || "inspect"; } catch {}
-  setInspectorTab(initialInspectorTab, { remember: false });
+  // เปิดแอปมาเริ่มที่ "ปรับค่า" เสมอ — ไม่จำ tab สุดท้าย (ผู้ใช้ไม่อยากเด้งไป Dataset)
+  try { localStorage.removeItem("mv-ui-v2-inspector-tab"); } catch {}
+  setInspectorTab("inspect");
 }
 const SELECTED_PREVIEW_PREFIX = "__selected_function_preview__";
 let selectedPreviewGeneration = 0;
