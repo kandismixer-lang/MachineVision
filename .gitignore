@@ -3,3 +3,10 @@ dist/
 build/
 release/
 รายละเอียด/
+
+# local junk / generated
+backups/
+output/
+tmp/
+.pptx-build/
+__pycache__/

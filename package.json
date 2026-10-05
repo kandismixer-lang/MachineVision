@@ -1,6 +1,6 @@
 {
   "name": "machine-vision-app",
-  "version": "0.1.10",
+  "version": "0.1.17",
   "description": "Machine Vision Desktop App สำหรับการเรียนการสอน (Electron + OpenCV.js)",
   "main": "electron/main.js",
   "type": "module",
@@ -58,6 +58,7 @@
     "@mediapipe/tasks-vision": "^0.10.14",
     "@techstark/opencv-js": "^4.10.0-release.1",
     "electron-updater": "^6.8.9",
+    "jszip": "^3.10.1",
     "litegraph.js": "^0.7.18",
     "onnxruntime-web": "^1.19.2"
   }

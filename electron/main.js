@@ -167,6 +167,7 @@ ipcMain.handle("update:check", async () => {
 ipcMain.handle("update:getState", () => ({
   downloaded: !!updateDownloadedInfo,
   version: updateDownloadedInfo?.version,
+  releaseNotes: updateDownloadedInfo?.releaseNotes,
   portable: isPortable,
 }));
 
@@ -204,7 +205,9 @@ app.whenReady().then(() => {
   // ทุก event ส่งสถานะกลับไป renderer ด้วย (sendUpdateStatus) ให้ปุ่ม "เช็คอัปเดต" ในแผงตั้งค่าโชว์ผลจริงได้
   if (!isDev && !isPortable) {
     autoUpdater.on("checking-for-update", () => sendUpdateStatus("checking"));
-    autoUpdater.on("update-available", (info) => sendUpdateStatus("available", { version: info?.version }));
+    autoUpdater.on("update-available", (info) => sendUpdateStatus("available", {
+      version: info?.version, releaseNotes: info?.releaseNotes, releaseName: info?.releaseName,
+    }));
     autoUpdater.on("update-not-available", () => sendUpdateStatus("not-available"));
     // ความคืบหน้าการโหลดไฟล์อัปเดต — ส่ง %/ไบต์ ให้ renderer โชว์แถบโหลด
     autoUpdater.on("download-progress", (p) => sendUpdateStatus("progress", {
@@ -212,8 +215,8 @@ app.whenReady().then(() => {
     }));
     autoUpdater.on("update-downloaded", (info) => {
       // เก็บ path ไฟล์ติดตั้งที่โหลดเสร็จด้วย (info.downloadedFile) — ใช้เปิดแบบดับเบิลคลิกตอนกดติดตั้ง
-      updateDownloadedInfo = { version: info?.version, file: info?.downloadedFile };
-      sendUpdateStatus("downloaded", { version: info?.version });
+      updateDownloadedInfo = { version: info?.version, file: info?.downloadedFile, releaseNotes: info?.releaseNotes };
+      sendUpdateStatus("downloaded", { version: info?.version, releaseNotes: info?.releaseNotes });
     });
     autoUpdater.on("error", (err) => {
       const message = err?.message || String(err);

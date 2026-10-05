@@ -3,6 +3,8 @@
 let worker = null;
 let ready = false;
 let inputSize = 640;
+let segModel = false; // โมเดลที่โหลดล่าสุดเป็น segmentation ไหม
+let modelKind = "yolo"; // 'yolo' | 'yoloseg' | 'rfdetr'
 let seq = 0;
 const waiters = new Map();
 const loadResolvers = []; // คิว resolver ของ loadModel (FIFO) — กันโหลดซ้อนแล้ว promise สลับกัน
@@ -39,6 +41,24 @@ function extractOnnxNames(bytes) {
   }
 }
 
+// ดึง imgsz จาก metadata ที่ ultralytics ฝังในไฟล์ .onnx (เช่น "imgsz": [1280, 1280])
+// จำเป็นเพราะ session.inputMetadata ไม่มีใน onnxruntime-web (undefined เสมอ) — อ่านจากไบต์แทน
+function extractOnnxImgsz(bytes) {
+  try {
+    const s = new TextDecoder("latin1").decode(bytes);
+    const i = s.indexOf("imgsz");
+    if (i < 0) return null;
+    const bracket = s.indexOf("[", i);
+    if (bracket < 0) return null;
+    const m = /-?\d+/.exec(s.slice(bracket, bracket + 32));
+    if (!m) return null;
+    const v = parseInt(m[0], 10);
+    return Number.isFinite(v) && v > 0 ? v : null;
+  } catch {
+    return null;
+  }
+}
+
 function ensureWorker() {
   if (worker) return;
   worker = new Worker(new URL("./dl-worker.js", import.meta.url), { type: "module" });
@@ -48,6 +68,8 @@ function ensureWorker() {
       if (!m.error) {
         ready = true;
         inputSize = m.inputSize;
+        segModel = !!m.seg;
+        modelKind = m.kind || "yolo";
       }
       const r = loadResolvers.shift(); // ตอบตามลำดับที่ส่ง (worker โหลดทีละไฟล์)
       if (r) r(m);
@@ -81,16 +103,19 @@ let loadChain = Promise.resolve();
 export function loadModel(bytes) {
   ensureWorker();
   const names = extractOnnxNames(bytes); // ดึงชื่อคลาสก่อน transfer buffer
+  const imgsz = extractOnnxImgsz(bytes); // ดึง input size จริง (เช่น 1280) ก่อน transfer buffer
   const task = async () => {
     const wasmBase = new URL("./onnx/", location.href).href; // path wasm (absolute — worker ใช้ได้)
     const p = new Promise((res) => loadResolvers.push(res));
-    worker.postMessage({ type: "load", bytes, wasmBase }, [bytes.buffer]);
+    worker.postMessage({ type: "load", bytes, wasmBase, imgsz }, [bytes.buffer]);
     const m = await p;
     ready = false; // ตั้งใหม่จากผล
     if (m.error) throw new Error(m.error);
     ready = true;
     inputSize = m.inputSize;
-    return { inputSize, names };
+    segModel = !!m.seg;
+    modelKind = m.kind || "yolo";
+    return { inputSize, names, seg: segModel, kind: modelKind };
   };
   const result = loadChain.then(task, task); // ต่อคิว: โหลดก่อนหน้าเสร็จค่อยเริ่มตัวถัดไป
   loadChain = result.catch(() => {}); // กัน chain ขาดถ้าตัวก่อนหน้า error
@@ -99,6 +124,34 @@ export function loadModel(bytes) {
 
 export function isLoaded() {
   return ready;
+}
+
+export function isSegModel() {
+  return segModel;
+}
+
+export function isRfdetr() {
+  return modelKind === "rfdetr";
+}
+
+// RF-DETR preprocess: resize ตรง ๆ เป็น inputSize×inputSize (ไม่ letterbox — บิดสัดส่วนได้ กล่อง normalize
+// เทียบภาพเต็มอยู่แล้ว) + normalize แบบ ImageNet (mean/std) ตามที่ DETR ใช้ ไม่ใช่แค่หาร 255
+const IMAGENET_MEAN = [0.485, 0.456, 0.406];
+const IMAGENET_STD = [0.229, 0.224, 0.225];
+function rfdetrPreprocess(src, W, H) {
+  pre.width = inputSize;
+  pre.height = inputSize;
+  const ctx = pre.getContext("2d", { willReadFrequently: true });
+  ctx.drawImage(src, 0, 0, W, H, 0, 0, inputSize, inputSize); // resize เต็ม (distort)
+  const img = ctx.getImageData(0, 0, inputSize, inputSize).data;
+  const area = inputSize * inputSize;
+  const data = new Float32Array(area * 3);
+  for (let i = 0; i < area; i++) {
+    data[i] = (img[i * 4] / 255 - IMAGENET_MEAN[0]) / IMAGENET_STD[0];
+    data[i + area] = (img[i * 4 + 1] / 255 - IMAGENET_MEAN[1]) / IMAGENET_STD[1];
+    data[i + 2 * area] = (img[i * 4 + 2] / 255 - IMAGENET_MEAN[2]) / IMAGENET_STD[2];
+  }
+  return { data };
 }
 
 // letterbox: ย่อภาพให้พอดี inputSize คงอัตราส่วน เติมสีเทา 114 — คืน Float32 CHW + meta
@@ -128,18 +181,63 @@ function letterbox(src, W, H) {
 // ตรวจจับ — คืน Promise ของ [{ x, y, w, h, score, cls, label }]
 export function detect(src, W, H, { conf = 0.25, iou = 0.45, labels } = {}) {
   if (!ready) return Promise.resolve([]);
-  const { data, r, dx, dy } = letterbox(src, W, H);
   const id = ++seq;
-  return new Promise((res) => {
+  const resolveMap = (res) =>
     waiters.set(id, (boxes) =>
       res(boxes.map((b) => ({ ...b, label: (labels && labels[b.cls]) || String(b.cls) })))
     );
+  if (modelKind === "rfdetr") {
+    const { data } = rfdetrPreprocess(src, W, H);
+    return new Promise((res) => {
+      resolveMap(res);
+      // RF-DETR: กล่อง normalize เทียบภาพเต็ม → ส่งขนาดภาพจริงไป map กลับ (ไม่มี letterbox r/dx/dy)
+      worker.postMessage({ type: "detect", reqId: id, data, origW: W, origH: H, conf }, [data.buffer]);
+    });
+  }
+  const { data, r, dx, dy } = letterbox(src, W, H);
+  return new Promise((res) => {
+    resolveMap(res);
     worker.postMessage({ type: "detect", reqId: id, data, r, dx, dy, conf, iou }, [data.buffer]);
   });
 }
 
-// วาดกล่อง detect ลง ctx
+// canvas ชั่วคราวสำหรับ blit mask (ความละเอียด proto) ก่อน scale ทับกล่อง
+const maskTmp = typeof document !== "undefined" ? document.createElement("canvas") : null;
+
+// สีทึบ (hex) ต่อ index คลาส — วน 10 สีเหมือน palette ของ dataset (mask segmentation)
+const MASK_COLORS = [
+  [59, 130, 246], [239, 68, 68], [34, 197, 94], [234, 179, 8], [168, 85, 247],
+  [6, 182, 212], [249, 115, 22], [236, 72, 153], [132, 204, 22], [20, 184, 166],
+];
+
+// วาด mask ของกล่องหนึ่ง (ครอปความละเอียด proto) ทับพื้นที่กล่องบน ctx
+function drawMask(ctx, b) {
+  if (!maskTmp || !b.mask) return;
+  const { mw, mh, data } = b.mask;
+  if (!mw || !mh) return;
+  const [r, g, bl] = MASK_COLORS[b.cls % MASK_COLORS.length];
+  maskTmp.width = mw;
+  maskTmp.height = mh;
+  const mctx = maskTmp.getContext("2d");
+  const img = mctx.createImageData(mw, mh);
+  for (let i = 0; i < data.length; i++) {
+    const on = data[i] > 0;
+    img.data[i * 4] = r;
+    img.data[i * 4 + 1] = g;
+    img.data[i * 4 + 2] = bl;
+    img.data[i * 4 + 3] = on ? 120 : 0; // โปร่งแสง ~47% เห็นภาพใต้ mask
+  }
+  mctx.putImageData(img, 0, 0);
+  const prev = ctx.imageSmoothingEnabled;
+  ctx.imageSmoothingEnabled = true;
+  ctx.drawImage(maskTmp, b.x, b.y, b.w, b.h); // scale จาก proto-crop → พื้นที่กล่องในภาพจริง
+  ctx.imageSmoothingEnabled = prev;
+}
+
+// วาดกล่อง detect (+ mask ถ้าเป็น segmentation) ลง ctx
 export function drawDetections(ctx, boxes, scale = 1) {
+  // วาด mask ก่อน (ชั้นล่าง) แล้วค่อยกล่อง+ป้าย (ชั้นบน)
+  for (const b of boxes) if (b.mask) drawMask(ctx, b);
   ctx.lineWidth = 2 * scale;
   ctx.font = `${16 * scale}px sans-serif`;
   ctx.textBaseline = "alphabetic";

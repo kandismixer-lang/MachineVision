@@ -30,14 +30,15 @@
       <div class="workspace">
         <!-- ซ้าย: palette ของ node (คลิกเพิ่มลงกระดาน) -->
         <aside id="palette-panel" class="panel panel-left"></aside>
+        <div class="lr-handle lr-handle-col" data-lr="palette" role="separator" aria-orientation="vertical" aria-controls="palette-panel" aria-label="ปรับความกว้างแถบเครื่องมือ" tabindex="0" title="ลากซ้าย-ขวาเพื่อปรับความกว้างแถบเครื่องมือ · ดับเบิลคลิกเพื่อคืนค่าเดิม"></div>
 
         <!-- กลาง: บน=ภาพผลลัพธ์, ล่าง=กระดานต่อ node สไตล์ Node-RED -->
         <main class="center-col">
           <div class="stage">
-            <!-- หัว Live View + สถานะ (Design §5) -->
+            <!-- หัว VIEWER บรรทัดเดียว: ชื่อ + ป้ายโหมด + ข้อมูลภาพ + ปุ่มควบคุม (spec §6.3) -->
             <div class="live-header">
-              <span class="lv-title">LIVE VIEW</span>
-              <span class="lv-status"><span class="dot dot-ok"></span><span id="lv-mode">สด</span></span>
+              <span class="lv-title">VIEWER</span>
+              <span class="lv-status is-live"><span class="dot dot-ok"></span><span id="lv-mode">สด</span></span>
               <!-- ข้อมูลภาพ inline ในแถบหัว (ไม่ทับภาพ) — Design §3 -->
               <span id="live-info" class="live-info hidden">
                 <span class="li-row"><span class="li-key">แหล่ง</span><span class="li-val" id="li-source">—</span></span>
@@ -46,17 +47,18 @@
                 <span class="li-row"><span class="li-key">สี</span><span class="li-val" id="li-color">—</span></span>
               </span>
               <span class="lv-metric" id="lv-mem"></span>
+              <!-- ปุ่มควบคุมมุมมอง (ย้ายจาก overlay ล่างภาพมาอยู่ในหัว — id/ปุ่มเดิมทั้งหมด) -->
+              <div class="live-controls">
+                <button id="lv-capture" class="lvc-btn" title="แคปภาพเข้าคลัง (เฉพาะโหมดกล้อง)">📸</button>
+                <button id="lv-original" class="lvc-btn lvc-view active" title="ดูผลลัพธ์จาก Pipeline">ภาพ</button>
+                <button id="lv-pose" class="lvc-btn lvc-view" title="เปิด Ergonomics Pose">Pose</button>
+                <button id="lv-annotate" class="lvc-btn" title="Label — ตีกรอบ Bounding Box สำหรับ dataset">✏️ Label</button>
+                <button id="lv-toggle" class="lvc-btn lvc-state" title="หยุดการประมวลผลชั่วคราว">⏸</button>
+                <button id="lv-fullscreen" class="lvc-btn" title="เต็มจอ">⛶</button>
+              </div>
             </div>
             <!-- พื้นที่ภาพ (ทุก overlay อ้างอิงกล่องนี้ = อยู่ใต้แถบหัว ไม่ทับ) -->
             <div class="stage-body">
-            <!-- ปุ่มควบคุมมุมมอง (overlay ล่าง) -->
-            <div class="live-controls">
-              <button id="lv-capture" class="lvc-btn" title="แคปภาพเข้าคลัง (เฉพาะโหมดกล้อง)">📸</button>
-              <button id="lv-original" class="lvc-btn lvc-view active" title="ดูผลลัพธ์จาก Pipeline">ภาพ</button>
-              <button id="lv-pose" class="lvc-btn lvc-view" title="เปิด Ergonomics Pose">Pose</button>
-              <button id="lv-toggle" class="lvc-btn lvc-state" title="หยุดการประมวลผลชั่วคราว">⏸</button>
-              <button id="lv-fullscreen" class="lvc-btn" title="เต็มจอ">⛶</button>
-            </div>
             <!-- video = แหล่งเฟรม (ซ่อนไว้ ใช้ทั้ง OpenCV และ Pose) -->
             <video id="camera" autoplay playsinline muted class="hidden"></video>
             <!-- grid ของจอผลลัพธ์ (โหมด Original / ภาพนิ่ง) -->
@@ -65,6 +67,10 @@
             <canvas id="pose-canvas" class="pose-canvas hidden"></canvas>
             <!-- โหมด Deep Learning: วาดภาพ + กล่อง detect ลง canvas นี้ -->
             <canvas id="det-canvas" class="pose-canvas hidden"></canvas>
+            <!-- โหมด Annotate: ตีกรอบ bounding box ทับภาพนิ่งปัจจุบัน (ดู ui/annotate-canvas.js) -->
+            <canvas id="ann-canvas" class="pose-canvas ann-canvas hidden"></canvas>
+            <div id="ann-toolbar" class="annotate-toolbar hidden"></div>
+            <div id="ann-empty-classes" class="annotate-empty hidden"></div>
             <div id="camera-error" class="camera-error hidden"></div>
             <!-- โหมดวิดีโอ: เล่นวิดีโอปกติในแหล่งภาพ + ปุ่มแยกเฟรม -->
             <div id="video-source" class="video-source hidden">
@@ -87,25 +93,43 @@
             </div>
             </div><!-- /stage-body -->
           </div>
+          <div class="lr-handle lr-handle-row" data-lr="stage" role="separator" aria-orientation="horizontal" aria-label="แบ่งพื้นที่จอผลลัพธ์กับ Pipeline" tabindex="0" title="ลากขึ้น-ลงเพื่อแบ่งพื้นที่ จอผลลัพธ์ / Pipeline · ดับเบิลคลิกเพื่อคืนค่าเดิม"></div>
           <!-- ถาดภาพที่แคปไว้ (โผล่เมื่อมีภาพแคป) -->
           <div id="capture-tray" class="capture-tray hidden"></div>
           <div class="graph-wrap">
-            <div class="canvas-label">PIPELINE CANVAS<span class="canvas-sub"></span></div>
-            <canvas id="graph-canvas"></canvas>
-            <div class="canvas-controls">
-              <button id="cv-undo" class="lvc-btn" title="ย้อนกลับ (Ctrl+Z)">↶</button>
-              <button id="cv-redo" class="lvc-btn" title="ทำซ้ำ (Ctrl+Y)">↷</button>
-              <button id="cv-zoom-in" class="lvc-btn" title="ซูมเข้า">＋</button>
-              <button id="cv-zoom-out" class="lvc-btn" title="ซูมออก">−</button>
-              <button id="cv-fit" class="lvc-btn" title="จัดมุมมองให้พอดี">⤢</button>
-              <button id="cv-delete" class="lvc-btn" title="ลบกล่องที่เลือก (Delete)">🗑</button>
+            <!-- หัวกระดาน 32px: ชื่อ + ปุ่มควบคุม (แทน label/toolbar ลอยที่เคยทับกล่อง) -->
+            <div class="canvas-header">
+              <span class="canvas-title">PIPELINE</span>
+              <div class="canvas-controls" role="toolbar" aria-label="ควบคุมกระดาน">
+                <button id="cv-undo" class="lvc-btn" title="ย้อนกลับ (Ctrl+Z)" aria-label="ย้อนกลับ">↶</button>
+                <button id="cv-redo" class="lvc-btn" title="ทำซ้ำ (Ctrl+Y)" aria-label="ทำซ้ำ">↷</button>
+                <span class="cc-sep" aria-hidden="true"></span>
+                <button id="cv-zoom-out" class="lvc-btn" title="ซูมออก" aria-label="ซูมออก">−</button>
+                <span id="cv-zoom-pct" class="cc-zoom mono" title="ระดับการซูมของกระดาน" aria-label="ระดับการซูม">100%</span>
+                <button id="cv-zoom-in" class="lvc-btn" title="ซูมเข้า" aria-label="ซูมเข้า">＋</button>
+                <span class="cc-sep" aria-hidden="true"></span>
+                <button id="cv-fit" class="lvc-btn lvc-text" title="จัดมุมมองให้เห็นทุกกล่องพอดี">⤢ Fit</button>
+                <button id="cv-view-menu" class="lvc-btn lvc-text" aria-haspopup="menu" aria-expanded="false" title="ปรับสัดส่วนจอผลลัพธ์/กระดาน และความกว้างแผงด้านข้าง (ทางเลือกแทนการลาก)">มุมมอง ▾</button>
+                <span class="cc-sep" aria-hidden="true"></span>
+                <button id="cv-delete" class="lvc-btn lvc-text" title="ลบกล่องที่เลือก (Delete)">🗑 Delete</button>
+              </div>
+            </div>
+            <!-- editor.resize() วัดขนาดจาก parent ของ canvas → ต้องเป็นกล่องนี้ (ไม่รวมหัว) -->
+            <div class="graph-canvas-host">
+              <canvas id="graph-canvas"></canvas>
             </div>
           </div>
         </main>
+        <div class="lr-handle lr-handle-col" data-lr="props" role="separator" aria-orientation="vertical" aria-controls="props-panel" aria-label="ปรับความกว้างแผงคุณสมบัติ" tabindex="0" title="ลากซ้าย-ขวาเพื่อปรับความกว้างแผงคุณสมบัติ · ดับเบิลคลิกเพื่อคืนค่าเดิม"></div>
 
         <!-- ขวา: รายละเอียด node ที่เลือก + พารามิเตอร์ -->
-        <aside class="panel panel-right">
-          <div class="props-header">PROPERTIES</div>
+        <aside id="props-panel" class="panel panel-right">
+          <!-- Version2ui: สลับ workflow โดยใช้ panel เดิมทั้งหมด ไม่สร้าง logic ซ้ำ -->
+          <div class="inspector-tabs" role="tablist" aria-label="Right panel workspace">
+            <button type="button" class="inspector-tab active" data-inspector-tab="inspect" role="tab" aria-label="ปรับค่า INSPECT" aria-selected="true"><span class="it-th">ปรับค่า</span><span class="it-en">INSPECT</span></button>
+            <button type="button" class="inspector-tab" data-inspector-tab="preview" role="tab" aria-label="พรีวิว PREVIEW" aria-selected="false"><span class="it-th">พรีวิว</span><span class="it-en">PREVIEW</span></button>
+            <button type="button" class="inspector-tab" data-inspector-tab="dataset" role="tab" aria-label="ชุดข้อมูล DATASET" aria-selected="false"><span class="it-th">ชุดข้อมูล</span><span class="it-en">DATASET</span></button>
+          </div>
           <div id="detail-panel" class="detail-content"></div>
 
           <!-- ผลลัพธ์ ณ Function ที่เลือก: คลิก node ใด เห็นภาพหลัง node นั้นทันที -->
@@ -144,6 +168,47 @@
             </div>
           </section>
 
+          <!-- คลาสของ dataset (Phase 1 ของระบบ annotation) — เพิ่ม/ลบ/แก้สี-ชื่อคลาส -->
+          <div class="dataset-workflow" aria-label="Dataset workflow">
+            <span class="dataset-workflow-step done"><b>1</b> Classes</span>
+            <span class="dataset-workflow-line"></span>
+            <span class="dataset-workflow-step active"><b>2</b> Split</span>
+            <span class="dataset-workflow-line"></span>
+            <span class="dataset-workflow-step"><b>3</b> Export</span>
+          </div>
+          <details class="side-section" id="class-panel-section">
+            <summary class="side-summary"><span class="dataset-step-number">1</span> CLASSES</summary>
+            <div id="class-panel"></div>
+          </details>
+
+          <!-- แบ่ง dataset เป็น train/valid/test (Phase 4 ของระบบ annotation) -->
+          <details class="side-section" id="split-panel-section">
+            <summary class="side-summary"><span class="dataset-step-number">2</span> DATASET SPLIT</summary>
+            <div id="split-panel"></div>
+          </details>
+
+          <section class="side-section dataset-export-section" id="dataset-export-section">
+            <div class="side-summary"><span class="dataset-step-number">3</span> EXPORT</div>
+            <!-- เลือก framework — เปลี่ยนทั้งรูปแบบ dataset (YOLO txt / COCO) และโค้ดเทรน -->
+            <div class="framework-toggle" id="framework-toggle" role="tablist" aria-label="Framework">
+              <button id="fw-yolo" type="button" class="fw-btn active">YOLO</button>
+              <button id="fw-rfdetr" type="button" class="fw-btn">RF-DETR</button>
+            </div>
+            <div class="framework-hint" id="framework-hint">YOLO — เร็ว เบา · dataset แบบ YOLO (.txt)</div>
+            <div class="dataset-code-export">
+              <div class="dataset-code-copy">
+                <strong id="export-code-title">Export Training Code</strong>
+                <span>สร้าง Training Notebook สำหรับ Google Colab</span>
+              </div>
+              <button id="export-yolo-code-btn" type="button" class="btn btn-yolo-ghost dataset-code-btn">
+                ⚙ Configure
+              </button>
+            </div>
+            <button id="export-yolo-zip-btn" type="button" class="btn dataset-export-btn">
+              ⇩ Export Dataset
+            </button>
+          </section>
+
           <!-- บันทึกการทำงาน (Design §18) — secondary, collapsible -->
           <details class="side-section" id="logs-section">
             <summary class="side-summary">บันทึกการทำงาน · LOGS
@@ -160,7 +225,7 @@
           <span id="status-fps">FPS —</span>
           <span id="status-cpu">CPU —</span>
           <span id="status-ram">RAM —</span>
-          <span id="status-gpu">GPU —</span>
+          <span id="status-gpu" class="hidden">GPU —</span>
         </div>
         <div class="status-right">
           <span class="status-ver" id="status-ver">Machine Vision by IRiSH</span>
@@ -168,10 +233,10 @@
       </footer>
     </div>
 
-    <input id="file-input" type="file" accept="image/*,video/*" multiple class="hidden" />
+    <input id="file-input" type="file" accept="image/*,video/*,.zip" multiple class="hidden" />
     <input id="folder-input" type="file" webkitdirectory directory multiple class="hidden" />
     <input id="model-input" type="file" accept=".onnx,.pt" class="hidden" />
-    <input id="labels-input" type="file" accept=".txt,.yaml,.yml,.names" class="hidden" />
+    <input id="labels-input" type="file" accept=".txt,.yaml,.yml,.names,.json" class="hidden" />
     <script type="module" src="./renderer/app.js"></script>
   </body>
 </html>

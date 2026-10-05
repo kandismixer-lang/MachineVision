@@ -2,7 +2,11 @@
 // การไหล: [แหล่งภาพ] → filter nodes → [ผลลัพธ์] — กราฟเปลี่ยนเมื่อไร ประมวลผลใหม่ทันที
 import { createGraphEditor } from "./graph/editor.js";
 import { createPalettePanel } from "./ui/palette-panel.js";
+import { initUpdatePopup } from "./ui/update-popup.js";
 import { createDetailPanel } from "./ui/detail-panel.js";
+import { createClassPanel } from "./ui/class-panel.js";
+import { createSplitPanel } from "./ui/split-panel.js";
+import { createAnnotateCanvas } from "./ui/annotate-canvas.js";
 import { createSourceBar } from "./ui/source-bar.js";
 import { createExportDialog } from "./ui/export-dialog.js";
 import { startCamera, listCameras } from "./camera.js";
@@ -14,6 +18,51 @@ import { showCodeDialog } from "./ui/code-dialog.js";
 import { openSettings } from "./ui/settings-dialog.js";
 import { openVideoFrames } from "./ui/video-frames-dialog.js";
 import { showTemplates } from "./ui/onboarding.js";
+import {
+  getAnnotations as datasetGetAnnotations,
+  getClasses as datasetGetClasses,
+  addClass as datasetAddClass,
+  setAnnotations as datasetSetAnnotations,
+  setSplit as datasetSetSplit,
+  getSplit as datasetGetSplit,
+  assignSplitsByRatio as datasetAssignSplitsByRatio,
+  onChange as datasetOnChange,
+} from "./dataset/annotations.js";
+import { exportYoloDataset } from "./dataset/export-yolo.js";
+import { importYoloDataset } from "./dataset/import-yolo.js";
+import { defaultAugmentConfig, normalizeAugmentConfig } from "./dataset/augment.js";
+import { createAugmentDialog } from "./ui/augment-dialog.js";
+import { initLayoutResize, initViewMenu } from "./ui/layout-resize.js";
+// ใบอนุญาตฟอนต์ (SIL OFL-1.1) ต้องไปกับตัวแอปที่ bundle ฟอนต์ IBM Plex — import เพื่อให้ Vite คัดลอกเข้า dist/assets (ไม่ได้ใช้ค่า)
+import "../assets/fonts/OFL.txt?url";
+import { statusText, sourceDetail, statusLevel, sourceChipLabel } from "./graph/layout-math.js";
+
+// framework เป้าหมายของ dataset/โค้ดเทรน: 'yolo' (YOLO txt) | 'rfdetr' (COCO json) — ตั้งจากหน้าต่าง Export
+let exportFramework = "yolo";
+export function getExportFramework() { return exportFramework; }
+export function setExportFramework(v) { exportFramework = v === "rfdetr" ? "rfdetr" : "yolo"; }
+
+// Offline augmentation config (แบบ Roboflow) — ใช้ตอน Export Dataset สร้างภาพก็อปที่แปลงแล้ว เฉพาะ train
+let datasetAugment = defaultAugmentConfig();
+export function getDatasetAugment() { return datasetAugment; }
+export function setDatasetAugment(v) { datasetAugment = normalizeAugmentConfig(v); }
+
+// UI version switch: เปลี่ยนเป็น "Version1ui" เพื่อย้อนกลับหน้าตาเดิมทันที
+// (DOM/worker/processing ใช้ชุดเดียวกันทั้งสองรุ่น)
+const UI_VERSION = "Version2ui";
+const isUiV2 = UI_VERSION === "Version2ui";
+document.body.classList.add(isUiV2 ? "ui-v2" : "ui-v1");
+document.body.dataset.uiVersion = UI_VERSION;
+initLayoutResize();
+
+// Version1ui ใช้ตำแหน่ง Export เดิมใต้รายการคลาส ส่วน Version2ui ใช้ workflow 3 ขั้น
+if (!isUiV2) {
+  const legacyClassSection = document.getElementById("class-panel-section");
+  const exportButton = document.getElementById("export-yolo-zip-btn");
+  const exportSection = document.getElementById("dataset-export-section");
+  if (legacyClassSection && exportButton) legacyClassSection.appendChild(exportButton);
+  exportSection?.remove();
+}
 
 const loadingEl = document.getElementById("loading");
 const loadingText = document.getElementById("loading-text");
@@ -27,6 +76,13 @@ const appEl = document.getElementById("app");
 const videoEl = document.getElementById("camera");
 const gridEl = document.getElementById("stage-grid");
 const statusEl = document.getElementById("status");
+// จุดสถานะหน้าข้อความ: เขียว = ปกติ · ส้ม = ยังไม่มี Display ต่อสาย · แดง = ข้อผิดพลาด (ตัดสินจากข้อความ — ดู statusLevel)
+// ข้อความถูกเขียนจากหลายที่ จึงใช้ MutationObserver แทนการไล่แก้ทุกจุด (ตั้ง data-level ไม่ทำให้ observer ยิงซ้ำ)
+if (statusEl) {
+  const syncStatusLevel = () => { statusEl.dataset.level = statusLevel(statusEl.textContent); };
+  new MutationObserver(syncStatusLevel).observe(statusEl, { childList: true, characterData: true, subtree: true });
+  syncStatusLevel();
+}
 const cameraError = document.getElementById("camera-error");
 const fileInput = document.getElementById("file-input");
 const folderInput = document.getElementById("folder-input");
@@ -44,6 +100,60 @@ const selectedPreviewMetrics = document.getElementById("selected-preview-metrics
 const selectedPreviewEmpty = document.getElementById("selected-preview-empty");
 const selectedPreviewName = document.getElementById("selected-preview-name");
 const selectedPreviewTabs = [...document.querySelectorAll("[data-preview-view]")];
+const inspectorTabs = [...document.querySelectorAll("[data-inspector-tab]")];
+let inspectorTab = "inspect";
+
+function setInspectorTab(next, { remember = true } = {}) {
+  if (!isUiV2 || !["inspect", "preview", "dataset"].includes(next)) return;
+  inspectorTab = next;
+  for (const tab of inspectorTabs) {
+    const active = tab.dataset.inspectorTab === next;
+    tab.classList.toggle("active", active);
+    tab.setAttribute("aria-selected", active ? "true" : "false");
+    tab.tabIndex = active ? 0 : -1;
+  }
+
+  const groups = {
+    inspect: [document.getElementById("detail-panel"), document.getElementById("camera-control-panel")],
+    preview: [document.getElementById("selected-preview-panel")],
+    dataset: [
+      document.querySelector(".dataset-workflow"),
+      document.getElementById("class-panel-section"),
+      document.getElementById("split-panel-section"),
+      document.getElementById("dataset-export-section"),
+    ],
+  };
+  for (const [name, elements] of Object.entries(groups)) {
+    for (const element of elements) element?.classList.toggle("v2-tab-hidden", name !== next);
+  }
+  if (next === "dataset") {
+    const classes = document.getElementById("class-panel-section");
+    const split = document.getElementById("split-panel-section");
+    if (classes) classes.open = true;
+    if (split) split.open = true;
+  }
+  if (remember) {
+    try { localStorage.setItem("mv-ui-v2-inspector-tab", next); } catch {}
+  }
+}
+
+if (isUiV2) {
+  for (const tab of inspectorTabs) {
+    tab.addEventListener("click", () => setInspectorTab(tab.dataset.inspectorTab));
+    tab.addEventListener("keydown", (event) => {
+      if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
+      event.preventDefault();
+      const index = inspectorTabs.indexOf(tab);
+      const direction = event.key === "ArrowRight" ? 1 : -1;
+      const next = inspectorTabs[(index + direction + inspectorTabs.length) % inspectorTabs.length];
+      setInspectorTab(next.dataset.inspectorTab);
+      next.focus();
+    });
+  }
+  let initialInspectorTab = "inspect";
+  try { initialInspectorTab = localStorage.getItem("mv-ui-v2-inspector-tab") || "inspect"; } catch {}
+  setInspectorTab(initialInspectorTab, { remember: false });
+}
 const SELECTED_PREVIEW_PREFIX = "__selected_function_preview__";
 let selectedPreviewGeneration = 0;
 let selectedPreviewView = "output";
@@ -76,6 +186,7 @@ const state = {
   cameras: [], // กล้องที่ต่ออยู่: [{ deviceId, label }]
   cameraId: null, // กล้องที่กำลังใช้ (deviceId)
   labels: COCO, // ชื่อคลาสของโมเดล DL (ค่าเริ่ม = COCO)
+  detConf: 0.25, // ความไวการจับของ YOLO Detect (0.05–0.90) — single source, ใช้ทั้งกล้องสดและภาพนิ่ง
   images: [], // ชุดภาพนำเข้า (batch): [{ canvas, w, h, name }]
   imageIndex: 0, // ภาพที่กำลังดูอยู่ในชุด
   procLevel: "balanced", // ระดับความละเอียดประมวลผล (ดู PROC_LEVELS)
@@ -191,10 +302,11 @@ worker.onmessage = (e) => {
   } else if (msg.type === "result") {
     procFrames++; // นับเฟรมที่ประมวลผลจริง → คำนวณ FPS
     drawResults(msg.results || []);
-    const changed = JSON.stringify(msg.notes) !== JSON.stringify(state.notes);
     state.notes = msg.notes || [];
     busy = false;
-    if (changed) renderDetail();
+    // U3: detail-panel อัปเดตตัวเลข/ข้อความในเซลล์เองแบบ in-place — rebuild ทั้งแผงเฉพาะตอน "โครง" เปลี่ยนจริง
+    // (เลิก JSON.stringify notes ทุกเฟรม ซึ่งทำให้ regionprops/Motion rebuild แผงทุกเฟรม — P-16)
+    if (!detailPanel.applyNotes(state.notes)) renderDetail();
     // มีค่าที่เลื่อนใหม่ระหว่าง worker ยังคำนวณอยู่ → ประมวลผลค่าล่าสุดทันที (โหมดภาพนิ่ง)
     if (pendingProcess && state.source === "image") {
       pendingProcess = false;
@@ -240,7 +352,10 @@ window.addEventListener("unhandledrejection", (e) => {
 });
 
 // ---------- graph editor ----------
+const cvZoomPctEl = document.getElementById("cv-zoom-pct");
 const editor = createGraphEditor(graphCanvasEl, {
+  // ป้าย % ซูมในหัวกระดาน (ล้อเมาส์ / ปุ่ม − ＋ / Fit) — editor แจ้งเฉพาะตอนข้อความเปลี่ยน
+  onZoomChange: (text) => { if (cvZoomPctEl) cvZoomPctEl.textContent = text; },
   onPipelineChange: (pipelines) => {
     state.pipelines = pipelines;
     // เก็บกวาด canvas ของกล่องผลลัพธ์ที่ถูกลบไปแล้ว
@@ -439,7 +554,7 @@ function renderSelectedPreviewAnalysis(img, width, height) {
     ctx.stroke();
   }
   ctx.fillStyle = "#71849d";
-  ctx.font = "10px ui-monospace, monospace";
+  ctx.font = "500 10px 'IBM Plex Mono', Consolas, monospace"; // ตัวเลขล้วน → Plex Mono (มี fallback)
   ctx.fillText("0", 10, h - 7);
   ctx.fillText("128", w / 2 - 9, h - 7);
   ctx.fillText("255", w - 30, h - 7);
@@ -485,6 +600,7 @@ const palettePanel = createPalettePanel(document.getElementById("palette-panel")
 });
 
 const detailPanel = createDetailPanel(document.getElementById("detail-panel"), {
+  onTemplates: () => openTemplates(), // ปุ่ม "เริ่มจากเทมเพลต" ใน empty state ของ Properties
   onParamChange: (key, value) => {
     if (state.selectedNode) {
       invalidateSelectedPreview();
@@ -495,6 +611,80 @@ const detailPanel = createDetailPanel(document.getElementById("detail-panel"), {
       }
     }
   },
+});
+
+// โหมดตีกรอบ (Annotate) ประกาศ (แบบ let) ไว้ก่อน — createClassPanel ด้านล่าง render() ทันทีตอนสร้าง
+// (เรียก getActiveIdx() ทันทีถ้าคลาสมีอยู่แล้ว) จึงต้องมีตัวแปรนี้พร้อมใช้ก่อนถูกเรียก ไม่งั้นชน TDZ ของ const
+let annotateCanvas;
+
+// แผงจัดการคลาสของ dataset — คุยกับ dataset/annotations.js ตรง ๆ
+// ไม่ผูกกับ state ของภาพที่เลือกอยู่ (จัดการคลาสได้ตลอด ไม่ว่าจะมีภาพหรือกำลังใช้กล้อง)
+// หมายเหตุความปลอดภัย: createClassPanel() เรียก render() ทันทีแบบ synchronous ตอนสร้าง — ถ้าผู้ใช้เคยเพิ่มคลาสไว้แล้ว
+// (persist ผ่าน localStorage) getActiveIdx() จะถูกเรียกจริงตั้งแต่บรรทัดนี้ ก่อนที่ annotateCanvas จะถูก assign ด้านล่าง
+// (ยังเป็น undefined อยู่) — ต้อง optional-chain กันแอปแครชตอนเปิดถ้ามีคลาสเก่าอยู่แล้ว
+const classPanel = createClassPanel(document.getElementById("class-panel"), {
+  onPick: (idx) => annotateCanvas?.setActiveClassIdx(idx),
+  getActiveIdx: () => (annotateCanvas?.isActive() ? annotateCanvas.getActiveClassIdx() : -1),
+  getClassCounts: () => datasetGetClasses().map((_, classIdx) =>
+    state.images.reduce((sum, im) => sum + (datasetGetAnnotations(im.name).some((a) => a.classIdx === classIdx) ? 1 : 0), 0)),
+  getDatasetCount: () => state.images.reduce((sum, im) => sum + (datasetGetAnnotations(im.name).length ? 1 : 0), 0),
+});
+
+// แผงแบ่ง dataset train/valid/test (Phase 4) — คุยกับ dataset/annotations.js ตรง ๆ เหมือนแผงคลาส
+// "ภาพที่มีกรอบ" เท่านั้นที่นับ/แบ่งได้ (ภาพเปล่า export ไม่ได้อยู่แล้ว — ดู exportYoloZip ด้านล่าง)
+let datasetSplitConfirmed = false;
+let datasetRevision = 0;
+let datasetZipRevision = -1;
+const splitPanel = createSplitPanel(document.getElementById("split-panel"), {
+  getAnnotatedKeys: () => state.images.map((im) => im.name).filter((name) => datasetGetAnnotations(name).length > 0),
+  getCurrentKey: () => currentImageKey(),
+  getClassCount: () => datasetGetClasses().length,
+  onApply: () => { datasetSplitConfirmed = true; },
+});
+datasetOnChange(() => { datasetRevision++; });
+
+function refreshDatasetPanels({ resetSplit = false } = {}) {
+  if (resetSplit) {
+    datasetSplitConfirmed = false;
+    datasetRevision++;
+  }
+  classPanel.render();
+  splitPanel.render();
+}
+
+// ใช้เฉพาะภาพนิ่ง (image mode); คุยกับ dataset/annotations.js ผ่านโมดูลนี้เท่านั้น
+annotateCanvas = createAnnotateCanvas({
+  canvas: document.getElementById("ann-canvas"),
+  toolbar: document.getElementById("ann-toolbar"),
+  emptyClassesEl: document.getElementById("ann-empty-classes"),
+  getImageKey: () => currentImageKey(),
+  getOriginalImage: async () => {
+    if (state.source !== "image" || state.images.length === 0) return null;
+    return ensureDecoded(state.imageIndex);
+  },
+  getFilteredCanvas: () => {
+    const dp = state.pipelines.find((d) => d.connected);
+    if (!dp) return null;
+    const oc = displayCanvases.get(dp.displayId);
+    return oc && oc.width ? oc : null;
+  },
+  focusClassPanel: () => {
+    setInspectorTab("dataset");
+    const sec = document.getElementById("class-panel-section");
+    if (sec) {
+      sec.open = true;
+      sec.scrollIntoView({ behavior: "smooth", block: "nearest" });
+    }
+  },
+  // ann-canvas แทนที่ stage-grid ชั่วคราวขณะอยู่ในโหมด (เหมือน pose/det canvas) — คืนค่าเสมอไม่ว่าจะออกทางไหน
+  onEnter: () => gridEl.classList.add("hidden"),
+  onExit: () => gridEl.classList.remove("hidden"),
+  setStatus: (msg) => { statusEl.textContent = msg; },
+  getImagePosition: () =>
+    state.source === "image" && state.images.length
+      ? { index: state.imageIndex, total: state.images.length }
+      : null,
+  onNavImage: (dir) => { if (state.images.length > 1) setImageIndex(state.imageIndex + dir); },
 });
 
 const sourceBar = createSourceBar(document.getElementById("source-bar"), {
@@ -516,6 +706,7 @@ const sourceBar = createSourceBar(document.getElementById("source-bar"), {
   },
   onExportCode: () => openExportCode(),
   onSaveImages: () => saveImages(),
+  exportBusy: () => exporting,
   isPaused: () => state.paused,
   onTogglePause: () => togglePause(),
   // ตัวนำทางชุดภาพ (batch): จำนวน + ชื่อ + Prev/Next
@@ -529,6 +720,7 @@ const sourceBar = createSourceBar(document.getElementById("source-bar"), {
   },
   onPrev: () => setImageIndex(state.imageIndex - 1),
   onNext: () => setImageIndex(state.imageIndex + 1),
+  onClearImages: () => clearImages(),
   onOpenSettings: () => openSettingsDialog(),
   getShortcut: (id) => state.keymap[id],
 });
@@ -619,16 +811,26 @@ async function ensureDecoded(i) {
   return im;
 }
 
+// คีย์ของภาพปัจจุบัน สำหรับผูก annotation ต่อภาพ (dataset/annotations.js) — key ด้วยชื่อไฟล์ (ดูเหตุผลใน annotations.js)
+// โหมดกล้อง/ไม่มีภาพนำเข้า = ไม่มี key (คืน null) — ให้ UI annotation ต่อภาพ (เฟสถัดไป) ปิดใช้งานเมื่อไม่มี key
+function currentImageKey() {
+  if (state.source !== "image" || state.images.length === 0) return null;
+  return state.images[state.imageIndex]?.name || null;
+}
+
 // เลื่อนดูภาพในชุด (วนรอบ) แล้ว re-process
 function setImageIndex(i) {
   if (state.images.length === 0) return;
   const n = state.images.length;
   state.imageIndex = ((i % n) + n) % n;
   state.source = "image";
+  detPendingArgs = null; // กัน detect ค้างจากภาพเดิมมารันทับภาพที่เพิ่งเปลี่ยนไป
   sourceBar.render();
   updateImageEmpty();
   statusEl.textContent = `ภาพ ${state.imageIndex + 1}/${n} — ${state.images[state.imageIndex].name}`;
   requestProcess();
+  annotateCanvas.onImageChanged(); // no-op ถ้าไม่ได้อยู่ในโหมดตีกรอบ — โหลดพื้นหลัง+กรอบของภาพใหม่
+  splitPanel.render(); // อัปเดตปุ่ม split ต่อภาพให้ตรงกับภาพที่เพิ่งเปลี่ยนไป
 }
 
 // export ผลลัพธ์แต่ละกล่อง (ที่ต่อสายครบ) เป็นไฟล์ PNG
@@ -639,8 +841,18 @@ function sanitizeName(s) {
 // ปุ่ม "โค้ด YOLO": เปิดหน้าต่างโค้ดเทรนอย่างเดียว (ไม่เซฟภาพ)
 const exportDialog = createExportDialog();
 function openExportCode() {
-  exportDialog.open(() => {}); // โชว์/ดาวน์โหลดโค้ดเท่านั้น — เซฟภาพแยกเป็นอีกปุ่ม
+  if (exporting) {
+    statusEl.textContent = "กำลัง Export อยู่ — รอให้เสร็จก่อนเปิด YOLO Code";
+    return;
+  }
+  const labeled = state.images.some((im) =>
+    datasetGetAnnotations(im.name).some((ann) => ann.type !== "line"));
+  exportDialog.open(() => {}, {
+    datasetReady: labeled && datasetGetClasses().length > 0,
+    zipReady: datasetZipRevision >= 0 && datasetZipRevision === datasetRevision,
+  }); // โชว์/ดาวน์โหลดโค้ดเท่านั้น — เซฟภาพแยกเป็นอีกปุ่ม
 }
+document.getElementById("export-yolo-code-btn")?.addEventListener("click", openExportCode);
 // ปุ่ม "เซฟภาพ": บันทึกภาพผลลัพธ์เป็น PNG (เลือกโฟลเดอร์)
 function saveImages() {
   const connected = state.pipelines.filter((d) => d.connected);
@@ -724,16 +936,45 @@ function imageToProcData(imgObj) {
   return ctx.getImageData(0, 0, d.w, d.h);
 }
 // ส่งภาพหนึ่งไป worker แล้วรอผลของทุกกล่อง (ไม่ยุ่งกับจอ live)
+// ใส่ timeout กันแขวนถาวรถ้า worker ค้าง/ตายแบบเงียบ (ไม่ throw error event แต่ก็ไม่ตอบกลับ) —
+// ถ้าครบเวลาแล้วยังไม่มีผล ให้คืน [] (ฝั่งเรียกจะ fallback ไปใช้ภาพต้นฉบับ) และเคลียร์ waiter ที่ค้างทิ้ง กัน leak
+const EXPORT_TIMEOUT_MS = 20000;
+let exportTimedOutCount = 0; // นับจำนวนครั้งที่ timeout ระหว่าง export ปัจจุบัน (ไว้แจ้งผู้ใช้)
 function processExport(imageData, pipelines) {
   return new Promise((resolve) => {
     const id = ++exportSeq;
-    exportWaiters.set(id, (msg) => resolve(msg.results || []));
+    let settled = false;
+    const timer = setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      exportWaiters.delete(id);
+      exportTimedOutCount++;
+      resolve([]);
+    }, EXPORT_TIMEOUT_MS);
+    exportWaiters.set(id, (msg) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      resolve(msg.results || []);
+    });
     const copy = new Uint8ClampedArray(imageData.data);
     worker.postMessage(
       { type: "export", reqId: id, width: imageData.width, height: imageData.height, buffer: copy.buffer, pipelines },
       [copy.buffer]
     );
   });
+}
+// เหมือน resultToPng แต่คืน canvas ตรง ๆ (ใช้ตอน export dataset YOLO ที่ต้องเข้ารหัส JPEG เอง ไม่ใช่ PNG)
+function resultToCanvas(result) {
+  const c = document.createElement("canvas");
+  c.width = result.width;
+  c.height = result.height;
+  c.getContext("2d").putImageData(
+    new ImageData(new Uint8ClampedArray(result.buffer), result.width, result.height),
+    0,
+    0
+  );
+  return c;
 }
 function resultToPng(result) {
   const c = document.createElement("canvas");
@@ -751,6 +992,15 @@ function pad(n, width) {
 }
 
 let exporting = false;
+// ระหว่าง export ใด ๆ (batch/YOLO) ทำงานอยู่ ปุ่ม export อื่นต้อง disable กันผู้ใช้กดซ้อน
+// (เช่นกด Save Picture ระหว่าง YOLO export ค้าง → เปิด dialog เลือกโฟลเดอร์ซ้อนแล้ว exportBatch return เงียบ สับสน)
+function setExportButtonsDisabled(disabled) {
+  const ids = ["save-picture-btn", "export-code-btn", "export-yolo-code-btn", "export-yolo-zip-btn"];
+  for (const id of ids) {
+    const el = document.getElementById(id);
+    if (el) el.disabled = disabled;
+  }
+}
 async function exportBatch(connected, dir) {
   if (exporting) return;
   const total = state.images.length;
@@ -758,6 +1008,7 @@ async function exportBatch(connected, dir) {
   const files = total * connected.length;
   if (!dir && files > 60 && !window.confirm(`จะบันทึกทั้งหมด ${files} ไฟล์ ดำเนินการต่อ?`)) return;
   exporting = true;
+  setExportButtonsDisabled(true);
   const width = String(total).length;
   let saved = 0;
   try {
@@ -781,8 +1032,190 @@ async function exportBatch(connected, dir) {
     statusEl.textContent = `Export เสร็จ ${saved} ไฟล์ จาก ${total} ภาพ${dir ? " (ลงโฟลเดอร์ที่เลือก)" : ""}`;
   } finally {
     exporting = false;
+    setExportButtonsDisabled(false);
   }
 }
+
+// Export dataset ที่ตีกรอบไว้ (dataset/annotations.js) เป็น .zip รูปแบบ YOLO — ดู dataset/export-yolo.js
+// ภาพที่ export = ตามโหมดพื้นหลังที่ผู้ใช้เลือกไว้ตอนตีกรอบ (bgMode: ต้นฉบับ/ผ่าน filter) — อ่านจาก annotateCanvas.getBgMode()
+// ภาพที่ไม่มีกรอบเลย ถูกข้ามไปอัตโนมัติ (นับแจ้งในสรุปผล) — YOLO เทรนภาพเปล่าไม่ได้ในเฟสนี้
+// Augmentation modal (แบบ Roboflow) — บังคับขึ้นตอน Export Dataset
+async function getAugSampleCanvas() {
+  const hasLabel = (name) => datasetGetAnnotations(name).some((a) => a.type !== "line");
+  const rec = state.images.find((im) => hasLabel(im.name)) || state.images[0];
+  if (!rec) return null;
+  if (rec.canvas) return rec.canvas;
+  const im = await loadImageFile(rec.file);
+  return im ? im.canvas : null;
+}
+// นับภาพต่อ split (เฉพาะภาพที่มี label เทรนได้) — ใช้โชว์ multiplier ในหน้า Create
+// ถ้ายังไม่ได้แบ่ง split จะจำลอง 70/20/10 (ตรงกับ auto-split ที่จะเกิดหลังปิด modal)
+// เพื่อไม่ให้เลขในหน้า Create หลอก (aug เกิดเฉพาะ train)
+function getAugCounts() {
+  const trainable = state.images.filter((im) =>
+    datasetGetAnnotations(im.name).some((a) => a.type !== "line"));
+  const alreadySplit = trainable.some((im) => datasetGetSplit(im.name) !== "train");
+  if (!datasetSplitConfirmed && !alreadySplit) {
+    const total = trainable.length;
+    const valid = Math.round(total * 0.2);
+    const test = Math.round(total * 0.1);
+    return { train: Math.max(0, total - valid - test), valid, test };
+  }
+  const c = { train: 0, valid: 0, test: 0 };
+  for (const im of trainable) {
+    const s = datasetGetSplit(im.name);
+    if (c[s] != null) c[s]++;
+  }
+  return c;
+}
+const augmentDialog = createAugmentDialog({ getSampleCanvas: getAugSampleCanvas, getCounts: getAugCounts });
+
+let datasetExportPending = false;
+async function exportYoloZip() {
+  if (datasetExportPending || exporting) return;
+  datasetExportPending = true;
+  try {
+    await runDatasetExport();
+  } finally {
+    datasetExportPending = false;
+  }
+}
+async function runDatasetExport() {
+  if (exporting) return;
+  if (state.source !== "image" || state.images.length === 0) {
+    statusEl.textContent = "โหมดตีกรอบใช้ได้เฉพาะภาพนิ่ง — นำเข้าภาพก่อน export dataset";
+    return;
+  }
+  if (datasetGetClasses().length === 0) {
+    statusEl.textContent = "ยังไม่มีคลาส — สร้างคลาสก่อน export dataset";
+    return;
+  }
+  const hasTrainableLabel = (name) => datasetGetAnnotations(name).some((ann) => ann.type !== "line");
+  const anyAnnotated = state.images.some((im) => hasTrainableLabel(im.name));
+  if (!anyAnnotated) {
+    statusEl.textContent = "ยังไม่มี Bounding Box หรือ Polygon สำหรับเทรน — Line ใช้ทำ annotation ได้แต่ Export YOLO ไม่ได้";
+    return;
+  }
+
+  const annotatedKeys = state.images.map((im) => im.name).filter(hasTrainableLabel);
+
+  // บังคับขั้นตอน Augmentation ก่อน (แบบ Roboflow) — Cancel = ยกเลิก export
+  const proceed = await augmentDialog.openForExport();
+  if (!proceed) {
+    statusEl.textContent = "ยกเลิกการ export dataset";
+    return;
+  }
+
+  let dir = null;
+  if (canExportFolder) {
+    dir = await window.mvExport.chooseDir();
+    if (!dir) {
+      statusEl.textContent = "ยกเลิกการ export dataset";
+      return;
+    }
+  }
+
+  // เลือกปลายทางสำเร็จแล้วค่อย auto-split เพื่อให้การกดยกเลิกไม่เปลี่ยน dataset
+  // และเคารพ 100/0/0 ที่ผู้ใช้กด Apply ใน session นี้
+  const alreadySplit = annotatedKeys.some((k) => datasetGetSplit(k) !== "train");
+  let autoSplitApplied = false;
+  if (!datasetSplitConfirmed && !alreadySplit && annotatedKeys.length > 0) {
+    datasetAssignSplitsByRatio(annotatedKeys, { train: 70, valid: 20, test: 10 });
+    splitPanel.render();
+    autoSplitApplied = true;
+  }
+
+  // โหมด 'filtered' ต้องมีกล่องผลลัพธ์ต่อสายครบอย่างน้อย 1 กล่อง ไม่งั้น fallback ไปใช้ภาพต้นฉบับแทน (แจ้งผู้ใช้)
+  const bgMode = annotateCanvas.getBgMode();
+  const filterDp = bgMode === "filtered" ? state.pipelines.find((d) => d.connected) : null;
+  if (bgMode === "filtered" && !filterDp) {
+    statusEl.textContent = "โหมดพื้นหลัง 'ผ่าน filter' แต่ยังไม่มีกล่องผลลัพธ์ที่ต่อสายครบ — จะใช้ภาพต้นฉบับแทน";
+  }
+
+  exporting = true;
+  setExportButtonsDisabled(true);
+  exportTimedOutCount = 0;
+  let fallbackToOriginal = 0; // นับภาพที่ควรเป็น 'filtered' แต่ worker error/timeout → ใช้ภาพต้นฉบับแทน (แจ้งผู้ใช้ตอนจบ)
+  const entries = state.images.map((rec) => ({
+    key: rec.name,
+    getCanvas: async () => {
+      // ภาพจากคลังแคป: ถอดไว้แล้ว (canvas อยู่ในหน่วยความจำ); ภาพจากไฟล์: ถอดทีละภาพ (memory คงที่)
+      const im = rec.canvas ? { canvas: rec.canvas, w: rec.w, h: rec.h } : await loadImageFile(rec.file);
+      if (!im) return null;
+      if (!filterDp) return im.canvas;
+      const data = imageToProcData(im);
+      const results = await processExport(data, state.pipelines);
+      const r = results.find((x) => x.displayId === filterDp.displayId);
+      if (!r) fallbackToOriginal++;
+      return r ? resultToCanvas(r) : im.canvas;
+    },
+  }));
+  const exportDatasetRevision = datasetRevision;
+
+  try {
+    const exporter = exportYoloDataset;
+    const { blob, stats } = await exporter(entries, {
+      augment: datasetAugment,
+      onProgress: (done, total) => {
+        statusEl.textContent = `กำลังแพ็ค dataset... ${done}/${total} ภาพ`;
+      },
+    });
+    const bytes = new Uint8Array(await blob.arrayBuffer());
+    if (dir) {
+      await window.mvExport.writeFile(dir, "dataset.zip", bytes);
+    } else {
+      downloadBlob(blob, "dataset.zip");
+    }
+    const kind = stats.framework === "rfdetr" ? "RF-DETR (COCO)" : stats.task === "segment" ? "YOLO segmentation" : "YOLO detect";
+    statusEl.textContent =
+      `Export ${kind} dataset เสร็จ — ` +
+      `${stats.exported} ภาพ (ข้าม ${stats.skipped} ภาพไม่มีกรอบ), ` +
+      `${stats.boxes} label, ${stats.classes} คลาส · ` +
+      (stats.augmented > 0 ? `+${stats.augmented} ภาพ augment · ` : "") +
+      `train ${stats.perSplit.train} / valid ${stats.perSplit.valid} / test ${stats.perSplit.test}` +
+      (stats.skippedLines > 0 ? ` · ⚠ ข้าม ${stats.skippedLines} เส้น (line เทรนไม่ได้)` : "") +
+      (dir ? " (ลงโฟลเดอร์ที่เลือก)" : "") +
+      (fallbackToOriginal > 0
+        ? ` · ⚠ ${fallbackToOriginal} ภาพใช้ต้นฉบับแทน (filter ไม่พร้อม)`
+        : "") +
+      (autoSplitApplied
+        ? " · แบ่งอัตโนมัติ 70/20/10 ให้แล้ว"
+        : stats.perSplit.valid === 0
+          ? " · ⚠ ยังไม่ได้แบ่ง valid — ใช้ train validate ไปก่อน (แนะนำกดปุ่ม 🔀 สุ่มแบ่ง)"
+          : "");
+    if (datasetRevision === exportDatasetRevision) datasetZipRevision = exportDatasetRevision;
+  } catch (err) {
+    statusEl.textContent = `✕ Export dataset ไม่สำเร็จ: ${err.message || err}`;
+  } finally {
+    exporting = false;
+    setExportButtonsDisabled(false);
+  }
+}
+
+const exportYoloZipBtn = document.getElementById("export-yolo-zip-btn");
+if (exportYoloZipBtn) exportYoloZipBtn.addEventListener("click", () => exportYoloZip());
+
+// popup แจ้งเตือนอัปเดต (เด้งเองตอนมีเวอร์ชันใหม่ + โชว์ release notes)
+initUpdatePopup();
+
+
+// ---- ปุ่มเลือก framework (YOLO / RF-DETR) ในแถบ EXPORT — คุมทั้งรูปแบบ dataset และโค้ดเทรน ----
+const fwYoloBtn = document.getElementById("fw-yolo");
+const fwRfdetrBtn = document.getElementById("fw-rfdetr");
+const fwHintEl = document.getElementById("framework-hint");
+function syncFrameworkUI() {
+  const fw = getExportFramework();
+  fwYoloBtn?.classList.toggle("active", fw === "yolo");
+  fwRfdetrBtn?.classList.toggle("active", fw === "rfdetr");
+  if (fwHintEl) {
+    fwHintEl.textContent = fw === "rfdetr"
+      ? "RF-DETR · ใช้ YOLO Dataset (.txt) ร่วมกับ YOLO / Roboflow"
+      : "YOLO — เร็ว เบา · dataset แบบ YOLO (.txt)";
+  }
+}
+fwYoloBtn?.addEventListener("click", () => { setExportFramework("yolo"); syncFrameworkUI(); });
+fwRfdetrBtn?.addEventListener("click", () => { setExportFramework("rfdetr"); syncFrameworkUI(); });
+syncFrameworkUI();
 
 const detailPanelEl = document.getElementById("detail-panel");
 
@@ -796,6 +1229,13 @@ function renderDetail() {
           : "ยังไม่ได้โหลดโมเดล — กดเลือกไฟล์ด้านล่าง",
       onBrowseModel: () => modelInput.click(),
       onBrowseLabels: () => labelsInput.click(),
+      getConf: () => state.detConf,
+      onConf: (v) => {
+        state.detConf = v;
+        // เลื่อนสไลเดอร์แล้วตรวจจับใหม่ทันทีบนภาพปัจจุบัน — กล้องสดจะใช้ค่าใหม่ในเฟรมถัดไปเองอยู่แล้ว
+        // (renderDLDisplays เรียกทุกเฟรม) ส่วนภาพนิ่งต้องสั่ง requestProcess() เพื่อรันซ้ำทันที
+        if (state.source === "image") requestProcess();
+      },
     });
     return;
   }
@@ -814,12 +1254,11 @@ function renderDetail() {
   // ถ้าผู้ใช้กำลังลาก slider อยู่ อย่า rebuild ทั้ง panel (จะหลุดมือ) —
   // อัปเดตเฉพาะข้อความรายงานผล (เช่น จำนวนวัตถุ) แทน
   const active = document.activeElement;
-  if (active && detailPanelEl.contains(active) && (active.tagName === "INPUT" || active.tagName === "SELECT")) {
-    const infoEls = detailPanelEl.querySelectorAll(".detail-note-info");
-    const infoNotes = notes.filter((n) => n.info);
-    infoEls.forEach((el, i) => {
-      if (infoNotes[i]) el.textContent = "📊 " + infoNotes[i].info;
-    });
+  // เฉพาะ INPUT (สไลเดอร์/ช่องตัวเลข) — SELECT "วิธี" ไม่นับ: หลังเลือกวิธีแผงสร้างใหม่แล้วคืนโฟกัสให้ select ตัวใหม่
+  // ถ้านับ SELECT ด้วย โครงใหม่ (เช่น ตารางค่าของวิธีใหม่) จะไม่ถูก rebuild เพราะ select ยังโฟกัสอยู่
+  if (active && detailPanelEl.contains(active) && active.tagName === "INPUT") {
+    // ข้อความ note-info อาจเป็น readout tile (หลาย span) — เขียนผ่าน detail-panel เพื่อไม่ทำโครง tile พัง
+    detailPanel.updateInfo(notes.filter((n) => n.info).map((n) => n.info));
     return;
   }
 
@@ -828,27 +1267,8 @@ function renderDetail() {
 }
 
 function updateStatus() {
-  const dps = state.pipelines;
-  const connected = dps.filter((d) => d.connected);
-  if (dps.length === 0) {
-    statusEl.textContent = "ยังไม่มีกล่องผลลัพธ์";
-    return;
-  }
-  if (connected.length === 0) {
-    statusEl.textContent =
-      "⚠ ยังไม่มีกล่องผลลัพธ์ใดต่อสายถึงแหล่งภาพ — ลากสายจากแหล่งภาพ ผ่าน filter ไปยังผลลัพธ์ให้ครบ";
-    return;
-  }
-  // อธิบายทีละกล่องผลลัพธ์ (แยกให้เห็นว่าแต่ละกล่องแสดงอะไร)
-  const parts = connected.map((d, i) => {
-    const chain = d.pipeline.length
-      ? d.pipeline.map((s) => s.id).join(" → ")
-      : "(ภาพต้นฉบับ)";
-    return `กล่อง ${i + 1}: ${chain}`;
-  });
-  const extra = dps.length - connected.length;
-  statusEl.textContent =
-    parts.join("   |   ") + (extra > 0 ? `   (อีก ${extra} กล่องยังไม่ต่อสาย)` : "");
+  // ตรรกะข้อความอยู่ใน graph/layout-math.js (เทสต์ได้) — ใช้ชื่อขั้นตอนที่คนอ่านรู้เรื่อง (stepLabel) ไม่ใช่ id ภายใน
+  statusEl.textContent = statusText(state.pipelines, stepLabel);
 }
 
 // ---------- init ----------
@@ -1026,13 +1446,16 @@ if (navigator.mediaDevices) {
 
 // ---------- source switching ----------
 async function setSource(s) {
+  if (s !== "image" && annotateCanvas.isActive()) annotateCanvas.exit(); // ออกจากภาพนิ่ง → ออกจากโหมดตีกรอบด้วย
   if (s !== "video" && videoURL) closeVideoSource(); // ออกจากโหมดวิดีโอ
   state.source = s;
   state.paused = false; // paused มีอายุเฉพาะ session ปัจจุบัน — สลับ source แล้วกลับมารันสด
   pendingProcess = false; // กัน pendingProcess ค้างข้ามโหมด (เช่น กล้อง→ภาพนิ่ง) ประมวลผลเกิน
+  detPendingArgs = null; // กัน detect ค้างจากภาพ/โหมดเดิมมารันทับภาพใหม่
   invalidateSelectedPreview();
   renderSelectedPreviewState(); // สลับ source → ถ้า preview ใช้ไม่ได้ ให้เคลียร์/โชว์ข้อความ ไม่ค้างภาพเก่า
   sourceBar.render();
+  splitPanel.render(); // สลับ source → currentImageKey() เปลี่ยน (เช่น image→camera คืน null) ต้องซ่อน/อัปเดตแถบ per-image ทันที กันปุ่ม Train/Valid/Test ค้าง key เดิม
 
   if (s === "camera") {
     cameraError.classList.add("hidden");
@@ -1127,21 +1550,20 @@ document.addEventListener("keydown", (e) => {
     palettePanel.focusSearch();
     return;
   }
-  const t = e.target;
-  if (t && (t.tagName === "INPUT" || t.tagName === "SELECT" || t.tagName === "TEXTAREA" || t.isContentEditable)) return;
-  // โฟกัสอยู่บนปุ่มแล้วกด Space/Enter → ปล่อยให้ปุ่มนั้นทำงานเนทีฟ (กันยิง action ซ้อน)
-  if (t && t.tagName === "BUTTON" && (e.key === " " || e.key === "Enter")) return;
-  // มี dialog เปิดอยู่ → ไม่จับคีย์ลัด แต่รองรับ ESC ปิด modal (Design §22)
+  // ESC ต้องปิด dialog ได้แม้ focus อยู่ใน input/select ของ dialog
   const overlays = document.querySelectorAll(".modal-overlay");
   if (overlays.length) {
     if (e.key === "Escape") {
       const top = overlays[overlays.length - 1];
-      // กดเฉพาะปุ่มปิด/ยกเลิกที่ติดป้าย data-close ชัดเจน (ห้ามเดา — กันไปโดนปุ่มยืนยันที่มี side-effect)
       const closeBtn = top.querySelector("[data-close]");
       if (closeBtn) { e.preventDefault(); closeBtn.click(); }
     }
     return;
   }
+  const t = e.target;
+  if (t && (t.tagName === "INPUT" || t.tagName === "SELECT" || t.tagName === "TEXTAREA" || t.isContentEditable)) return;
+  // โฟกัสอยู่บนปุ่มแล้วกด Space/Enter → ปล่อยให้ปุ่มนั้นทำงานเนทีฟ (กันยิง action ซ้อน)
+  if (t && t.tagName === "BUTTON" && (e.key === " " || e.key === "Enter")) return;
   // Undo / Redo (§6)
   if ((e.ctrlKey || e.metaKey) && (e.key === "z" || e.key === "Z")) {
     e.preventDefault();
@@ -1176,8 +1598,11 @@ function openSettingsDialog() {
 // empty state ของโหมดภาพนิ่ง: โชว์เมื่อ source=image และยังไม่มีภาพ (ไม่เด้ง dialog บังคับ)
 function updateImageEmpty() {
   const show = state.source === "image" && state.images.length === 0;
+  if (show && annotateCanvas.isActive()) annotateCanvas.exit(); // ภาพหมด (เช่นลบภาพสุดท้ายออก) — ออกจากโหมดตีกรอบ
   imageEmptyEl.classList.toggle("hidden", !show);
-  gridEl.classList.toggle("hidden", show);
+  // อยู่ในโหมด annotate ต้องคง grid ซ่อนไว้เสมอ — ไม่งั้น caption "Display N" ของจอผลลัพธ์
+  // จะโผล่ทับ toolbar (ann-canvas letterbox ไม่ครอบมุมบนซ้าย) เวลา updateImageEmpty ถูกเรียกซ้ำ
+  gridEl.classList.toggle("hidden", show || annotateCanvas.isActive());
 }
 document.getElementById("ie-single").addEventListener("click", () => fileInput.click());
 document.getElementById("ie-folder").addEventListener("click", () => folderInput.click());
@@ -1187,6 +1612,12 @@ const stageEl = document.querySelector(".stage");
 document.getElementById("lv-capture").addEventListener("click", () => captureFrame());
 document.getElementById("lv-original").addEventListener("click", () => setCameraMode("original"));
 document.getElementById("lv-pose").addEventListener("click", () => setCameraMode("pose"));
+const annotateBtn = document.getElementById("lv-annotate");
+annotateBtn.addEventListener("click", () => {
+  if (annotateBtn.disabled) return;
+  if (annotateCanvas.isActive()) annotateCanvas.exit();
+  else annotateCanvas.enter();
+});
 document.getElementById("lv-toggle").addEventListener("click", () => togglePause());
 const fullscreenBtn = document.getElementById("lv-fullscreen");
 function setStageFullscreen(on) {
@@ -1201,7 +1632,9 @@ document.addEventListener("keydown", (event) => {
 });
 document.getElementById("cv-zoom-in").addEventListener("click", () => editor.zoomIn());
 document.getElementById("cv-zoom-out").addEventListener("click", () => editor.zoomOut());
-document.getElementById("cv-fit").addEventListener("click", () => editor.resetView());
+document.getElementById("cv-fit").addEventListener("click", () => editor.fitView());
+// เมนู "มุมมอง ▾": preset สัดส่วนจอ + ความกว้างแผง (ทางเลือกที่ไม่ต้องลาก) · เปลี่ยนแล้ววัด canvas ใหม่ — resize() จะ fit ให้เองถ้ามุมมองยังไม่ถูกซูม/เลื่อน
+initViewMenu(document.getElementById("cv-view-menu"), { onChange: () => editor.resize() });
 document.getElementById("cv-delete").addEventListener("click", () => editor.deleteSelected());
 document.getElementById("cv-undo").addEventListener("click", () => editor.undo());
 document.getElementById("cv-redo").addEventListener("click", () => editor.redo());
@@ -1216,12 +1649,15 @@ const liResEl = document.getElementById("li-res");
 const liFpsRowEl = document.getElementById("li-fps-row");
 const liFpsEl = document.getElementById("li-fps");
 const liColorEl = document.getElementById("li-color");
+let lastSourceInfoSig = "";
 setInterval(() => {
   const mode = state.paused ? "หยุด"
     : state.source === "camera"
     ? (state.cameraMode === "pose" ? "Pose" : "สด")
     : state.source === "video" ? "วิดีโอ" : "ภาพนิ่ง";
   lvModeEl.textContent = mode;
+  // จุดเขียวเฉพาะภาพสด — ภาพนิ่ง/วิดีโอ/หยุด ใช้จุดเทา (ไม่พึ่งสีอย่างเดียว: ข้อความโหมดอยู่ข้างจุดเสมอ)
+  lvModeEl.parentElement.classList.toggle("is-live", mode === "สด" || mode === "Pose");
   const w = videoEl.videoWidth, h = videoEl.videoHeight;
   // FPS จริง (เฟรมที่ประมวลผลใน 1 วิ) + RAM (JS heap)
   const fps = state.paused ? 0 : procFrames;
@@ -1241,6 +1677,13 @@ setInterval(() => {
   poseBtn.classList.toggle("active", state.cameraMode === "pose");
   toggleBtn.textContent = state.paused ? "▶" : "⏸";
   toggleBtn.title = state.paused ? "เริ่มประมวลผลต่อ" : "หยุดการประมวลผลชั่วคราว";
+  // ปุ่มตีกรอบ: โผล่เฉพาะโหมดภาพนิ่ง — ปิดใช้งาน (พร้อม tooltip อธิบาย) ถ้ายังไม่มีภาพ
+  const isStillImage = state.source === "image";
+  annotateBtn.style.display = isStillImage ? "" : "none";
+  const noImages = state.images.length === 0;
+  annotateBtn.disabled = noImages;
+  annotateBtn.title = noImages ? "นำเข้าภาพก่อนถึงจะตีกรอบได้" : "ตีกรอบ (bounding box) สำหรับ dataset";
+  annotateBtn.classList.toggle("active", annotateCanvas.isActive());
   updatePerf(fps);
 
   // การ์ดข้อมูลภาพ: ไม่มีแหล่งภาพเลย → ซ่อนทั้งใบ
@@ -1250,16 +1693,37 @@ setInterval(() => {
   const hasSource = (isCamera && cameraStarted) || isVideo || hasStillImage;
   liInfoEl.classList.toggle("hidden", !hasSource);
   if (hasSource) {
-    liSourceEl.textContent = isCamera ? "กล้อง" : isVideo ? "วิดีโอ" : "ไฟล์ภาพ";
+    // ป้ายโหมดอยู่ที่ pill แล้ว → ช่องนี้บอกชื่อไฟล์ (บรรทัดเดียวในหัว VIEWER)
+    liSourceEl.textContent = isCamera ? "กล้อง" : isVideo ? (videoFile ? videoFile.name : "วิดีโอ")
+      : (state.images[state.imageIndex] ? state.images[state.imageIndex].name : "ไฟล์ภาพ");
     if (isCamera && w) liResEl.textContent = `${w}×${h}`;
     else if (hasStillImage) {
       const im = state.images[state.imageIndex];
-      liResEl.textContent = im ? `${im.w}×${im.h}` : "—";
+      liResEl.textContent = im && im.w && im.h ? `${im.w}×${im.h}` : "—";
     } else liResEl.textContent = "—";
     // FPS มีความหมายเฉพาะภาพสด (กล้อง/วิดีโอ) — ภาพนิ่งไม่มีเฟรมต่อวินาทีให้ดู
     liFpsRowEl.classList.toggle("hidden", !isCamera);
     if (isCamera) liFpsEl.textContent = state.paused ? "0" : String(fps);
     liColorEl.textContent = "สี (RGB)";
+  }
+  // Source node บนกระดานชื่อตามโหมดจริง (กล้อง/ภาพนิ่ง/วิดีโอ) — ส่งเฉพาะตอนค่าเปลี่ยน
+  {
+    let detail = "";
+    if (isCamera) {
+      const port = state.cameras.findIndex((c) => c.deviceId === state.cameraId) + 1;
+      detail = sourceDetail({ w, h, port });
+    } else if (isVideo) {
+      detail = sourceDetail({ name: videoFile && videoFile.name, w, h });
+    } else if (hasStillImage) {
+      const im = state.images[state.imageIndex];
+      detail = im ? sourceDetail({ name: im.name, w: im.w, h: im.h }) : "";
+    }
+    const kind = isCamera ? "camera" : isVideo ? "video" : "image";
+    const sig = kind + "|" + detail;
+    if (sig !== lastSourceInfoSig) {
+      lastSourceInfoSig = sig;
+      editor.setSourceInfo({ kind, detail });
+    }
   }
   renderCameraControl();
 }, 1000);
@@ -1270,7 +1734,10 @@ const statusCpuEl = document.getElementById("status-cpu");
 const statusRamEl = document.getElementById("status-ram");
 const statusGpuEl = document.getElementById("status-gpu");
 function updatePerf(fps) {
-  if (statusFpsEl) statusFpsEl.textContent = "FPS " + fps;
+  if (statusFpsEl) {
+    statusFpsEl.textContent = "FPS " + fps;
+    statusFpsEl.classList.toggle("hidden", state.source !== "camera"); // FPS มีความหมายเฉพาะภาพสด
+  }
   const mem = performance.memory;
   // ถ้าอยู่ในแอป Electron → ดึง CPU/RAM จริงจาก main process; ถ้าเปิดในเบราว์เซอร์ → JS heap
   if (window.mvMetrics && window.mvMetrics.available) {
@@ -1391,6 +1858,7 @@ async function saveCaptures() {
 function useCapturesAsSource() {
   if (state.captures.length === 0) return;
   state.images = state.captures.map((c) => ({ canvas: c.canvas, w: c.w, h: c.h, name: c.name + ".png" }));
+  refreshDatasetPanels({ resetSplit: true });
   decodeCache.clear();
   state.imageIndex = 0;
   setSource("image");
@@ -1528,6 +1996,7 @@ function renderTray() {
 
 // ---------- Deep Learning: YOLO detect ในกล่องผลลัพธ์ที่ต่อสายผ่านกล่อง DL ----------
 let detBusy = false;
+let detPendingArgs = null; // มีคำขอ detect ค้างระหว่าง detect รอบก่อนยังไม่เสร็จ (เช่น ลากสไลเดอร์ conf เร็ว ๆ) → เก็บ src/w/h ล่าสุดไว้รันซ้ำ
 let detBoxes = [];
 function connectedDLDisplays() {
   return state.pipelines.filter((d) => d.connected && d.dl);
@@ -1559,16 +2028,26 @@ function renderDLDisplays(src, w, h) {
     return;
   }
   drawDLCells(dls, src, w, h);
-  if (!detBusy) {
-    detBusy = true;
-    dlDetect(src, w, h, { labels: state.labels })
-      .then((bs) => {
-        detBoxes = bs;
-        drawDLCells(connectedDLDisplays(), src, w, h); // วาดกล่องใหม่ (สำคัญสำหรับภาพนิ่ง)
-      })
-      .catch(() => {})
-      .finally(() => { detBusy = false; });
+  if (detBusy) {
+    // detect รอบก่อนยังไม่เสร็จ → เก็บ args ล่าสุดไว้ รันซ้ำทันทีที่ว่าง (กันค้างที่ conf ค่ากลางทางตอนลากสไลเดอร์เร็ว)
+    detPendingArgs = { src, w, h };
+    return;
   }
+  detBusy = true;
+  dlDetect(src, w, h, { labels: state.labels, conf: state.detConf })
+    .then((bs) => {
+      detBoxes = bs;
+      drawDLCells(connectedDLDisplays(), src, w, h); // วาดกล่องใหม่ (สำคัญสำหรับภาพนิ่ง)
+    })
+    .catch((e) => console.error("[YOLO detect]", e))
+    .finally(() => {
+      detBusy = false;
+      if (detPendingArgs) {
+        const { src: ps, w: pw, h: ph } = detPendingArgs;
+        detPendingArgs = null;
+        renderDLDisplays(ps, pw, ph); // อ่าน state.detConf ล่าสุดตอนรันจริง จึงลงเอยที่ค่าสไลเดอร์ล่าสุดเสมอ
+      }
+    });
 }
 
 // เลือกไฟล์โมเดล .onnx → โหลด → เข้าโหมด detect ทันที
@@ -1601,12 +2080,16 @@ modelInput.addEventListener("change", async () => {
       bytes = new Uint8Array(await file.arrayBuffer());
     }
     statusEl.textContent = `กำลังโหลดโมเดล ${file.name} … (ครั้งแรกอาจใช้เวลาสักครู่)`;
-    const { inputSize, names } = await dlLoadModel(bytes);
-    state.labels = names && names.length ? names : COCO; // ชื่อคลาสจากตัวโมเดล ไม่งั้น COCO
+    const { inputSize, names, seg, kind: modelKind } = await dlLoadModel(bytes);
+    // ชื่อคลาส: จากในโมเดลก่อน (YOLO ฝังให้) · ถ้าไม่มี (เช่น RF-DETR/.onnx เปล่า) ใช้คลาสของ dataset
+    // ที่ผู้ใช้สร้างไว้ในแอป (เช่น "Defect") · สุดท้ายค่อย fallback COCO — จะได้ไม่ต้องโหลดไฟล์ชื่อคลาสเอง
+    const datasetNames = datasetGetClasses().map((c) => c.name);
+    state.labels = names && names.length ? names : datasetNames.length ? datasetNames : COCO;
     const hasDL = connectedDLDisplays().length > 0;
+    const kind = modelKind === "rfdetr" ? "RF-DETR" : seg ? "segmentation (วาด mask)" : "detection";
     statusEl.textContent = hasDL
-      ? `โมเดลพร้อม (${file.name}, ${state.labels.length} คลาส) — ตรวจจับในกล่องผลลัพธ์ที่ต่อสายผ่านกล่อง DL`
-      : `โมเดลพร้อม (${file.name}, ${state.labels.length} คลาส) — ต่อสาย แหล่งภาพ → กล่อง YOLO → ผลลัพธ์ เพื่อดู detection`;
+      ? `โมเดล ${kind} พร้อม (${file.name}, ${state.labels.length} คลาส) — ดูผลในกล่องผลลัพธ์ที่ต่อสายผ่านกล่อง DL`
+      : `โมเดล ${kind} พร้อม (${file.name}, ${state.labels.length} คลาส) — ต่อสาย แหล่งภาพ → กล่อง YOLO → ผลลัพธ์`;
     if (state.source === "image") requestProcess();
     if (state.selectedDL) renderDetail();
   } catch (err) {
@@ -1632,6 +2115,20 @@ labelsInput.addEventListener("change", async () => {
 
 // แยกชื่อคลาสจากไฟล์ classes.txt/.names (บรรทัดละคลาส) หรือ data.yaml (names:)
 function parseLabels(text, name) {
+  // COCO json (_annotations.coco.json ของ RF-DETR) — อ่านชื่อจาก categories
+  // ตัด supercategory id 0 ("objects"/"none") ทิ้ง แล้วเรียงตาม id → ชื่อคลาสตรง index โมเดล
+  if (/\.json$/i.test(name)) {
+    try {
+      const d = JSON.parse(text);
+      const cats = Array.isArray(d.categories) ? d.categories : [];
+      const real = cats
+        .filter((c) => c && typeof c.name === "string" && !(c.id === 0 && /^(objects|none|background)$/i.test(c.name)))
+        .sort((a, b) => (a.id || 0) - (b.id || 0));
+      return real.map((c) => c.name);
+    } catch {
+      return [];
+    }
+  }
   if (/\.ya?ml$/i.test(name)) {
     const idx = text.indexOf("names:");
     if (idx < 0) return [];
@@ -1680,34 +2177,113 @@ function loadImageFile(file) {
   });
 }
 
+// เคลียร์ภาพที่นำเข้าทั้งหมด (เริ่ม dataset ชุดใหม่) — ไม่ลบป้ายกำกับ/คลาส (เก็บใน localStorage ตาม key ชื่อภาพ)
+function clearImages() {
+  if (state.images.length === 0) return;
+  const n = state.images.length;
+  if (!window.confirm(`ลบภาพที่นำเข้าทั้งหมด ${n} ภาพ?\n(ป้ายกำกับ/คลาสไม่ถูกลบ — นำเข้าภาพชุดใหม่ได้เลย)`)) return;
+  if (annotateCanvas.isActive()) annotateCanvas.exit();
+  state.images = [];
+  decodeCache.clear();
+  state.imageIndex = 0;
+  updateImageEmpty();
+  sourceBar.render();
+  refreshDatasetPanels();
+  statusEl.textContent = `เคลียร์ภาพแล้ว (${n} ภาพ) — นำเข้า dataset ชุดใหม่ได้เลย`;
+}
+
 function importFiles(fileList) {
-  const files = Array.from(fileList || []).filter((f) => f.type.startsWith("image/"));
-  if (files.length === 0) {
+  const incoming = Array.from(fileList || []).filter((f) => f.type.startsWith("image/"));
+  if (incoming.length === 0) {
     statusEl.textContent = "ไม่พบไฟล์ภาพในสิ่งที่เลือก";
     return;
   }
-  files.sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true }));
-  // เก็บแค่ไฟล์ (lazy decode) — ไม่ถอดทั้งหมดพร้อมกัน
-  state.images = files.map((f) => ({ file: f, name: f.name }));
+  // นำเข้าแบบ "เพิ่ม" (ไม่ลบภาพเก่า) — กันชื่อซ้ำด้วยชื่อไฟล์ (เป็น key ของ annotation อยู่แล้ว)
+  const hadImages = state.images.length > 0;
+  const currentName = hadImages ? state.images[state.imageIndex]?.name : null;
+  const existing = new Set(state.images.map((im) => im.name));
+  const fresh = incoming.filter((f) => {
+    if (existing.has(f.name)) return false;
+    existing.add(f.name);
+    return true;
+  });
+  const dup = incoming.length - fresh.length;
+  if (fresh.length === 0) {
+    statusEl.textContent = `ภาพทั้ง ${incoming.length} มีอยู่แล้ว — ไม่ได้เพิ่ม`;
+    return;
+  }
+  // ต่อท้ายแล้วเรียงใหม่ทั้งชุด (index เปลี่ยน → ล้าง decodeCache ที่ key ด้วย index กันชี้ผิดภาพ)
+  state.images = state.images.concat(fresh.map((f) => ({ file: f, name: f.name })));
+  state.images.sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true }));
   decodeCache.clear();
-  state.imageIndex = 0;
+  // คงภาพที่กำลังดูไว้ (หา index ใหม่หลัง sort) — ถ้าเพิ่งเริ่ม ให้เริ่มภาพแรก
+  if (hadImages && currentName) {
+    const ni = state.images.findIndex((im) => im.name === currentName);
+    state.imageIndex = ni >= 0 ? ni : 0;
+  } else {
+    state.imageIndex = 0;
+  }
+  refreshDatasetPanels({ resetSplit: !hadImages }); // เพิ่มภาพ = ไม่รีเซ็ต split เดิม
   state.source = "image";
   gridEl.classList.remove("hidden");
   cameraError.classList.add("hidden");
   updateImageEmpty();
   sourceBar.render();
-  statusEl.textContent =
-    files.length > 1
-      ? `นำเข้า ${files.length} ภาพแล้ว — แสดงภาพ 1/${files.length} (กด ▶ ดูภาพถัดไป · Export = ประมวลผลทุกภาพ)`
-      : `นำเข้าภาพแล้ว — ${files[0].name}`;
+  const total = state.images.length;
+  statusEl.textContent = hadImages
+    ? `เพิ่ม ${fresh.length} ภาพ${dup ? ` (ข้ามซ้ำ ${dup})` : ""} — รวม ${total} ภาพ`
+    : total > 1
+      ? `นำเข้า ${total} ภาพแล้ว — แสดงภาพ 1/${total} (กด ▶ ดูภาพถัดไป · Export = ประมวลผลทุกภาพ)`
+      : `นำเข้าภาพแล้ว — ${state.images[0].name}`;
   requestProcess();
 }
 
 // นำเข้าภาพ/วิดีโอ (ปุ่มเดียว): ถ้าเลือกวิดีโอ → เด้ง popup แยกเฟรม, ถ้าเป็นภาพ → นำเข้าปกติ
 const isVideoFile = (f) => f.type.startsWith("video/") || /\.(mp4|mov|avi|mkv|webm|m4v|ts)$/i.test(f.name);
-fileInput.addEventListener("change", () => {
+let datasetImportPending = false;
+fileInput.addEventListener("change", async () => {
   const files = Array.from(fileInput.files || []);
   fileInput.value = "";
+  const archives = files.filter((f) => /\.zip$/i.test(f.name));
+  if (archives.length) {
+    if (files.length !== 1) {
+      statusEl.textContent = "นำเข้า Dataset ZIP ครั้งละหนึ่งไฟล์ แยกจากภาพ/วิดีโอ";
+      return;
+    }
+    if (exporting || datasetExportPending || datasetImportPending) return;
+    datasetImportPending = true;
+    try {
+      statusEl.textContent = "กำลังอ่าน YOLO / Roboflow Dataset…";
+      const imported = await importYoloDataset(archives[0]);
+      const names = datasetGetClasses().map((c) => c.name);
+      const mapping = imported.classNames.map((name) => {
+        let idx = names.indexOf(name);
+        if (idx < 0) { idx = datasetAddClass(name); names.push(name); }
+        return idx;
+      });
+      const used = new Set(state.images.map((im) => im.name.toLowerCase()));
+      const newFiles = imported.images.map((im) => {
+        const base = im.file.name.replace(/\.[^.]+$/, "");
+        const extension = im.file.name.slice(base.length);
+        let name = im.file.name, suffix = 2;
+        while (used.has(name.toLowerCase()) || datasetGetAnnotations(name).length) {
+          name = `${base}_import${suffix++}${extension}`;
+        }
+        used.add(name.toLowerCase());
+        datasetSetAnnotations(name, im.annotations.map((a) => ({ ...a, classIdx: mapping[a.classIdx] })));
+        datasetSetSplit(name, im.split);
+        return new File([im.file], name, { type: im.file.type });
+      });
+      importFiles(newFiles);
+      datasetSplitConfirmed = true;
+      refreshDatasetPanels();
+      statusEl.textContent = `นำเข้า YOLO / Roboflow ${newFiles.length} ภาพ พร้อม Label และ Split` +
+        (imported.warnings.length ? ` · ${imported.warnings.length} ภาพไม่มีไฟล์ Label` : "");
+    } catch (err) {
+      statusEl.textContent = `นำเข้า Dataset ไม่สำเร็จ: ${err.message || err}`;
+    } finally { datasetImportPending = false; }
+    return;
+  }
   const videos = files.filter(isVideoFile);
   const images = files.filter((f) => !isVideoFile(f));
   if (videos.length > 0) {
@@ -1773,6 +2349,7 @@ function openVideoFramesDialog(file) {
     if (frames.length === 0) { statusEl.textContent = "ไม่ได้เฟรมจากวิดีโอ (ลองไฟล์อื่น)"; return; }
     closeVideoSource(); // ปิดเครื่องเล่นวิดีโอ → เข้าโหมดภาพนิ่งด้วยเฟรมที่แยกได้
     state.images = frames; // frames มี .canvas อยู่แล้ว (ensureDecoded คืนตรง ๆ)
+    refreshDatasetPanels({ resetSplit: true });
     decodeCache.clear();
     state.imageIndex = 0;
     state.source = "image";
@@ -1833,6 +2410,21 @@ function pump() {
       sendFrame(ctx.getImageData(0, 0, w, h));
       renderDLDisplays(videoEl, nw, nh); // กล่องที่ต่อผ่าน DL → YOLO บนเฟรมสด
     }
+  } else if (state.source === "video" && sourceVideoEl.readyState >= 2 && !sourceVideoEl.paused && !sourceVideoEl.ended) {
+    // โหมดวิดีโอ: ป้อนเฟรมที่กำลังเล่นเข้า pipeline + DL detect เหมือนกล้องสด
+    const nw = sourceVideoEl.videoWidth;
+    const nh = sourceVideoEl.videoHeight;
+    if (nw > 0 && nh > 0) {
+      ensureGrid(connectedDisplayIds());
+      updateCaptions();
+      const { w, h } = processDims(nw, nh);
+      scratchCanvas.width = w;
+      scratchCanvas.height = h;
+      const ctx = scratchCanvas.getContext("2d", { willReadFrequently: true });
+      ctx.drawImage(sourceVideoEl, 0, 0, w, h);
+      sendFrame(ctx.getImageData(0, 0, w, h));
+      renderDLDisplays(sourceVideoEl, nw, nh); // กล่องที่ต่อผ่าน DL → detect บนเฟรมวิดีโอ
+    }
   }
   requestAnimationFrame(pump);
 }
@@ -1879,7 +2471,7 @@ function stepLabel(s) {
 function buildChain(cell, dp) {
   // key กันสร้างซ้ำ (จะได้ไม่ปิด dropdown ที่เปิดค้างอยู่โดยไม่จำเป็น)
   const key = dp.connected
-    ? "c|" + dp.pipeline.map((s) => s.nodeId + ":" + stepLabel(s) + ":" + JSON.stringify(stepRawParams(s))).join("|")
+    ? "c|" + sourceChipLabel(state.source) + "|" + dp.pipeline.map((s) => s.nodeId + ":" + stepLabel(s) + ":" + JSON.stringify(stepRawParams(s))).join("|")
     : "x";
   if (cell.chainKey === key) return;
   cell.chainKey = key;
@@ -1900,7 +2492,7 @@ function buildChain(cell, dp) {
   // ต้นทาง = ภาพ
   const src = document.createElement("span");
   src.className = "chain-src";
-  src.textContent = "ภาพ";
+  src.textContent = sourceChipLabel(state.source); // ภาพนิ่ง / กล้อง / วิดีโอ ตามโหมด (เดิมตายตัวว่า "ภาพ")
   chain.appendChild(src);
 
   dp.pipeline.forEach((s) => {
@@ -2053,6 +2645,9 @@ function drawResults(results) {
       cell.ctx.putImageData(img, 0, 0);
     }
   }
+  // มีผลลัพธ์ filter ใหม่เข้ามา — ถ้าอยู่ในโหมดตีกรอบและกำลังดูพื้นหลังแบบ filtered ให้รีเฟรชพื้นหลังทันที
+  // (กันเคส getFilteredCanvas() คืน null ตอนสลับไปแล้วแต่ pipeline เพิ่งประมวลผลเสร็จทีหลัง)
+  annotateCanvas?.onFilteredResult?.();
 }
 
 // ---------- helpers ----------

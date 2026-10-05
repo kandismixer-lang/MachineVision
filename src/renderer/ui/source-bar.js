@@ -10,9 +10,15 @@ export function createSourceBar(container, cb) {
 
     // 3 คลัสเตอร์: [แหล่งภาพ] | [นำเข้า] ...spacer... [ส่งออก/ตั้งค่า]
     // แต่ละคลัสเตอร์เป็น 2 แถว: caption (ป้ายกำกับเล็ก ๆ) + body (ปุ่ม/ควบคุมเดิม)
+    // แถบบนแถวเดียว: caption ถูกซ่อนด้วย CSS (ยังอ่านได้ด้วย screen reader) + role/aria-label ระบุกลุ่ม
+    const CLUSTER_LABELS = {
+      SOURCE: "แหล่งภาพ", MODE: "โหมดกล้อง", IMPORT: "นำเข้าภาพ", CONTROL: "ควบคุม", "EXPORT & SETTINGS": "บันทึกและตั้งค่า",
+    };
     function makeCluster(extraClass, caption) {
       const cluster = document.createElement("div");
       cluster.className = "tb-cluster " + extraClass;
+      cluster.setAttribute("role", "group");
+      cluster.setAttribute("aria-label", CLUSTER_LABELS[caption] || caption);
       const cap = document.createElement("div");
       cap.className = "tb-caption";
       cap.textContent = caption;
@@ -110,7 +116,7 @@ export function createSourceBar(container, cb) {
     const importBtn = document.createElement("button");
     importBtn.className = source === "image" ? "btn btn-primary" : "btn";
     importBtn.textContent = "＋ นำเข้าภาพ / วิดีโอ…";
-    importBtn.title = "เลือกภาพ หรือวิดีโอ (วิดีโอจะให้เลือกแยกเป็นเฟรม)";
+    importBtn.title = "เลือกภาพ วิดีโอ หรือ YOLO / Roboflow Dataset (.zip) พร้อม Label และ Split";
     importBtn.addEventListener("click", () => cb.onImportClick());
     importCluster.appendChild(importBtn);
 
@@ -155,6 +161,16 @@ export function createSourceBar(container, cb) {
       importCluster.appendChild(nav);
     }
 
+    // ปุ่มเคลียร์ภาพทั้งหมด — โผล่เมื่อมีภาพนำเข้าอยู่ (โหมดภาพนิ่ง) เพื่อเริ่ม dataset ใหม่
+    if (cb.onClearImages && source === "image" && batch && batch.total >= 1) {
+      const clearBtn = document.createElement("button");
+      clearBtn.className = "btn import-clear-btn";
+      clearBtn.textContent = "🗑 เคลียร์ภาพ";
+      clearBtn.title = "ลบภาพที่นำเข้าทั้งหมด (เริ่มนำเข้า dataset ชุดใหม่) — ป้ายกำกับ/คลาสไม่ถูกลบ";
+      clearBtn.addEventListener("click", () => cb.onClearImages());
+      importCluster.appendChild(clearBtn);
+    }
+
     // ปุ่ม Run / Pause การประมวลผลสด — เฉพาะโหมดกล้อง (มี live loop ให้หยุดจริง)
     if (cb.onTogglePause && source === "camera") {
       const paused = cb.isPaused ? cb.isPaused() : false;
@@ -169,17 +185,28 @@ export function createSourceBar(container, cb) {
     // ปุ่มเซฟภาพ (PNG) และปุ่มโค้ด YOLO — แยกกันชัดเจน (ghost — ปลายทาง)
     if (cb.onSaveImages) {
       const saveBtn = document.createElement("button");
-      saveBtn.className = "btn btn-green";
+      saveBtn.id = "save-picture-btn"; // ให้ app.js หาเจอเพื่อ disable ระหว่าง export อื่นทำงานอยู่
+      saveBtn.className = "btn btn-save"; // ปุ่มรอง (เดิมเขียวทึบ + ตัวขาว contrast ~2.1:1 ไม่ผ่าน)
       saveBtn.textContent = "💾 Save Picture";
       saveBtn.title = "บันทึกภาพผลลัพธ์แต่ละกล่องเป็นไฟล์ PNG (เลือกโฟลเดอร์)";
+      if (cb.exportBusy && cb.exportBusy()) {
+        saveBtn.disabled = true;
+        saveBtn.title = "กำลัง export อยู่ — รอให้เสร็จก่อน";
+      }
       saveBtn.addEventListener("click", () => cb.onSaveImages());
       outputCluster.appendChild(saveBtn);
     }
-    if (cb.onExportCode) {
+    // Version2ui ย้าย Export YOLO Code ไปอยู่ใน Dataset workflow เพื่อไม่ปนกับการเซฟภาพ
+    if (cb.onExportCode && !document.body.classList.contains("ui-v2")) {
       const codeBtn = document.createElement("button");
+      codeBtn.id = "export-code-btn";
       codeBtn.className = "btn btn-yolo-ghost"; // รอง (ghost ม่วง) — เด่นน้อยกว่า Save
       codeBtn.textContent = "⬇ Export Yolo";
       codeBtn.title = "ดาวน์โหลดโค้ดเทรน YOLO (.ipynb) ";
+      if (cb.exportBusy && cb.exportBusy()) {
+        codeBtn.disabled = true;
+        codeBtn.title = "กำลัง export อยู่ — รอให้เสร็จก่อน";
+      }
       codeBtn.addEventListener("click", () => cb.onExportCode());
       outputCluster.appendChild(codeBtn);
     }

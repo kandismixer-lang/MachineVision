@@ -35,6 +35,9 @@ for (let i = 0; i < 650; i++) {
 }
 const fixture = g.getImageData(0, 0, WIDTH, HEIGHT);
 
+// op เหล่านี้ตั้งใจเปลี่ยนขนาดภาพ (crop/resize/rotate) — เช็คขนาด/บัฟเฟอร์แบบเข้มงวดเท่าเดิมไม่ได้
+const SIZE_CHANGING_OPS = new Set(["crop", "resize", "rotate"]);
+
 const POSITIVE_NOTE = {
   otsu_threshold: /Otsu.*=\s*\d+/,
   watershed: /แยกได้\s+[1-9]\d*\s+วัตถุ/,
@@ -42,7 +45,20 @@ const POSITIVE_NOTE = {
   connected_components: /พบวัตถุ\s+[1-9]\d*\s+ชิ้น/,
   bounding_boxes: /ตรวจพบวัตถุ\s+[1-9]\d*\s+ชิ้น/,
   hough_circles: /พบวงกลม\s+[1-9]\d*\s+วง/,
+  // Region Growing (2026-09-30) — ต้องเลือกได้อย่างน้อย 1 พิกเซล (จุดเริ่มเองก็นับ) ถ้าได้ 0 แปลว่า
+  // floodFill ไม่ทำงาน · prewitt/roberts/log_edge ไม่มี note ที่ต้องคุม จึงไม่ต้องเพิ่ม
+  region_growing: /เลือกได้\s+[1-9]\d*\s+พิกเซล/,
+  // Motion (Tier 2, 18d) — smoke ส่งเฟรมเดียวและ step ไม่มี nodeId → ไม่มี ctx.state ทั้ง 3 op จึงต้องทำงาน
+  // เป็น "เฟรมแรก" เสมอ (PyrLK บนภาพที่ไม่มีมุมเลยจะขึ้นข้อความ "ไม่พบจุดเด่น" แทน — ยอมรับทั้งสองแบบ)
+  mog2: /เฟรมแรก/,
+  farneback_optical_flow: /เฟรมแรก/,
+  pyrlk_optical_flow: /เฟรมแรก|ไม่พบจุดเด่น/,
 };
+
+// op ที่ผลลัพธ์ "สีเดียวทั้งภาพ" ได้อย่างถูกต้องตามการออกแบบ — ยกเว้นเฉพาะด่าน nonConstant เท่านั้น
+// (mog2 เฟรมแรก: OpenCV บอกว่าทั้งภาพเป็น foreground ซึ่งใช้ไม่ได้ เราจึงบังคับ mask เป็นศูนย์ทั้งภาพ — V2)
+// Farneback/PyrLK ไม่อยู่ในรายการนี้: เฟรมแรกทั้งคู่คืน "ภาพต้นฉบับ" ซึ่งไม่ใช่สีเดียว จึงต้องผ่าน nonConstant ตามปกติ
+const CONSTANT_OK_OPS = new Set(["mog2"]);
 
 function paramsFor(opId, filterId) {
   const params = defaultParams(filterId);
@@ -70,7 +86,8 @@ function runCase(worker, opId, filterId) {
         if (!r || r.displayId !== opId) return; // response เก่าหรือผิด case — รอของ case ปัจจุบัน
         clearTimeout(timer);
         const pixels = r.buffer instanceof ArrayBuffer ? new Uint8ClampedArray(r.buffer) : null;
-        const expectedBytes = WIDTH * HEIGHT * 4;
+        const sizeChanges = SIZE_CHANGING_OPS.has(opId);
+        const expectedBytes = sizeChanges ? r.width * r.height * 4 : WIDTH * HEIGHT * 4;
         let min = 255, max = 0, hash = 2166136261;
         if (pixels) {
           // sample ทุก ~4K จุด: พอจับภาพว่าง/สีเดียวโดยไม่ทำให้ test ช้า
@@ -82,9 +99,10 @@ function runCase(worker, opId, filterId) {
         }
         const info = (event.data.notes || []).map((n) => n.info || "").filter(Boolean).join(" | ");
         const checks = {
-          dimensions: r.width === WIDTH && r.height === HEIGHT,
+          // crop/resize/rotate ตั้งใจเปลี่ยนขนาดภาพ (ไม่ผิด) — เช็คแค่ว่าได้ภาพจริงมา ไม่ใช่ 0x0
+          dimensions: sizeChanges ? (r.width > 0 && r.height > 0) : (r.width === WIDTH && r.height === HEIGHT),
           buffer: Boolean(pixels && pixels.byteLength === expectedBytes),
-          nonConstant: Boolean(pixels && max > min),
+          nonConstant: CONSTANT_OK_OPS.has(opId) ? true : Boolean(pixels && max > min),
           semanticNote: POSITIVE_NOTE[opId] ? POSITIVE_NOTE[opId].test(info) : true,
         };
         const ok = Object.values(checks).every(Boolean);
