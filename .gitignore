@@ -10,3 +10,11 @@ output/
 tmp/
 .pptx-build/
 __pycache__/
+
+# internal docs / notes / screenshots: keep local, not in repo
+/*.md
+!/README.md
+/*.pdf
+/*.png
+assets/
+.claude/
