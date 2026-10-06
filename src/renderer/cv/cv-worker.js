@@ -129,6 +129,16 @@ export function cloneValues(v) {
 // ของกล่อง 2 ภาพ) — รันซ้ำ = MOG2 เรียนรู้เร็วขึ้น 2 เท่า / optical flow เทียบเฟรมกับตัวเอง (ขยับ = 0 เสมอ)
 // เจ้าของ mat ใน memo คือ computeFrame (delete ใน finally) — ที่นี่ใช้แค่ clone ออกไป
 export function runPipeline(baseRGB, pipeline, nodeState, activeNodeIds, frameMemo = null) {
+  // note ทุกตัวผูกกับ "กล่อง" ไม่ใช่ชนิด filter: nodeId = step.nodeId (id ของ node ใน LiteGraph) — UI กรองด้วยตัวนี้
+  // (กล่องชนิดเดียวกัน 2 กล่องจึงไม่ปนกัน) · view = f.subtitle(params) = "วิธี" ที่ใช้ตอนคำนวณ (เฉพาะ filter ที่มี
+  // subtitle เช่นกล่องรวม) ให้ UI ทิ้ง note ของวิธีเก่าที่ตามมากับเฟรมค้างในท่อได้แบบแน่นอน ไม่ต้องเดาด้วยเวลา
+  // id เดิม (step.id) คงไว้เป็น additive — UI ไม่พึ่งแล้ว
+  const mkNote = (step, f, extra) => {
+    const n = { id: step.id, ...extra };
+    if (step.nodeId != null) n.nodeId = step.nodeId;
+    if (typeof f.subtitle === "function") n.view = f.subtitle(step.params || {});
+    return n;
+  };
   let current = baseRGB;
   let ownsCurrent = false; // baseRGB เป็นของ caller — ยังไม่ต้อง delete
   const notes = [];
@@ -147,7 +157,7 @@ export function runPipeline(baseRGB, pipeline, nodeState, activeNodeIds, frameMe
     if (needsOf(f, step.params || {}) === "gray" && input.channels() > 1) {
       converted = toGray(input);
       input = converted;
-      notes.push({ id: step.id, autoGray: true });
+      notes.push(mkNote(step, f, { autoGray: true }));
     }
 
     // ctx ให้ filter รายงานผลกลับ (เช่น จำนวนวัตถุที่พบ, ค่าเกณฑ์ Otsu) — Tier 2: เพิ่ม ctx.src2 (ภาพที่
@@ -161,7 +171,7 @@ export function runPipeline(baseRGB, pipeline, nodeState, activeNodeIds, frameMe
       const r2 = runPipeline(baseRGB, step.src2.pipeline || [], nodeState, activeNodeIds, frameMemo);
       src2Mat = r2.mat;
       src2Owned = true;
-      for (const n of r2.notes) notes.push({ ...n, id: `${step.id}(B):${n.id}` }); // prefix กันชนกับ note หลัก
+      for (const n of r2.notes) notes.push({ ...n, id: `${step.id}(B):${n.id}` }); // prefix กัน id ชนกับ note หลัก (UI ไม่พึ่ง id) — nodeId/view ของ node ต้นทางในสาย B คงไว้ตามเดิมจาก ...n
     }
     if (src2Mat) ctx.src2 = src2Mat;
 
@@ -208,8 +218,8 @@ export function runPipeline(baseRGB, pipeline, nodeState, activeNodeIds, frameMe
       if (ownsCurrent) current.delete();
       throw err;
     }
-    if (ctx.info) notes.push({ id: step.id, info: ctx.info });
-    if (ctx.values) notes.push({ id: step.id, values: ctx.values }); // Tier 2 §A.2 — ช่องผลลัพธ์ตัวเลข (inert จนกว่า UI จะอ่าน)
+    if (ctx.info) notes.push(mkNote(step, f, { info: ctx.info }));
+    if (ctx.values) notes.push(mkNote(step, f, { values: ctx.values })); // Tier 2 §A.2 — ช่องผลลัพธ์ตัวเลข (inert จนกว่า UI จะอ่าน)
 
     if (converted) converted.delete();
     if (src2Owned && src2Mat) src2Mat.delete(); // ctx.src2 เป็นแค่ view ที่ op ยืมใช้ชั่วคราว ไม่ใช่เจ้าของ

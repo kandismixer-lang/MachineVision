@@ -230,14 +230,17 @@ function rpRows(n, t) {
   ]);
 }
 // regionprops: จำนวนวัตถุกระพริบทุกเฟรม + ข้อความ info เปลี่ยนทุกเฟรม (เคสจริงที่ทำให้ P-16 เกิด)
+// [nodeId round] note จริงจาก worker พก view = f.subtitle(params) ของวิธีที่ใช้คำนวณ → ทดสอบด้วยรูปเดียวกัน
+const VIEW_RP = FILTERS.shape_analysis.subtitle({ mode: 'regionprops' });
+const VIEW_FC = FILTERS.shape_analysis.subtitle({ mode: 'find_contours' });
 function rpNotes(n, t = 0) {
   return [
-    { id: 'shape_analysis', info: `พบวัตถุ ${n} ชิ้น (เฟรม ${t})` },
-    { id: 'shape_analysis', values: { kind: 'table', columns: RP_COLS, rows: rpRows(n, t), total: n } },
+    { id: 'shape_analysis', view: VIEW_RP, info: `พบวัตถุ ${n} ชิ้น (เฟรม ${t})` },
+    { id: 'shape_analysis', view: VIEW_RP, values: { kind: 'table', columns: RP_COLS, rows: rpRows(n, t), total: n } },
   ];
 }
 // find_contours: ส่งแต่ info ไม่มี values เลย
-const fcNotes = (t = 0) => [{ id: 'shape_analysis', info: `พบเส้นขอบ ${3 + (t % 4)} เส้น` }];
+const fcNotes = (t = 0) => [{ id: 'shape_analysis', view: VIEW_FC, info: `พบเส้นขอบ ${3 + (t % 4)} เส้น` }];
 
 // Motion (Farneback): scalars 6 ตัวที่เปลี่ยนค่าทุกเฟรม + info เปลี่ยนทุกเฟรม
 function fbNotes(t) {
@@ -413,22 +416,21 @@ u3test('u3-06 guard: สลับ regionprops → find_contours แล้วย�
   assert.equal(ghost, 0, `ตารางของวิธีเก่าค้างอยู่ ${ghost} เฟรมหลังสลับวิธี`);
 });
 
-u3test('u3-07 guard (MAJOR): สลับวิธีพร้อมกับ filter หยุดส่ง note ทั้งหมด (mine.length === 0) → ห้ามมีตารางผีถาวร', () => {
+u3test('u3-07 guard (MAJOR): สลับวิธีพร้อมกับ filter หยุดส่ง note ทั้งหมด → เฟรมค้างของวิธีเก่าถูกทิ้งด้วย view tag + ห้ามมีตารางผีถาวร', () => {
   const rig = makeRig({ id: 'shape_analysis', params: { mode: 'regionprops', min_area: 50 } }, rpNotes(6, 0));
   rig.render();
   for (let t = 1; t <= 6; t++) rig.frame(rpNotes(6, t));
 
   clickMode(rig, 'find_contours');
-  rig.frame(rpNotes(6, 7)); // เฟรมค้างที่ยังพกค่าของวิธีเก่ามา
-  assert.ok(rig.has('dv'), 'เฟรมค้างควรยังสร้างบล็อกได้ (นี่คือจุดที่ผีเกิด)');
+  rig.frame(rpNotes(6, 7)); // เฟรมค้างที่ยังพกค่าของวิธีเก่ามา (view = regionprops) → ต้องถูกทิ้งทันที ไม่สร้างบล็อก
+  assert.equal(rig.has('dv'), false, 'note ของวิธีเก่าที่ view ไม่ตรงยังสร้างตารางผีได้');
 
   // ตั้งแต่นี้กล่องไม่ส่ง note ออกมาเลย (หลุดจากสายผลลัพธ์ / เฟรมหยุด / worker error)
   for (let t = 0; t < 120; t++) rig.frame([]);
-  assert.equal(rig.has('dv'), false,
-    'ตารางของวิธีเก่าค้างถาวร — guard mine.length === 0 หายไป (MAJOR regress)');
+  assert.equal(rig.has('dv'), false, 'ตารางของวิธีเก่าค้างถาวร (MAJOR regress)');
 });
 
-u3test('u3-08 guard ต้องไม่ over-fire: นอกช่วงเฝ้า note หายชั่วคราว (psnr ถอดสาย B) → บล็อกต้องอยู่ + ขึ้น "กำลังรอค่า"', () => {
+u3test('u3-08 guard ต้องไม่ over-fire: note หายชั่วคราว (psnr ถอดสาย B) → บล็อกต้องอยู่ + ขึ้น "กำลังรอค่า"', () => {
   const rig = makeRig({ id: 'psnr', params: {} }, psnrNotes());
   rig.render();
   for (let t = 0; t < 5; t++) rig.frame(psnrNotes());
@@ -437,21 +439,14 @@ u3test('u3-08 guard ต้องไม่ over-fire: นอกช่วงเฝ
   assert.ok(rig.container.one('dv').className.includes('is-waiting'), 'ไม่เข้าสถานะ "กำลังรอค่า"');
 });
 
-// ขอบเขตของ guard ที่โค้ดสัญญาไว้ (detail-panel.js §buildValuesBlock):
-//   "นอกช่วงเฝ้า (staleWatch === false) ยังห้ามทิ้งเด็ดขาด" — เพราะ note คีย์ด้วย filter id ไม่ใช่ node id
-// เทสต์นี้ตรึง "ขอบล่าง" ของ guard ไว้ ไม่ให้ใครขยาย guard จนกลืนเคสปกติ
-//
-// ช่องว่างที่ "จงใจไม่ล็อก" (บันทึกไว้ให้คนรุ่นหลัง): ภายในช่วงเฝ้าและได้ค่ามาแล้ว 1 ชุด (staleSeen === 1)
-// ถ้าเฟรมถัดไปไม่มี values เลย บล็อก + การตรึงของผู้ใช้จะถูกทิ้ง (harness เก่าของ qa เรียกเคสนี้ว่า G3)
-// ยังไม่ล็อกเป็นเทสต์เพราะ "ควรทิ้งหรือควรเก็บ" ขึ้นกับว่าวิธีที่เลือกอยู่ควรส่ง values หรือไม่ ซึ่ง note
-// ที่คีย์ด้วย filter id บอกไม่ได้ (งานติด nodeId ยังไม่ทำ) — ถ้าล็อกฝั่ง "ต้องเก็บ" จะขัดกับ u3-06/u3-07
-// ที่บังคับว่าตารางผีของวิธีเก่าต้องหาย ดูรายละเอียดในรายงานงานนี้
-u3test('u3-09 guard ต้องไม่ over-fire: พ้นช่วงเฝ้าแล้ว มีกล่องชนิดเดียวกันอีกกล่องรายงานแทน → บล็อก + การตรึงต้องอยู่ครบ', () => {
+// [nodeId round] เดิมเทสต์นี้ตรึงขอบเขตของ heuristic staleWatch — ตอนนี้ staleWatch ถูกถอดแล้ว (ใช้ view tag แทน)
+// ยังคงไว้เป็นเกราะ: note ที่ไม่พก view (ข้อความ info ล้วน) ห้ามทำให้บล็อก/การตรึงของผู้ใช้หาย (G3 หายไปด้วย)
+u3test('u3-09 guard ต้องไม่ over-fire: note ที่ไม่พก view (info ล้วน) มาแทน → บล็อก + การตรึงต้องอยู่ครบ', () => {
   const rig = makeRig({ id: 'shape_analysis', params: { mode: 'find_contours' } }, fcNotes(0));
   rig.render();
   rig.frame(fcNotes(1));
   clickMode(rig, 'regionprops');
-  // ต้องได้ค่าครบ 2 ชุด (staleSeen >= 2) ช่วงเฝ้าเฟรมค้างจึงปิด — throttle ทำให้ต้องเดินหลายเฟรม
+  // เดินหลายเฟรมให้ได้ค่าของ regionprops หลายชุด — throttle ทำให้ต้องเดินหลายเฟรม
   for (let t = 2; t <= 22; t++) rig.frame(rpNotes(9, t));
   rig.flush();
   assert.ok(rig.has('dv'), 'สลับมา regionprops แล้วต้องมีตาราง');

@@ -1045,7 +1045,7 @@ test('ipD-17. roi_polygon numbers: mean / std (population) equal integer brute-f
 });
 
 // ===================================================================
-// ipD-18 — สัญญา ctx.values (ทุกเส้นทางส่ง key/คอลัมน์ชุดเดียวกัน — detail-panel staleWatch พึ่งข้อนี้)
+// ipD-18 — สัญญา ctx.values (ทุกเส้นทางส่ง key/คอลัมน์ชุดเดียวกัน — เดิม detail-panel staleWatch พึ่งข้อนี้ — ถอดแล้ว (รอบ nodeId) ยังคงเป็นสัญญาที่ UI ใช้สร้าง signature ของแผง)
 // ===================================================================
 test('ipD-18. values contract: every path of all 3 ops sets ctx.values with the same keys / columns in the same order -- 0x0 (feret rows [] total 0; line_profile all 9 null; roi all null except roi_vertices = n), nothing found, A = B, small image, every view, 1x1 -- every feret row is columns.length long, a fresh object every call, and the 0x0 path returns a new 0x0 Mat with info "ภาพว่าง"', () => {
   const empty = new cv.Mat(), b = blobsGray(), black = gray(20, 10, () => 0), one = gray(1, 1, () => 255), s = sceneGray(80, 80), sm = sceneGray(30, 20), c = sceneRGB(80, 80);

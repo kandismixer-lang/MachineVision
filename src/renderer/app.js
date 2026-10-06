@@ -3,7 +3,7 @@
 import { createGraphEditor } from "./graph/editor.js";
 import { createPalettePanel } from "./ui/palette-panel.js";
 import { initUpdatePopup } from "./ui/update-popup.js";
-import { createDetailPanel } from "./ui/detail-panel.js";
+import { createDetailPanel, stepAndNotesOf, infoTextsOf } from "./ui/detail-panel.js";
 import { createClassPanel } from "./ui/class-panel.js";
 import { createSplitPanel } from "./ui/split-panel.js";
 import { createAnnotateCanvas } from "./ui/annotate-canvas.js";
@@ -362,6 +362,9 @@ const editor = createGraphEditor(graphCanvasEl, {
     }
     updateStatus();
     updateCaptions(); // ชื่อ/สายเปลี่ยน → อัปเดตหัวจอทันที
+    // วิธีของกล่องที่เลือกถูกเปลี่ยนนอกแผง (เมนู Properties ของ LiteGraph) → แผงถือ step เก่า ต้องสร้างใหม่
+    if (state.selectedNode && !state.selectedDL && !state.selectedDisplay &&
+        detailPanel.isViewStale(stepAndNotesOf(state.selectedNode, []).step)) renderDetail();
     requestProcess();
   },
   onSelect: (sel) => {
@@ -1246,7 +1249,9 @@ function renderDetail() {
     detailPanel.render(null, null);
     return;
   }
-  const notes = state.notes.filter((n) => n.id === sel.filterId);
+  // step พก nodeId + วิธีปัจจุบัน แล้วกรอง note ตามกล่องจริง (ไม่ใช่ตามชนิด filter) และทิ้ง note ของวิธีเก่า
+  // — ตรรกะอยู่ใน detail-panel.js (stepAndNotesOf) เพื่อให้เทสต์พฤติกรรมได้
+  const { step, notes } = stepAndNotesOf(sel, state.notes);
 
   // ถ้าผู้ใช้กำลังลาก slider อยู่ อย่า rebuild ทั้ง panel (จะหลุดมือ) —
   // อัปเดตเฉพาะข้อความรายงานผล (เช่น จำนวนวัตถุ) แทน
@@ -1255,11 +1260,10 @@ function renderDetail() {
   // ถ้านับ SELECT ด้วย โครงใหม่ (เช่น ตารางค่าของวิธีใหม่) จะไม่ถูก rebuild เพราะ select ยังโฟกัสอยู่
   if (active && detailPanelEl.contains(active) && active.tagName === "INPUT") {
     // ข้อความ note-info อาจเป็น readout tile (หลาย span) — เขียนผ่าน detail-panel เพื่อไม่ทำโครง tile พัง
-    detailPanel.updateInfo(notes.filter((n) => n.info).map((n) => n.info));
+    detailPanel.updateInfo(infoTextsOf(notes));
     return;
   }
 
-  const step = { id: sel.filterId, params: sel.getParams(), enabled: true };
   detailPanel.render(step, notes);
 }
 

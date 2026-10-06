@@ -372,7 +372,11 @@ test('tier2-8. Backward-compat: new 4-arg runPipeline produces byte-identical ou
   assert.equal(newResult.mat.rows, oldResult.mat.rows);
   assert.equal(newResult.mat.channels(), oldResult.mat.channels());
   assert.deepEqual(Array.from(newResult.mat.data), Array.from(oldResult.mat.data), 'pixel bytes must be identical');
-  assert.deepEqual(newResult.notes, oldResult.notes, 'notes array must be identical');
+  // [nodeId round] note ใหม่ได้ field เพิ่ม (nodeId/view — additive) → เทียบเนื้อหาเดิมโดยตัด 2 field นี้ออก
+  // และยืนยันว่าทุก note พก nodeId ของ step จริง (สัญญาใหม่)
+  const stripNew = (ns) => ns.map(({ nodeId, view, ...rest }) => rest);
+  assert.deepEqual(stripNew(newResult.notes), oldResult.notes, 'notes array must be identical (ยกเว้น nodeId/view ที่เพิ่มใหม่)');
+  for (const n of newResult.notes) assert.ok(pipeline.some((st) => st.nodeId === n.nodeId && st.id === n.id), 'note ทุกตัวต้องมี nodeId ของ step ที่สร้างมัน');
 
   oldResult.mat.delete();
   newResult.mat.delete();

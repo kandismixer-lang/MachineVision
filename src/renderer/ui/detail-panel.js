@@ -174,11 +174,44 @@ function viewIdOf(step) {
   return step.id + "|" + (f && typeof f.subtitle === "function" ? f.subtitle(step.params) : "");
 }
 
+// note ของ "กล่องนี้" ในมุมมองปัจจุบัน — ที่เดียวที่ตัดสินว่า note ไหนเป็นของแผง (app.js ก็ใช้ตัวเดียวกัน)
+//  · nodeId ต้องตรงกัน (worker ใส่ step.nodeId ให้ทุก note · กล่องชนิดเดียวกัน 2 กล่องจึงไม่ปนกัน · note สาย B
+//    ก็ใช้ nodeId ของ node ต้นทางในสาย B) — ไม่พึ่ง n.id (id ของ filter) อีก
+//  · note ที่พก view (= f.subtitle ตอนคำนวณ) ต้องตรงกับ subtitle ของมุมมองตอนนี้ ไม่งั้นเป็นของ "วิธีเก่า" ที่ตามมา
+//    กับเฟรมค้างในท่อ → ทิ้ง (แน่นอน ไม่ต้องจับเวลา · ถ้าเป็นเฟรมเดียวที่ส่งหลังสลับ ก็เป็นเฟรมของวิธีใหม่อยู่แล้ว)
+export function notesOfStep(step, notes) {
+  if (!step || !notes) return [];
+  const f = FILTERS[step.id];
+  const hasView = f && typeof f.subtitle === "function";
+  const view = hasView ? f.subtitle(step.params || {}) : undefined;
+  return notes.filter((n) => n.nodeId === step.nodeId && (view === undefined || n.view === undefined || n.view === view));
+}
+
+// สร้าง step + note ของกล่องที่เลือก จาก "sel" ของ editor ({ filterId, id, getParams() }) — ใช้ทั้งทาง render ใหม่
+// และทางลาก slider (updateInfo) ใน app.js จึงเป็นฟังก์ชัน pure ที่ทดสอบพฤติกรรมได้
+//  · params ต้องมาจาก sel.getParams() (วิธีปัจจุบันของกล่องรวม) ไม่งั้น view ตกเป็นค่า default แล้วไม่เห็นค่าเลย
+//  · nodeId = sel.id (id ของ node ใน LiteGraph = step.nodeId ที่ worker ใส่ใน note)
+export function stepAndNotesOf(sel, allNotes) {
+  const step = { id: sel.filterId, params: sel.getParams(), enabled: true, nodeId: sel.id };
+  return { step, notes: notesOfStep(step, allNotes) };
+}
+
+// ข้อความ info ของ note ที่กรองแล้ว (ใช้กับ updateInfo ตอนลาก slider)
+export function infoTextsOf(notes) {
+  return (notes || []).filter((n) => n.info).map((n) => n.info);
+}
+
 // cb: onParamChange(key, value)
 export function createDetailPanel(container, cb) {
   // step ล่าสุด (ใช้ re-render ตัวเองเมื่อเปลี่ยน "วิธี" ใน merged node)
   let curStep = null;
   let curNotes = null;
+  // true ระหว่างที่ "แผงนี้เอง" เป็นคนสั่งเปลี่ยน param — ใช้แยกจากการเปลี่ยนวิธีนอกแผง (isViewStale)
+  let ownChange = false;
+  function notifyParam(key, value) {
+    ownChange = true;
+    try { cb.onParamChange(key, value); } finally { ownChange = false; }
+  }
   // ตัวควบคุมของพารามิเตอร์ที่รับโฟกัสคืนหลัง re-render: "key|kind" -> element (kind: main = select/ปุ่ม segmented ที่เลือกอยู่/toggle · slider · box)
   let paramFocus = new Map();
   const pkeyOf = (key, kind) => key + "|" + kind;
@@ -206,17 +239,11 @@ export function createDetailPanel(container, cb) {
   let showAllCols = false;
   let lastValues = null;   // ค่าชุดล่าสุดที่เคยได้ของ filter นี้ (ใช้ตอน "รอค่า" / ปลดตรึง / เพิ่มแถว)
   let lastSeenAt = 0;
-  // เฝ้า "เฟรมค้างในท่อ" หลังผู้ใช้สลับวิธี — ติดเฉพาะช่วงสั้น ๆ ที่ค่าของวิธีเก่ายังตามมาได้เท่านั้น
-  // (worker มี busy guard ฝั่ง app.js → ค้างได้มากสุด 1 เฟรม และ response เรียงตามลำดับที่ส่ง)
-  let staleWatch = false;
-  let staleSeen = 0;
 
   // บันทึกค่าชุดใหม่ที่เพิ่งได้ — ที่เดียวที่เขียน lastValues/lastSeenAt
   function captureValues(v) {
     lastValues = v;
     lastSeenAt = Date.now();
-    // ค่าชุดที่ 2 หลังสลับวิธี = ของวิธีใหม่แน่นอน (ชุดแรกเท่านั้นที่อาจเป็นเฟรมค้าง) → เลิกเฝ้า
-    if (staleWatch && ++staleSeen >= 2) staleWatch = false;
   }
 
   // ทิ้งอ้างอิง DOM เก่าทั้งหมด + ล้าง timer ที่ค้าง — ต้องเรียกทุกครั้งที่ container.innerHTML = ""
@@ -231,27 +258,21 @@ export function createDetailPanel(container, cb) {
   }
 
   // re-render แผงหลังผู้ใช้กดปุ่มที่เปลี่ยนหน้าตาแผง (select "เลือกวิธี" / toggle)
-  // prevViewId = มุมมองก่อนกด — ถ้าเปลี่ยน "วิธี" จริง note ที่ค้างอยู่ใน curNotes เป็นของวิธีเก่าทั้งชุด
-  // (app.js อัปเดต state.notes เฉพาะตอน worker ส่งผลเฟรมถัดไป) เอามาสร้างบล็อก "ค่าที่วัดได้" ไม่ได้
-  // ไม่งั้นได้ตารางผีของวิธีเก่าค้างจอถาวร + ขึ้น "กำลังรอค่า" ที่ไม่มีวันมา → ทิ้งไป รอ note เฟรมถัดไป
-  function rerenderAfterParamChange(prevViewId) {
+  // ถ้าเปลี่ยน "วิธี" จริง note ที่ค้างอยู่ใน curNotes เป็นของวิธีเก่าทั้งชุด (app.js อัปเดต state.notes เฉพาะตอน
+  // worker ส่งผลเฟรมถัดไป) — render() กรองทิ้งด้วย view tag ให้เอง จึงไม่ได้ตารางผีของวิธีเก่า รอ note เฟรมถัดไป
+  function rerenderAfterParamChange() {
     if (!curStep) return;
-    const viewChanged = viewIdOf(curStep) !== prevViewId;
-    render(curStep, viewChanged ? null : curNotes);
-    // ตั้งหลัง render() เพราะ buildValuesBlock() ปลดการเฝ้าไว้ตอนรีเซ็ต viewId
-    // การ "เลือกกล่องอื่น" ไม่ต้องเฝ้า — เฟรมที่บินอยู่คำนวณ note ของกล่องนั้นด้วย params ปัจจุบันอยู่แล้ว
-    // มีแต่การ "เปลี่ยนค่า" เท่านั้นที่ทำให้ผลของเฟรมที่บินอยู่กลายเป็นของเก่า
-    if (viewChanged) { staleWatch = true; staleSeen = 0; }
+    // note ของวิธีเก่าถูกกรองทิ้งเองใน render() ด้วย view tag (notesOfStep) — ไม่ต้องแยกกรณี/ไม่ต้องเฝ้าเวลา
+    render(curStep, curNotes);
   }
 
   // เปลี่ยน "วิธี" (select/segmented) แล้วแผงถูกสร้างใหม่ — คืนโฟกัสให้ตัวควบคุมตัวใหม่ (คีย์บอร์ดไม่หลุดจากที่เดิม)
   function changeChoice(param, nextValue) {
-    const prevViewId = viewIdOf(curStep); // ต้องอ่านก่อนเปลี่ยนค่า — onParamChange แก้ params ของ node จริง
-    cb.onParamChange(param.key, nextValue);
+    notifyParam(param.key, nextValue);
     // re-render เพื่ออัปเดตตัวเลือกที่เลือก + สลับ sub-params (กรณี "เลือกวิธี")
     if (curStep) {
       curStep.params[param.key] = nextValue;
-      rerenderAfterParamChange(prevViewId); // render() คืนโฟกัสให้ตัวควบคุมตัวเดิมเอง (ดู restoreFocus)
+      rerenderAfterParamChange(); // render() คืนโฟกัสให้ตัวควบคุมตัวเดิมเอง (ดู restoreFocus)
     }
   }
 
@@ -307,6 +328,7 @@ export function createDetailPanel(container, cb) {
   // render(step, notes) — step = { id, params, enabled } หรือ null ถ้าไม่ได้เลือก
   // notes = รายการ note ของ filter นี้ เช่น [{autoGray:true},{info:"พบวัตถุ 3 ชิ้น"}]
   function render(step, notes) {
+    notes = step ? notesOfStep(step, notes) : null; // กรอง nodeId + view อีกชั้น (idempotent) — ผู้เรียกจะส่งดิบหรือกรองแล้วก็ได้
     curStep = step;
     curNotes = notes;
     resetValuesView();
@@ -603,9 +625,8 @@ export function createDetailPanel(container, cb) {
       row.appendChild(sw);
       row.addEventListener("click", () => {
         const nv = !row.classList.contains("on");
-        const prevViewId = viewIdOf(curStep);
-        cb.onParamChange(param.key, nv);
-        if (curStep) { curStep.params[param.key] = nv; rerenderAfterParamChange(prevViewId); }
+        notifyParam(param.key, nv);
+        if (curStep) { curStep.params[param.key] = nv; rerenderAfterParamChange(); }
       });
       wrap.appendChild(row);
       return wrap;
@@ -714,7 +735,7 @@ export function createDetailPanel(container, cb) {
       const d = Number(defVal);
       input.value = d;
       box.value = d;
-      cb.onParamChange(param.key, d);
+      notifyParam(param.key, d);
       box.focus(); // ปุ่ม ↺ ปิดตัวเองหลังคืนค่า — ย้ายโฟกัสไปช่องค่า ไม่ให้หลุดไป BODY
       syncReset();
     });
@@ -722,7 +743,7 @@ export function createDetailPanel(container, cb) {
     input.addEventListener("input", () => {
       const v = Number(input.value);
       box.value = v;
-      cb.onParamChange(param.key, v);
+      notifyParam(param.key, v);
       syncReset();
     });
     // พิมพ์เลขในช่อง → อัปเดตสไลเดอร์+ภาพ (clamp ค่าที่ส่งออก แต่ "ไม่แตะช่อง"
@@ -733,7 +754,7 @@ export function createDetailPanel(container, cb) {
       if (Number.isNaN(v)) return;
       const c = Math.min(param.max, Math.max(param.min, v));
       input.value = c;
-      cb.onParamChange(param.key, c);
+      notifyParam(param.key, c);
       syncReset();
     };
     box.addEventListener("input", applyTyped);
@@ -746,7 +767,7 @@ export function createDetailPanel(container, cb) {
       const v = Math.min(param.max, Math.max(param.min, Number(box.value)));
       box.value = v;
       input.value = v;
-      cb.onParamChange(param.key, v);
+      notifyParam(param.key, v);
       syncReset();
     };
     box.addEventListener("change", commit);
@@ -781,47 +802,15 @@ export function createDetailPanel(container, cb) {
       showAllCols = false;
       lastValues = null;
       lastSeenAt = 0;
-      staleWatch = false; // มุมมองใหม่ที่มาจากการเลือกกล่อง/re-render ภายนอก ไม่มีเฟรมค้างให้เฝ้า
-      staleSeen = 0;
     }
-    const mine = (notes || []).filter((n) => n.id === step.id);
+    const mine = notesOfStep(step, notes);
     builtSig = structSig(mine);
     panelInert = false; // ตั้งแต่นี้ applyNotes เทียบ signature ได้จริง
 
+    // ค่าที่ค้างจาก "วิธีเก่า" ไม่มีทางเข้ามาที่นี่ — notesOfStep ทิ้งด้วย view tag แล้ว (เดิมต้องเฝ้าเฟรมค้างด้วยเวลา)
+    // ไม่มี values เฟรมนี้ → คง lastValues ไว้ (op ที่มีสาขา early-return เช่น psnr/ssim ตอนยังไม่ต่อ "เข้า B")
     const v = firstValues(mine);
-    if (v) {
-      captureValues(v);
-    } else if (staleWatch) {
-      // เฉพาะ "ช่วงเฝ้าเฟรมค้าง" (เพิ่งสลับวิธี ยังไม่ครบ 2 ชุดข้อมูลยืนยัน) เท่านั้น: เฟรมนี้ไม่มี values
-      // ให้รายงาน — ไม่ว่าจะ "มี note ของกล่องนี้แล้วแต่ไม่มี values" (mine.length > 0) หรือ "ไม่มี note
-      // เลย" (mine.length === 0) ก็ต้องทิ้งเหมือนกัน เพราะในช่วงเฝ้านี้ทั้งสองแบบมีความหมายเดียวกัน:
-      // วิธีใหม่ไม่ส่งค่าให้รายงานในเฟรมนี้ → ค่าที่ค้างอยู่ใน lastValues (ถ้ามี) เป็นของวิธีเก่าที่ตามมา
-      // กับเฟรมค้างในท่อ ต้องทิ้ง ไม่งั้นกลายเป็นตารางผีค้างถาวร + ขึ้น "กำลังรอค่า" ที่ไม่มีวันมา — นี่คือ
-      // เคสที่เดิมเช็ค "mine.length > 0" พลาด: ถ้าหลังสลับวิธีแล้ว filter ไม่ส่ง note ออกมาอีกเลย
-      // (กล่องหลุดจากสายในจังหวะเดียวกัน / เฟรมหยุด / worker ส่ง error แทน) ผีจะไม่ถูกทิ้งและค้างอยู่ตลอดไป
-      // (ล้าง frozenSnap ด้วย ไม่งั้นค่าที่ตรึงไว้ของวิธีเก่าจะถูก paintNow ฟื้นกลับมา)
-      //
-      // ทำไมตัด "mine.length > 0" ออกจากเงื่อนไขได้อย่างปลอดภัย (ไม่ทำลายกรณีที่การเช็คนี้เคยตั้งใจกันไว้):
-      // captureValues() เป็นที่เดียวที่เขียน lastValues และตอนเข้าช่วงเฝ้า (l.561-571 ทำงานก่อนเสมอ)
-      // lastValues จะถูกรีเซ็ตเป็น null แล้ว ⇒ lastValues ที่ไม่ใช่ null ระหว่างช่วงเฝ้ามีทางเดียวคือมาจาก
-      // batch แรกหลังสลับที่เพิ่ง captureValues() ไป (staleSeen ยัง < 2 ไม่งั้น staleWatch ปิดไปแล้ว)
-      // ช่วงเฝ้านี้เปิดได้จากการสลับ mode ใน mergeGroup เท่านั้น (rerenderAfterParamChange, l.170-177) —
-      // ไล่ครบทุก op ที่ mergeGroup ใด ๆ เข้าถึงได้ ไม่มี op ไหน "บางเฟรมส่ง values บางเฟรมไม่ส่ง": ไม่ตั้ง
-      // ctx.values เลย (find_contours ฯลฯ) หรือตั้งทุกเฟรมแน่นอน (regionprops ตั้ง ctx.values แม้ total===0)
-      // ส่วน psnr/ssim/template_matching (3 op เดียวที่มีสาขา early-return ก่อนตั้ง ctx.values) เป็น
-      // standalone node ไม่มี mode ให้สลับ จึงเปิดช่วงเฝ้านี้ไม่ได้เลย — "ไม่มี note เลย" ในช่วงนี้จึงไม่ใช่
-      // สัญญาณ psnr/ssim ถอดสาย "เข้า B" เหมือนนอกช่วงนี้ แต่คือ "วิธีใหม่ไม่ส่ง values" เสมอ ⇒ ทิ้งถูกทั้ง 2 เคส
-      //
-      // นอกช่วงเฝ้านี้ (staleWatch === false) ยังห้ามทิ้งเด็ดขาดเหมือนเดิม — 2 คลาสที่การ์ดนี้เคยกันไว้ยังจริงอยู่:
-      //   · note คีย์ด้วย filter id ไม่ใช่ node id → note อาจมาจากกล่องชนิดเดียวกันอีกกล่องที่คนละวิธี
-      //   · op บางตัวมีสาขา early-return ที่ตั้งแต่ ctx.info (psnr/ssim/template_matching ตอนยังไม่ต่อ "เข้า B")
-      // ทั้งสองกรณีต้องคงบล็อกไว้ + เข้าสถานะ "รอค่า" ตามสเปก §5 และห้ามทำให้การตรึงของผู้ใช้หาย
-      staleWatch = false;
-      lastValues = null;
-      lastSeenAt = 0;
-      frozen = false;
-      frozenSnap = null;
-    }
+    if (v) captureValues(v);
     // ไม่มีค่าเฟรมนี้แต่เคยมี → คงบล็อกไว้ (กันแผงกระโดด) แล้วเข้าสถานะ "รอค่า"
     const shape = v || lastValues;
     if (!shape) return;
@@ -1124,7 +1113,7 @@ export function createDetailPanel(container, cb) {
   // คืน true = จัดการเองแล้ว / false = โครงเปลี่ยน caller ต้องเรียก renderDetail()
   function applyNotes(notes) {
     if (!curStep || panelInert) return true;
-    const mine = (notes || []).filter((n) => n.id === curStep.id);
+    const mine = notesOfStep(curStep, notes);
     // เก็บ "ตัวที่กรองแล้ว" — rerenderAfterParamChange() ภายในไฟล์นี้ส่ง curNotes ต่อเข้า render()
     // ซึ่งคาดหวัง note ของ filter นี้เท่านั้น
     curNotes = mine;
@@ -1186,5 +1175,11 @@ export function createDetailPanel(container, cb) {
     infoEls.forEach((el, i) => { if (infos[i] != null) setInfo(el, infos[i]); });
   }
 
-  return { render, renderDisplay, renderDL, applyNotes, updateInfo };
+  // วิธี (view) ของ step ที่แผงถือไม่ตรงกับ step ปัจจุบัน และไม่ใช่แผงนี้เองที่เปลี่ยน → ถูกเปลี่ยนจากนอกแผง
+  // (เช่นเมนู Properties ของ LiteGraph) — caller ต้อง renderDetail() ไม่งั้น note ใหม่ถูกกรองทิ้งหมดแล้วแผงไม่ rebuild
+  function isViewStale(step) {
+    return !ownChange && !!curStep && !!step && viewIdOf(curStep) !== viewIdOf(step);
+  }
+
+  return { render, renderDisplay, renderDL, applyNotes, updateInfo, isViewStale };
 }
