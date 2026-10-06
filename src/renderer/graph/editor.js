@@ -331,6 +331,9 @@ function registerNodeTypes(onGraphChange) {
   for (const [id, def] of Object.entries(FILTERS)) {
     const colors = GROUP_COLORS[def.group] || { title: "#475569", body: "#1e293b" };
     const tint = mixHex(colors.title, "#ffffff", 0.75); // สีตัวอักษรหมวดในตัวการ์ด (อ่านง่ายบนพื้นเข้ม)
+    // node 2 อินพุต: แถวพอร์ต "เข้า B" (slot ที่ 2) อยู่ระดับเดียวกับแถวเนื้อหา → เลื่อนแถวเนื้อหาลง 1 slot
+    // ไม่งั้น chip ไอคอน + ชื่อหมวดทับป้าย "เข้า B" และจุดต่อสาย
+    const rowShift = def.inputs === 2 ? 24 : 0; // = LiteGraph.NODE_SLOT_HEIGHT
     function FilterNode() {
       this.addInput("เข้า", "image");
       if (def.inputs === 2) this.addInput("เข้า B", "image"); // Tier 2 §A.1 — เฉพาะ op ที่รับภาพ 2 ใบ
@@ -341,7 +344,7 @@ function registerNodeTypes(onGraphChange) {
       this.color = mixHex(colors.title, NC_TITLE_BASE, 0.18);
       this.bgcolor = NC_BODY;
       this.boxcolor = colors.title; // จุดสีประจำหมวดที่หัว node
-      this.size = [NC_W, 56]; // แถวพอร์ต + แถวเนื้อหา (หมวด + ค่าหลัก)
+      this.size = [NC_W, 56 + rowShift]; // แถวพอร์ต + แถวเนื้อหา (หมวด + ค่าหลัก)
       this.__mvInPipeline = false;
     }
     // ชื่อบนกระดานตัดวงเล็บอังกฤษออก ให้สั้น ไม่ล้น (palette ยังใช้ชื่อเต็ม)
@@ -361,7 +364,7 @@ function registerNodeTypes(onGraphChange) {
       if (disabled) ctx.globalAlpha = 0.45;
       else if (!inFlow) ctx.globalAlpha = 0.7;
 
-      drawIconChip(ctx, accent, 10, 32, GROUP_ICON[this.filterId] || NC_ICON_FALLBACK);
+      drawIconChip(ctx, accent, 10, 32 + rowShift, GROUP_ICON[this.filterId] || NC_ICON_FALLBACK);
 
       // op/method ปัจจุบัน → ค่าหลัก (ถ้ามี) ชิดขวาแบบ mono
       const opId = currentOpId(this.filterId, this.properties);
@@ -384,12 +387,12 @@ function registerNodeTypes(onGraphChange) {
         valueW = ctx.measureText(v).width;
         ctx.textAlign = "right";
         ctx.fillStyle = "#a7b2c3";
-        ctx.fillText(v, W - 10, 47);
+        ctx.fillText(v, W - 10, 47 + rowShift);
       }
       ctx.textAlign = "left";
       ctx.font = NC_FONT_LINE1;
       ctx.fillStyle = tint;
-      ctx.fillText(ellipsisText(ctx, this, "l1", nameText, W - 38 - 10 - (valueW ? valueW + 8 : 0)), 38, 47);
+      ctx.fillText(ellipsisText(ctx, this, "l1", nameText, W - 38 - 10 - (valueW ? valueW + 8 : 0)), 38, 47 + rowShift);
       ctx.restore();
 
       if (disabled) drawDisabledMark(ctx, this);
