@@ -33,6 +33,14 @@ export const GROUP_ICON = {
   // ใหม่ (2026-09-30) — single-op group เหมือน watershed/grabcut (filterId = opId) ตรงกับ OP_ICON
   // ของ palette-panel.js · prewitt/roberts/log_edge อยู่ในกลุ่ม edge_detection เดิม จึงไม่มีบรรทัดที่นี่
   region_growing: "🪄",
+  // ใหม่ (2026-10-07) — กลุ่มระดับหมวด palette (1 หมวด = 1 node) · เช็คแล้วไม่ชนกับ glyph ใน GROUP_ICON/OP_ICON/src ใด ๆ
+  color_tools: "🖌",
+  enhance_tools: "🌟",
+  filter_denoise: "🧹",
+  segment_edge: "🧱",
+  analysis_detect: "🧮",
+  image_quality: "🏅",
+  motion: "🏃",
 };
 
 // ค่าตัวเลขที่การ์ดโชว์ ต้องเป็น "ค่าที่ op ใช้จริง" ไม่ใช่ค่าดิบใน properties — ไฟล์โปรเจกต์ที่แก้มือ

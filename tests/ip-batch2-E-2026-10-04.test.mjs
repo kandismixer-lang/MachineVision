@@ -994,7 +994,7 @@ const OPSTEP = (opId, extra = {}) => {
 test('ipE-20. (static structure) the 2 ops exist with needs any / gray (no "mode" param key), FILTERS is still 26, colour = color_inrange, kmeans_segment, white_balance, invert, slic (default color_inrange) and frequency = fft_magnitude, fft_filter, bandpass_notch (default fft_magnitude); defaultParams() = OPS defaults (prefixed); the merged nodes dispatch to the new ops; needsOf follows the mode; the legacy groups do not offer them; select options / defaults match the spec', () => {
   assert.deepEqual(NEW_OPS.map((id) => OPS[id] && OPS[id].needs), ['any', 'gray']);
   for (const id of NEW_OPS) for (const p of OPS[id].params) assert.notEqual(p.key, 'mode');
-  assert.equal(Object.keys(FILTERS).length, 26);
+  assert.equal(Object.keys(FILTERS).length, 33); // 26 + 7 กลุ่มระดับหมวด (2026-10-07)
   const modes = (f) => FILTERS[f].params.find((p) => p.key === 'mode').options.map((o) => o.value);
   assert.deepEqual(modes('colour'), ['color_inrange', 'kmeans_segment', 'white_balance', 'invert', 'slic']);
   assert.deepEqual(modes('frequency'), ['fft_magnitude', 'fft_filter', 'bandpass_notch']);
@@ -1035,7 +1035,8 @@ test('ipE-21. palette-panel.js: COLOR = grayscale, colorspace, channel_split, rg
   assert.deepEqual(TOOL_SECTIONS.find((s) => s.title === 'COLOR').ops, ['grayscale', 'colorspace', 'channel_split', 'rgb_adjust', 'color_inrange', 'kmeans_segment', 'slic', 'white_balance', 'invert']);
   assert.deepEqual(TOOL_SECTIONS.find((s) => s.title === 'FREQUENCY DOMAIN').ops, ['fft_magnitude', 'fft_filter', 'bandpass_notch']);
   for (const id of NEW_OPS) {
-    assert.equal(OP_TO_FILTER[id], HOST[id]);
+    // 2026-10-07: palette ชี้กลุ่มระดับหมวด (HOST = กลุ่มเดิม ยังคงไว้ใน FILTERS)
+    assert.equal(OP_TO_FILTER[id], { slic: 'color_tools', bandpass_notch: 'frequency' }[id]);
     assert.equal(TOOL_SECTIONS.filter((s) => s.ops.includes(id)).length, 1);
   }
   const src = readSrc('ui/palette-panel.js');

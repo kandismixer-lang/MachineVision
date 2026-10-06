@@ -1123,10 +1123,11 @@ test('ipe-29. wiring: every new op is on the palette, resolves to a registered f
     assert.ok(OPS[id].name && OPS[id].desc, `${id}: needs a name and a Thai description`);
     assert.equal(OPS[id].needs, 'gray', `${id}: must declare needs "gray"`);
   }
-  assert.equal(OP_TO_FILTER.prewitt_edge, 'edge_detection');
-  assert.equal(OP_TO_FILTER.roberts_edge, 'edge_detection');
-  assert.equal(OP_TO_FILTER.log_edge, 'edge_detection');
-  assert.equal(OP_TO_FILTER.region_growing, 'region_growing');
+  // 2026-10-07: palette ชี้กลุ่มระดับหมวด segment_edge (edge_detection/region_growing เดิมยังอยู่ใน FILTERS เป็น legacy)
+  assert.equal(OP_TO_FILTER.prewitt_edge, 'segment_edge');
+  assert.equal(OP_TO_FILTER.roberts_edge, 'segment_edge');
+  assert.equal(OP_TO_FILTER.log_edge, 'segment_edge');
+  assert.equal(OP_TO_FILTER.region_growing, 'segment_edge');
   assert.equal(FILTERS.region_growing.group, 'Segmentation');
   assert.equal(FILTERS.edge_detection.group, 'Edge Detection');
   assert.equal(GROUP_ICON.region_growing, '🪄');

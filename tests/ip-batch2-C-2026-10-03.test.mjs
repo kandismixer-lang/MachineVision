@@ -676,12 +676,13 @@ test('ipC-6. (static structure) the 3 ops exist in OPS (the OPS total is NOT pin
     assert.equal(OPS[id].needs, 'any', `${id}.needs`);
     for (const p of OPS[id].params) assert.notEqual(p.key, 'mode', `${id}: param key "mode" would collide with MODE_KEY`);
   }
-  assert.equal(Object.keys(FILTERS).length, 26, 'FILTERS must NOT grow');
+  assert.equal(Object.keys(FILTERS).length, 33, 'FILTERS = 26 + 7 category-level groups (2026-10-07)');
   const modes = (f) => FILTERS[f].params.find((p) => p.key === 'mode').options.map((o) => o.value);
   assert.deepEqual(modes('noise'), ['salt_pepper_noise', 'gaussian_noise']);
   assert.deepEqual(modes('blur'), ['median_blur', 'gaussian_blur', 'box_blur', 'bilateral', 'wiener_filter']);
   // ชิ้น D (2026-10-03) ต่อท้าย roi_polygon หลัง translate_shear → ปักแค่ 7 ตัวแรก (prefix) แบบเดียวกับ ipA-13 ของชิ้น B
-  assert.deepEqual(modes('geometry').slice(0, 7), ['crop', 'resize', 'rotate', 'flip', 'perspective_warp', 'undistort', 'translate_shear']);
+  // 2026-10-07: dropdown ของ geometry เรียงตาม palette (roi_polygon ต่อจาก crop) → เช็คลำดับสัมพัทธ์ของ 7 ตัวเดิมโดยไม่นับ roi_polygon
+  assert.deepEqual(modes('geometry').filter((m) => m !== 'roi_polygon').slice(0, 7), ['crop', 'resize', 'rotate', 'flip', 'perspective_warp', 'undistort', 'translate_shear']);
   for (const legacy of ['restoration', 'enhancement', 'segmentation']) for (const id of NEW_OPS) assert.ok(!modes(legacy).includes(id), `${id} must not enter legacy ${legacy}`);
   assert.equal(defaultParams('noise').mode, 'salt_pepper_noise');
   assert.equal(defaultParams('blur').mode, 'gaussian_blur');
@@ -785,7 +786,8 @@ test('ipC-9. palette-panel.js: FILTER & DENOISE = salt_pepper_noise, gaussian_no
   assert.equal(geo.indexOf('translate_shear'), geo.indexOf('undistort') + 1);
   assert.equal(geo.at(-1), 'translate_shear');
   for (const id of NEW_OPS) {
-    assert.equal(OP_TO_FILTER[id], HOST[id]);
+    // 2026-10-07: palette ชี้กลุ่มระดับหมวด — HOST (กลุ่มเดิม) ยังเป็นที่อยู่ legacy ของ op ใน FILTERS
+    assert.equal(OP_TO_FILTER[id], { gaussian_noise: 'filter_denoise', wiener_filter: 'filter_denoise', translate_shear: 'geometry' }[id]);
     assert.equal(TOOL_SECTIONS.filter((s) => s.ops.includes(id)).length, 1, `${id} must appear in exactly one section`);
   }
   const src = fs.readFileSync(new URL('../src/renderer/ui/palette-panel.js', import.meta.url), 'utf8');

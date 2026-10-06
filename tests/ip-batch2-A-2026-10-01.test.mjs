@@ -837,7 +837,7 @@ test('ipA-12b. morphology endpoints_branchpoints: the same "threshold at 127" co
 test('ipA-13. (static structure) OPS contains contrast_stretch/flatfield_correction and has >= 68 entries (later batches add more -- the exact total is no longer pinned) and FILTERS is unchanged at 26 -- both new ops are reachable through FILTERS.image_adjust\'s mode select, and the two new morphology modes are reachable through FILTERS.morphology\'s "op" select; defaultParams() matches the OPS defaults exactly', () => {
   for (const id of NEW_ENHANCE_OPS) assert.ok(OPS[id], `OPS must contain "${id}"`);
   assert.ok(Object.keys(OPS).length >= 68, `OPS must have at least 68 entries (66 + the 2 from batch A), got ${Object.keys(OPS).length}`);
-  assert.equal(Object.keys(FILTERS).length, 26, 'FILTERS must NOT grow -- both new ops live inside existing nodes');
+  assert.equal(Object.keys(FILTERS).length, 33, 'FILTERS = 26 legacy/host groups + 7 category-level groups (2026-10-07) -- both new ops still live inside existing nodes');
 
   const modeParam = FILTERS.image_adjust.params.find((p) => p.key === 'mode');
   const modeValues = modeParam.options.map((o) => o.value);
@@ -904,7 +904,7 @@ test('ipA-16. palette-panel.js: both new ENHANCE ops are listed in the ENHANCE s
   const enhance = TOOL_SECTIONS.find((s) => s.title === 'ENHANCE');
   assert.ok(enhance, 'ENHANCE section must exist');
   for (const id of NEW_ENHANCE_OPS) assert.ok(enhance.ops.includes(id), `ENHANCE section must list "${id}"`);
-  for (const id of NEW_ENHANCE_OPS) assert.equal(OP_TO_FILTER[id], 'image_adjust');
+  for (const id of NEW_ENHANCE_OPS) assert.equal(OP_TO_FILTER[id], 'enhance_tools'); // 2026-10-07: palette ชี้กลุ่มระดับหมวด (image_adjust เป็น legacy)
 
   const morph = TOOL_SECTIONS.find((s) => s.title === 'MORPHOLOGY');
   assert.deepEqual(morph.ops, ['morphology'], 'MORPHOLOGY section must stay a single node (sub-modes live in the dropdown, not the palette)');

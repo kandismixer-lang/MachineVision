@@ -411,6 +411,8 @@ test('p2-d4 palette DOM: เริ่มเปิดแค่ COLOR · คลิ
     // คลิกแถว = onAdd(filterId, opId)
     secs[1].all('tool-row')[0].click();
     assert.equal(added.length, 1);
+    // ต้องส่งทั้ง filterId (กลุ่มระดับหมวด) และ opId ที่คลิก — ไม่งั้น node ใหม่ไม่ preset วิธีตามที่คลิก
+    assert.deepEqual(added[0], ['enhance_tools', 'brightness_contrast']);
   }, store);
 });
 

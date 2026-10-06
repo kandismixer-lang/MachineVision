@@ -4,7 +4,7 @@
 // กลับไปหาแหล่งภาพ) และวาด preview ของสายตัวเองในกล่อง
 import { LiteGraph, LGraph, LGraphCanvas } from "litegraph.js";
 import "litegraph.js/css/litegraph.css";
-import { FILTERS, defaultParams, GROUP_COLORS } from "../filters/registry.js";
+import { FILTERS, defaultParams, GROUP_COLORS, migrateLegacyStep } from "../filters/registry.js";
 import { computeFit, findFreeSpot, canvasBufferSize, applyFit, isViewUntouched, planInsert, formatZoom } from "./layout-math.js";
 import { GROUP_ICON, OP_PRIMARY, currentOpId, localParamsFor, hexA } from "../filters/ui-meta.js";
 
@@ -891,7 +891,8 @@ export function createGraphEditor(canvasEl, cb) {
     let prev = src;
     let x = src.pos[0] + NC_W + 28;
     let lastX = null;
-    for (const step of steps) {
+    for (const raw of steps) {
+      const step = migrateLegacyStep(raw); // เทมเพลตเก่าอ้างกลุ่มเก่า (dropdown ไม่ครบหมวด) → ย้ายไปกลุ่มระดับหมวดที่ครบ
       const n = LiteGraph.createNode("filters/" + step.id);
       if (!n) continue; // กัน id ผิด (createNode คืน null)
       if (step.params) Object.assign(n.properties, step.params);

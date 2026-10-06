@@ -1096,12 +1096,13 @@ const OPSTEP = (opId, extra = {}) => {
 test('ipD-19. (static structure) the 3 ops exist with needs gray / any / any (no "mode" param key), FILTERS is still 26, shape_analysis keeps its 6 modes + default find_contours (+ legacy watershed) and appends feret, line_profile; geometry keeps its 7 modes + default resize and appends roi_polygon; defaultParams() = OPS defaults (prefixed); the merged nodes dispatch to the new ops; the legacy segmentation group does not offer them', () => {
   assert.deepEqual(NEW_OPS.map((id) => OPS[id] && OPS[id].needs), ['gray', 'any', 'any']);
   for (const id of NEW_OPS) for (const p of OPS[id].params) assert.notEqual(p.key, 'mode');
-  assert.equal(Object.keys(FILTERS).length, 26);
+  assert.equal(Object.keys(FILTERS).length, 33); // 26 + 7 กลุ่มระดับหมวด (2026-10-07)
   const modes = (f) => FILTERS[f].params.find((p) => p.key === 'mode').options.map((o) => o.value);
   assert.deepEqual(modes('shape_analysis').slice(0, 6), ['find_contours', 'connected_components', 'distance_transform', 'local_std_filter', 'local_entropy_filter', 'regionprops']);
   assert.deepEqual(modes('shape_analysis').filter((m) => NEW_OPS.includes(m)), ['feret', 'line_profile']);
   assert.equal(modes('shape_analysis').indexOf('feret'), modes('shape_analysis').indexOf('regionprops') + 1);
-  assert.deepEqual(modes('geometry'), ['crop', 'resize', 'rotate', 'flip', 'perspective_warp', 'undistort', 'translate_shear', 'roi_polygon']);
+  // 2026-10-07: เรียงตาม palette (roi_polygon ต่อจาก crop) — mode เก็บเป็นชื่อ op ไม่ใช่ index จึงไม่กระทบไฟล์เก่า
+  assert.deepEqual(modes('geometry'), ['crop', 'roi_polygon', 'resize', 'rotate', 'flip', 'perspective_warp', 'undistort', 'translate_shear']);
   assert.equal(defaultParams('shape_analysis').mode, 'find_contours');
   assert.equal(defaultParams('geometry').mode, 'resize');
   for (const legacy of ['segmentation', 'restoration', 'enhancement']) for (const id of NEW_OPS) assert.ok(!modes(legacy).includes(id));
@@ -1131,7 +1132,8 @@ test('ipD-20. palette-panel.js: ANALYSIS & DETECTION has feret, line_profile rig
   assert.deepEqual(ana.slice(ana.indexOf('regionprops'), ana.indexOf('regionprops') + 3), ['regionprops', 'feret', 'line_profile']);
   assert.deepEqual(TOOL_SECTIONS.find((s) => s.title === 'GEOMETRY').ops, ['crop', 'roi_polygon', 'resize', 'rotate', 'flip', 'perspective_warp', 'undistort', 'translate_shear']);
   for (const id of NEW_OPS) {
-    assert.equal(OP_TO_FILTER[id], HOST[id]);
+    // 2026-10-07: palette ชี้กลุ่มระดับหมวด (HOST = กลุ่มเดิม ยังคงไว้ใน FILTERS)
+    assert.equal(OP_TO_FILTER[id], { feret: 'analysis_detect', line_profile: 'analysis_detect', roi_polygon: 'geometry' }[id]);
     assert.equal(TOOL_SECTIONS.filter((s) => s.ops.includes(id)).length, 1);
   }
   const src = readSrc('ui/palette-panel.js');

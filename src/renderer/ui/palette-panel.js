@@ -17,19 +17,14 @@ export const TOOL_SECTIONS = [
   { title: "MOTION", ops: ["mog2", "farneback_optical_flow", "pyrlk_optical_flow"] },
 ];
 
+// 1 หมวดบน palette = 1 node (2026-10-07): 7 หมวดที่ op กระจายหลายกลุ่มเดิมชี้ไปกลุ่มระดับหมวด (dropdown "เลือกวิธี"
+// ครบทุก op ของหมวดตามลำดับ TOOL_SECTIONS) · กลุ่มเก่า (color_space, colour, blur, watershed, psnr, mog2 ...) ยังลงทะเบียนใน
+// FILTERS เป็น legacy แต่ไม่อยู่ในลิสต์นี้ → ไม่โผล่บน palette · tests/category-merge.test.mjs ล็อกให้ทุกหมวดตรงกัน
 const VISIBLE_FILTER_IDS = [
-  // "colour" มาก่อน "color_space" โดยตั้งใจ: ทั้งสองกลุ่มมี op ร่วมกัน (color_inrange, invert) — ให้
-  // color_space เขียนทับตอนหลัง คง mapping เดิม (group "Color Space") ไว้ ส่วน kmeans_segment ซึ่งมีแค่
-  // ใน "colour" เท่านั้น จะ resolve ผ่าน "colour" ได้ถูกต้อง (ไม่ถูกกลุ่มไหนเขียนทับ)
-  "colour", "color_space", "image_adjust", "sharpen", "geometry", "noise", "blur", "morphology",
-  "threshold", "edge_detection", "shape_analysis", "object_detection",
-  "watershed", "grabcut",
-  // ใหม่ (2026-09-30) — single-op node เหมือน watershed/grabcut (ไม่มี mode select)
-  "region_growing",
+  "color_tools", "enhance_tools", "geometry", "filter_denoise", "morphology",
+  "segment_edge", "analysis_detect",
   "frequency", "image_arithmetic",
-  "template_matching", "psnr", "ssim",
-  // Tier 2, 18d — Motion (op ละ 1 node ไม่มี mode select เหมือน psnr/ssim)
-  "mog2", "farneback_optical_flow", "pyrlk_optical_flow",
+  "template_matching", "image_quality", "motion",
 ];
 
 const OP_ICON = {

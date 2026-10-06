@@ -1611,13 +1611,15 @@ test('tier2d-W-1. wiring: the three Motion FILTERS entries exist with group "Mot
   }
 
   const stateful = Object.entries(FILTERS).filter(([, f]) => f.stateful !== undefined).map(([k]) => k);
-  assert.deepEqual(stateful.sort(), [...MOTION_IDS].sort(), 'only the Motion entries may declare `stateful`');
+  // 2026-10-07: + 'motion' = กลุ่มระดับหมวด palette ที่รวม 3 op (stateful:true ตามกัน)
+  assert.deepEqual(stateful.sort(), [...MOTION_IDS, 'motion'].sort(), 'only the Motion entries may declare `stateful`');
 });
 
 test('tier2d-W-2. filter-smoke wiring (static read): the three ops reach the smoke CASES through TOOL_SECTIONS and OP_TO_FILTER, they have POSITIVE_NOTE patterns, and only mog2 is exempt from the nonConstant check', async () => {
   const { OP_TO_FILTER } = await import('../src/renderer/ui/palette-panel.js');
   for (const id of MOTION_IDS) {
-    assert.equal(OP_TO_FILTER[id], id, `${id} must resolve to its own single-op FILTERS entry`);
+    // 2026-10-07: palette ชี้กลุ่มระดับหมวด 'motion' (mode select) — entry เดี่ยวเดิมยังอยู่ใน FILTERS เป็น legacy
+    assert.equal(OP_TO_FILTER[id], 'motion', `${id} must resolve to the category-level Motion node`);
   }
   const smokeSrc = fs.readFileSync(new URL('../src/renderer/filter-smoke.js', import.meta.url), 'utf8');
   assert.match(smokeSrc, /mog2:\s*\/เฟรมแรก\//);

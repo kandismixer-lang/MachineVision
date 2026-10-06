@@ -5928,9 +5928,10 @@ export const FILTERS = {
   colour: mergeGroup("Colour", "Colour",
     ["color_inrange", "kmeans_segment", "white_balance", "invert", "slic"], "color_inrange"),
 
-  // IP batch 2 ชิ้น D ต่อท้าย roi_polygon (บน palette แสดงต่อจาก crop — ลำดับ opIds ยังต่อท้ายเพื่อไม่ให้ mode เดิมขยับ)
+  // IP batch 2 ชิ้น D เพิ่ม roi_polygon · 2026-10-07: เรียง dropdown ให้ตรงกับ palette (roi_polygon ต่อจาก crop) —
+  // mode เก็บเป็นชื่อ op (ไม่ใช่ index) โปรเจกต์/เทมเพลตเก่าจึงไม่กระทบ · default "resize" เหมือนเดิม
   geometry: mergeGroup("Geometry", "Geometry",
-    ["crop", "resize", "rotate", "flip", "perspective_warp", "undistort", "translate_shear", "roi_polygon"], "resize"),
+    ["crop", "roi_polygon", "resize", "rotate", "flip", "perspective_warp", "undistort", "translate_shear"], "resize"),
 
   frequency: mergeGroup("Frequency Domain", "Frequency Domain",
     ["fft_magnitude", "fft_filter", "bandpass_notch"], "fft_magnitude"),
@@ -5960,6 +5961,35 @@ export const FILTERS = {
   mog2: { ...OPS.mog2, group: "Motion", stateful: true },
   farneback_optical_flow: { ...OPS.farneback_optical_flow, group: "Motion", stateful: true },
   pyrlk_optical_flow: { ...OPS.pyrlk_optical_flow, group: "Motion", stateful: true },
+
+  // ---- กลุ่มระดับ "หมวด palette" (2026-10-07) — 1 หมวดบน palette = 1 node ----
+  // op list ต้องเท่ากับ TOOL_SECTIONS ของหมวดนั้น "ตามลำดับ" (palette-panel.js) · default = op แรกของหมวด
+  // tests/category-merge.test.mjs ล็อกให้ตรงกัน — เพิ่ม op ใหม่ในหมวดแล้วต้องมาเพิ่มที่นี่ด้วย ไม่งั้นเทสต์ล้ม
+  // กลุ่มเก่าด้านบน (color_space, colour, image_adjust, ...) คงไว้เป็น legacy ให้เทมเพลต/โปรเจกต์เก่า แต่ palette ไม่ชี้มาแล้ว
+  color_tools: mergeGroup("Color", "Color",
+    ["grayscale", "colorspace", "channel_split", "rgb_adjust", "color_inrange", "kmeans_segment", "slic", "white_balance", "invert"], "grayscale"),
+
+  enhance_tools: mergeGroup("Enhance", "Enhance",
+    ["brightness_contrast", "gamma", "hist_equalize", "clahe", "contrast_stretch", "flatfield_correction", "unsharp", "laplacian_sharpen", "custom_kernel"], "brightness_contrast"),
+
+  filter_denoise: mergeGroup("Filter & Denoise", "Filter & Denoise",
+    ["salt_pepper_noise", "gaussian_noise", "median_blur", "gaussian_blur", "box_blur", "bilateral", "wiener_filter"], "salt_pepper_noise"),
+
+  segment_edge: mergeGroup("Segment & Edge", "Segmentation & Edge",
+    ["binary_threshold", "otsu_threshold", "adaptive_threshold", "multi_otsu_threshold", "canny", "sobel", "laplacian_edge", "scharr_edge", "prewitt_edge", "roberts_edge", "log_edge", "watershed", "grabcut", "region_growing"], "binary_threshold"),
+
+  analysis_detect: mergeGroup("Analyze / Detect", "Analysis & Detection",
+    ["find_contours", "connected_components", "distance_transform", "local_std_filter", "local_entropy_filter", "regionprops", "feret", "line_profile", "bounding_boxes", "hough_circles", "hough_lines", "harris_corners", "shi_tomasi_corners", "orb_keypoints", "akaze_keypoints", "fast_keypoints"], "find_contours"),
+
+  // name (ชื่อบนการ์ด node, ถูกตัดที่ ~92px) ของ 2 กลุ่มข้างบนย่อให้พอดี · group (ชิปหมวดใน detail-panel/สี) ยังเป็นชื่อเต็มเหมือนหมวด palette
+
+  // PSNR/SSIM รับภาพ 2 ใบ → inputs:2 (ช่อง "เข้า B" ใน editor.js)
+  image_quality: mergeGroup("Image Quality", "Image Quality",
+    ["psnr", "ssim"], "psnr", [], { inputs: 2 }),
+
+  // Motion ทั้งสามจำ state ข้ามเฟรม → stateful:true · เปลี่ยนวิธี = params เปลี่ยน → getNodeState (fingerprint) reset+dispose state เก่าเอง
+  motion: mergeGroup("Motion", "Motion",
+    ["mog2", "farneback_optical_flow", "pyrlk_optical_flow"], "mog2", [], { stateful: true }),
 
   // Legacy groups are kept for saved templates/projects created by earlier versions.
   // They are registered and executable, but the palette no longer exposes them.
@@ -6006,6 +6036,13 @@ export const GROUP_COLORS = {
   // Tier 2, 18d — fuchsia (hue≈292°) เช็คกับทุกสีด้านบนแล้ว: ใกล้สุดคือ Frequency Domain #c084fc (hue≈270°, ห่าง ~22°)
   // และ Edge Detection #ec4899 (hue≈330°, ห่าง ~38°) — อิ่มตัวกว่า #c084fc มากจึงแยกด้วยตาได้
   "Motion":            { title: "#d946ef", body: NODE_BODY }, // Fuchsia — สื่อ "การเคลื่อนไหว/ข้ามเฟรม"
+  // กลุ่มระดับหมวด palette (2026-10-07) — ใช้สีเดียวกับกลุ่มเก่าตัวแรกของหมวด ผู้ใช้เห็นสีหมวดเดิมไม่เปลี่ยน
+  // (Image Quality / Motion ใช้ชื่อกลุ่มเดิม จึงใช้สีเดิมทันที)
+  "Color":                { title: "#22d3ee", body: NODE_BODY }, // Cyan = Color Space
+  "Enhance":              { title: "#27c98a", body: NODE_BODY }, // Green = Image Adjust
+  "Filter & Denoise":     { title: "#38bdf8", body: NODE_BODY }, // Sky = Blur
+  "Segmentation & Edge":  { title: "#ff5577", body: NODE_BODY }, // Red/Pink = Segmentation
+  "Analysis & Detection": { title: "#a78bfa", body: NODE_BODY }, // Lavender = Shape Analysis
 };
 
 // ลำดับกลุ่มตามหัวข้อการสอน
@@ -6028,6 +6065,11 @@ export const GROUP_ORDER = [
   "Template Matching",
   "Image Quality",
   "Motion",
+  "Color",
+  "Enhance",
+  "Filter & Denoise",
+  "Segmentation & Edge",
+  "Analysis & Detection",
 ];
 
 // resolve needs รองรับทั้ง string และ function (merged filter)
@@ -6041,4 +6083,28 @@ export function defaultParams(filterId) {
   const p = {};
   for (const param of f.params) p[param.key] = param.default;
   return p;
+}
+
+// ---------- migration: step ของกลุ่มเก่า → กลุ่มระดับหมวด palette (2026-10-07) ----------
+// ใช้ตอนวางเทมเพลต (editor.applyTemplate) — เทมเพลต/โปรเจกต์เก่าอ้าง filter id ของกลุ่มเก่า (color_space,
+// segmentation, restoration, watershed, psnr ...) ซึ่ง dropdown ไม่ครบหมวด · ย้ายไปกลุ่มใหม่ที่ครบ
+// key ของ param เป็น "opId__key" เหมือนกันทุก mergeGroup จึงคัดลอกตรง ๆ ได้ · op เดี่ยวเก่า (ไม่มี mode) ต้องเติม prefix + mode
+export const CATEGORY_FILTER_IDS = ["color_tools", "enhance_tools", "filter_denoise", "segment_edge", "analysis_detect", "image_quality", "motion"];
+const OP_TO_CATEGORY_FILTER = {};
+for (const gid of CATEGORY_FILTER_IDS) {
+  for (const o of FILTERS[gid].params[0].options) OP_TO_CATEGORY_FILTER[o.value] = gid;
+}
+// คืน step ใหม่ (ไม่แก้ของเดิม) · step ที่ไม่ต้องย้าย (กลุ่มใหม่อยู่แล้ว / morphology / id ไม่รู้จัก / mode ไม่รู้จัก) → คืนตัวเดิม
+export function migrateLegacyStep(step) {
+  if (!step || !Object.hasOwn(FILTERS, step.id) || CATEGORY_FILTER_IDS.includes(step.id)) return step;
+  const params = step.params || {};
+  const merged = FILTERS[step.id].params.some((q) => q.key === MODE_KEY);
+  const op = merged ? (params[MODE_KEY] != null ? params[MODE_KEY] : defaultParams(step.id)[MODE_KEY]) : step.id;
+  if (!Object.hasOwn(OP_TO_CATEGORY_FILTER, op)) return step;
+  const out = { [MODE_KEY]: op };
+  for (const k of Object.keys(params)) {
+    if (k === MODE_KEY) continue;
+    out[merged ? k : op + "__" + k] = params[k];
+  }
+  return { ...step, id: OP_TO_CATEGORY_FILTER[op], params: out };
 }

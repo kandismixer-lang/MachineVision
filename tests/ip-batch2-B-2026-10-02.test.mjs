@@ -692,7 +692,7 @@ test('ipB-6. shared skeleton (all four ops): no src2 -> an exact copy of A (a NE
 // ===================================================================
 test('ipB-7. (static structure) the 4 ops exist in OPS (the OPS total is NOT pinned -- later batches add more), FILTERS is still 26, image_arithmetic keeps its 3 original modes first and appends the 4 new ones in order, the select keys are "operation"/"method"/"radius" (never "mode" -- that is mergeGroup\'s MODE_KEY), and defaultParams() matches the OPS defaults', () => {
   for (const id of NEW_OPS) assert.ok(OPS[id], `OPS.${id} must exist`);
-  assert.equal(Object.keys(FILTERS).length, 26, 'FILTERS must NOT grow -- all four live in image_arithmetic');
+  assert.equal(Object.keys(FILTERS).length, 33, 'FILTERS = 26 + 7 category-level groups (2026-10-07) -- all four still live in image_arithmetic');
   const ia = FILTERS.image_arithmetic;
   assert.equal(ia.inputs, 2);
   const modes = ia.params.find((p) => p.key === 'mode').options.map((o) => o.value);
