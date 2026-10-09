@@ -5,7 +5,8 @@
 import { LiteGraph, LGraph, LGraphCanvas } from "litegraph.js";
 import "litegraph.js/css/litegraph.css";
 import { FILTERS, defaultParams, GROUP_COLORS, migrateLegacyStep } from "../filters/registry.js";
-import { computeFit, findFreeSpot, canvasBufferSize, applyFit, isViewUntouched, planInsert, formatZoom } from "./layout-math.js";
+import { computeFit, findFreeSpot, applyFit, isViewUntouched, planInsert, formatZoom } from "./layout-math.js";
+import { canvasBufferSizeDpr, dotGridRange, flowT, flowDotCount, visibleAreaOf, isFlowLink, createFlowLoop, buildStepIds } from "../ui/phase3-math.js";
 import { GROUP_ICON, OP_PRIMARY, currentOpId, localParamsFor, hexA } from "../filters/ui-meta.js";
 
 // ---- node card (Design node-card §1 + UI redesign spec §5) — const/font hoisted ไป module scope กัน alloc ทุกเฟรม ----
@@ -23,6 +24,10 @@ const NC_RADIUS = 10;
 const NC_FOCUS = "#8cc8ff"; // ring ตอนเลือก (ไม่ใช้สีหมวด — Segmentation แดงจะดูเหมือน error)
 const NC_BODY = "#0f1b2b";
 const NC_TITLE_BASE = "#132235";
+const NC_ERR = "#ff5577"; // = --danger · สถานะ error ราย node (UI เฟส 3.6)
+const NC_ERR_TEXT = "#ffb3c1";
+const NC_DOT = "rgba(255,255,255,.04)"; // จุดพื้นหลังกระดาน (3.4)
+const NC_FLOW = "#cfe9ff"; // จุดวิ่งบนสาย (3.5)
 
 // ผสมสี hex: a*t + b*(1-t) → ได้สีทึบ (ไม่โปร่ง ไม่ให้สายเห็นทะลุหัวการ์ด)
 function mixHex(a, b, t) {
@@ -60,6 +65,44 @@ function drawCardChrome(ctx, node) {
     ctx.roundRect(0.5, -TH + 0.5, W - 1, H + TH - 1, NC_RADIUS);
   }
   ctx.stroke();
+  ctx.restore();
+  if (node.__mvError) drawErrorState(ctx, node);
+}
+
+// สถานะ error (3.6): กรอบประ 1.5px แดง + ป้าย "!" 16px ที่มุมขวาบน + ข้อความสั้นใต้การ์ด
+// ไม่พึ่งสีอย่างเดียว (ประ + ! + ข้อความ) — Segmentation สีหมวดก็เป็นแดงเหมือนกัน
+function drawErrorState(ctx, node) {
+  const W = node.size[0];
+  const H = node.size[1];
+  const TH = LiteGraph.NODE_TITLE_HEIGHT;
+  ctx.save();
+  ctx.strokeStyle = NC_ERR;
+  ctx.lineWidth = 1.5;
+  ctx.setLineDash([4, 3]);
+  ctx.beginPath();
+  ctx.roundRect(0.75, -TH + 0.75, W - 1.5, H + TH - 1.5, NC_RADIUS);
+  ctx.stroke();
+  ctx.setLineDash([]);
+  // ป้าย "!" (วงกลมเส้นผ่านศูนย์กลาง 16px กึ่งกลางที่มุมขวาบนของการ์ด)
+  ctx.fillStyle = NC_ERR;
+  ctx.beginPath();
+  ctx.arc(W, -TH, 8, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.fillStyle = "#ffffff";
+  ctx.font = `700 11px ${NC_STACK}`;
+  ctx.textAlign = "center";
+  ctx.textBaseline = "alphabetic";
+  ctx.fillText("!", W, -TH + 4);
+  // ข้อความ (ตัด … ให้พอดีความกว้างการ์ด) บนแถบเข้มกันกลืนกับพื้น
+  ctx.font = NC_FONT_PORT;
+  ctx.textAlign = "left";
+  const text = ellipsisText(ctx, node, "err", node.__mvError, W - 12);
+  ctx.fillStyle = "rgba(5,11,20,0.88)";
+  ctx.beginPath();
+  ctx.roundRect(0, H + 4, W, 18, 5);
+  ctx.fill();
+  ctx.fillStyle = NC_ERR_TEXT;
+  ctx.fillText(text, 6, H + 17);
   ctx.restore();
 }
 
@@ -423,10 +466,81 @@ export function createGraphEditor(canvasEl, cb) {
   canvas.show_info = false; // ปิด debug overlay (T/I/N/V/FPS ซ้ายล่าง) — เหลือ FPS ประมวลผลจริงอันเดียว
   // ป้ายซูมในหัวกระดาน: ทุกการซูม (ล้อเมาส์/ปุ่ม/Fit) ทำให้ canvas วาดใหม่ → อ่าน scale ตอนวาดพื้นหลังแล้วแจ้งเมื่อ % เปลี่ยน
   let lastZoomText = "";
-  canvas.onDrawBackground = () => {
+  canvas.onDrawBackground = (ctx, visible) => {
     const t = formatZoom(canvas.ds && canvas.ds.scale);
     if (t !== lastZoomText) { lastZoomText = t; if (cb.onZoomChange) cb.onZoomChange(t); }
+    drawDotGrid(ctx, visible);
   };
+  // 3.4 พื้นหลังจุด: ระยะห่าง 24 world px · วาดเฉพาะ scale > 0.6 · จุดทั้งหมดอยู่ใน path เดียว (fill ครั้งเดียวต่อเฟรม)
+  function drawDotGrid(ctx, visible) {
+    const r = dotGridRange(visible, canvas.ds.scale);
+    if (!r) return;
+    ctx.fillStyle = NC_DOT;
+    ctx.beginPath();
+    for (let c = 0; c < r.cols; c++) {
+      const x = r.x0 + c * r.spacing;
+      for (let k = 0; k < r.rows; k++) ctx.rect(x - 1, r.y0 + k * r.spacing - 1, 2, 2);
+    }
+    ctx.fill();
+  }
+
+  // 3.8 ตัวหนังสือคมที่ DPR > 1: buffer = ขนาด CSS × DPR แต่ LiteGraph ยังคิดทุกอย่าง (สเกล/ออฟเซ็ต/เมาส์) เป็นหน่วย CSS px
+  // → แค่คูณ kx/ky ตอนตั้ง transform ของ ctx และหารตอนคำนวณพื้นที่ที่มองเห็น · adjustMouseEvent ใช้ getBoundingClientRect (CSS px)
+  // อยู่แล้วจึงไม่ต้องแก้ → การจับเมาส์/สายตรงเท่าเดิมทุก DPR
+  let kx = 1, ky = 1; // buffer px ต่อ CSS px (แกนละตัว: buffer ปัดเศษจำนวนเต็ม จึงใช้อัตราส่วนจริงให้ตรงเป๊ะ)
+  let cssW = 0, cssH = 0; // ขนาด CSS จริงของ canvas (หน่วยที่ใช้คำนวณ fit/วางกล่อง/ซูมกลางจอ)
+  const ds0 = canvas.ds;
+  const baseComputeVisible = ds0.computeVisibleArea;
+  ds0.toCanvasContext = function (ctx) {
+    ctx.scale(this.scale * kx, this.scale * ky);
+    ctx.translate(this.offset[0], this.offset[1]);
+  };
+  ds0.computeVisibleArea = function (viewport) {
+    if (viewport || !this.element) return baseComputeVisible.call(this, viewport);
+    visibleAreaOf(this.offset, this.element.width, this.element.height, kx, ky, this.scale, this.visible_area);
+  };
+  const viewW = () => cssW || canvasEl.width;
+  const viewH = () => cssH || canvasEl.height;
+
+  // 3.5 สายวิ่ง: จุดเล็ก ๆ ไหลบนสายที่ทั้งสองปลายอยู่ใน pipeline — เปิดเฉพาะตอน app สั่ง (กล้องสดกำลังเดิน) และผู้ใช้ไม่ได้ปิดแอนิเมชัน
+  // LiteGraph ไม่มีแอนิเมชันสายแบบต่อเนื่อง (flow ของมันผูกกับ event trigger 1 วินาทีและขาวล้วน) → ครอบ renderLink เอง
+  // ไม่มี loop วาดต่อเนื่องตอนปิด: RAF ถูกยกเลิกทันที (ภาพนิ่ง/pause = ไม่มี timer ใดทำงานเพิ่มจาก LiteGraph เดิม)
+  const reducedMql = typeof matchMedia === "function" ? matchMedia("(prefers-reduced-motion: reduce)") : null;
+  let flowWanted = false;
+  const flowOn = () => flowWanted && !(reducedMql && reducedMql.matches);
+  const baseRenderLink = canvas.renderLink;
+  canvas.renderLink = function (ctx, a, b, link, skipBorder, flow, color, startDir, endDir, sub) {
+    baseRenderLink.call(this, ctx, a, b, link, skipBorder, flow, color, startDir, endDir, sub);
+    if (!link || flow || !flowOn() || !linkInPipeline(link)) return;
+    const n = flowDotCount(Math.hypot(b[0] - a[0], b[1] - a[1]));
+    const now = LiteGraph.getTime();
+    ctx.fillStyle = NC_FLOW;
+    ctx.beginPath();
+    for (let i = 0; i < n; i++) {
+      const p = this.computeConnectionPoint(a, b, flowT(now, i, n), startDir, endDir);
+      ctx.moveTo(p[0] + 2.4, p[1]);
+      ctx.arc(p[0], p[1], 2.4, 0, Math.PI * 2);
+    }
+    ctx.fill();
+  };
+  function linkInPipeline(link) {
+    return isFlowLink(graph.getNodeById(link.origin_id), graph.getNodeById(link.target_id));
+  }
+  function anyFlowLink() {
+    for (const id in graph.links) { const l = graph.links[id]; if (l && linkInPipeline(l)) return true; }
+    return false;
+  }
+  // loop ~25 fps เฉพาะตอนเปิด · ปิด → ยกเลิก RAF ทันทีแล้ววาดใหม่ 1 ครั้งเพื่อลบจุดที่ค้าง (ตรรกะใน createFlowLoop เทสต์ได้)
+  const flowLoop = createFlowLoop({
+    raf: (fn) => requestAnimationFrame(fn),
+    caf: (id) => cancelAnimationFrame(id),
+    isOn: flowOn,
+    hasWork: anyFlowLink,
+    redraw: () => canvas.setDirty(true, true),
+    onStop: () => canvas.setDirty(true, true),
+  });
+  const syncFlow = () => flowLoop.sync();
+  if (reducedMql && reducedMql.addEventListener) reducedMql.addEventListener("change", syncFlow);
   // สีพื้นกระดาน + เส้นกริดให้เข้าโทน dark-industrial (Design §3.1)
   canvas.clear_background_color = "#08111d"; // = --surface-canvas
   LiteGraph.NODE_TITLE_HEIGHT = 28; // เดิม 30 — หัวการ์ดกระชับ (hit-test ของ litegraph อ่านค่านี้ตอนรันจึงตามอัตโนมัติ)
@@ -558,8 +672,8 @@ export function createGraphEditor(canvasEl, cb) {
       traceChainFrom(displayNode, 0, { stopAtDL: false, collectPathNodes: true });
 
     // เลขขั้นตอนอิงเส้นทางจริง: Source = 1, Function = 2..N, Display = N+1
+    const sourceNode = reachedSource ? graph.findNodesByType(SOURCE_TYPE)[0] : null;
     if (reachedSource) {
-      const sourceNode = graph.findNodesByType(SOURCE_TYPE)[0];
       if (sourceNode) {
         sourceNode.title = sourceTitle();
         sourceNode.__mvInPipeline = true;
@@ -589,6 +703,8 @@ export function createGraphEditor(canvasEl, cb) {
       pipeline: reachedSource ? chain : [],
       connected: reachedSource,
       dl: reachedSource && hasDL, // ผลลัพธ์นี้ต้องรัน YOLO detect
+      // id ของกล่องบนสายนี้ตามเลขที่เห็นบนการ์ด (1 = แหล่งภาพ … สุดท้าย = Display) — คีย์ 1–9 ใช้ (nthStepNodeId)
+      stepIds: reachedSource && sourceNode ? buildStepIds(sourceNode.id, pathNodes.map((n) => n.id), displayNode.id) : [],
     };
   }
 
@@ -757,8 +873,8 @@ export function createGraphEditor(canvasEl, cb) {
   // จุดกลางของส่วนที่มองเห็นบนกระดาน (พิกัด graph) — กล่องใหม่วางตรงนี้ ไม่หลุดนอกจอเมื่อซูม/เลื่อนไปแล้ว
   function visibleCenter() {
     const ds = canvas.ds;
-    const w = canvasEl.width || 600;
-    const h = canvasEl.height || 300;
+    const w = viewW() || 600;
+    const h = viewH() || 300;
     if (!ds || !ds.convertCanvasToOffset) return [260, 80];
     return ds.convertCanvasToOffset([w / 2, h / 2]);
   }
@@ -772,8 +888,8 @@ export function createGraphEditor(canvasEl, cb) {
     // ขอบเขตที่มองเห็นที่ scale ต่ำสุด (.6) นับจากมุมซ้ายบนของกราฟ — จอกว้างแต่เตี้ย จึงไล่ขวาก่อนแล้วลงแถว
     const minS = 0.6, pad = 40;
     const bounds = rects.length ? {
-      x1: Math.min(...rects.map((r) => r.x0)) + (canvasEl.width - 2 * pad) / minS,
-      y1: Math.min(...rects.map((r) => r.y0)) + (canvasEl.height - 2 * pad) / minS,
+      x1: Math.min(...rects.map((r) => r.x0)) + (viewW() - 2 * pad) / minS,
+      y1: Math.min(...rects.map((r) => r.y0)) + (viewH() - 2 * pad) / minS,
     } : null;
     node.pos = findFreeSpot(rects, visibleCenter(), node.size, LiteGraph.NODE_TITLE_HEIGHT, 16, bounds);
   }
@@ -934,7 +1050,7 @@ export function createGraphEditor(canvasEl, cb) {
     if (!ds) return;
     const target = Math.max(0.25, Math.min(3, ds.scale * f));
     // ซูมยึดกลางจอ (ปรับ offset ให้) — ลื่นกว่าเซ็ต scale ตรง ๆ
-    if (ds.changeScale) ds.changeScale(target, [canvasEl.width / 2, canvasEl.height / 2]);
+    if (ds.changeScale) ds.changeScale(target, [viewW() / 2, viewH() / 2]);
     else ds.scale = target;
     canvas.setDirty(true, true);
   }
@@ -943,7 +1059,7 @@ export function createGraphEditor(canvasEl, cb) {
   function fitView(opts) {
     const ds = canvas.ds;
     if (!ds) return;
-    const fit = computeFit(nodeRects(), canvasEl.width, canvasEl.height, opts);
+    const fit = computeFit(nodeRects(), viewW(), viewH(), opts);
     if (!fit) return;
     fitSnap = applyFit(ds, fit); // snapshot อ่านกลับจาก ds (Float32Array) ไม่ใช่ค่า double ก่อนปัดเศษ
     canvas.setDirty(true, true);
@@ -954,7 +1070,7 @@ export function createGraphEditor(canvasEl, cb) {
   // กล่องที่เพิ่งวางต้องอยู่ในจอ: ถ้ายังหลุด (เช่น scale ต่ำสุด .6 แล้วหรือ host เตี้ยมาก) → pan ให้กล่องอยู่กลางจอ
   function ensureVisible(node, keepSnap) {
     const ds = canvas.ds;
-    const vw = canvasEl.width, vh = canvasEl.height;
+    const vw = viewW(), vh = viewH();
     if (!ds || !vw || !vh) return;
     const TH = LiteGraph.NODE_TITLE_HEIGHT;
     const sx0 = (node.pos[0] + ds.offset[0]) * ds.scale, sx1 = (node.pos[0] + node.size[0] + ds.offset[0]) * ds.scale;
@@ -988,14 +1104,17 @@ export function createGraphEditor(canvasEl, cb) {
   let didInitialFit = false;
   function resize() {
     const rect = canvasEl.parentElement.getBoundingClientRect();
-    // buffer = ขนาด CSS จริงเป๊ะ ไม่มี floor (host อาจเตี้ยถึง ~116px ตอนลากแบ่งสุดขอบ) · ซ่อนอยู่ → ข้าม
-    const size = canvasBufferSize(rect);
+    // buffer = ขนาด CSS × DPR (ไม่มี floor — host อาจเตี้ยถึง ~116px ตอนลากแบ่งสุดขอบ) · ซ่อนอยู่ → ข้าม
+    // kx/ky = อัตราส่วนจริงของ buffer ที่ปัดเศษแล้วต่อขนาด CSS → ภาพที่วาดกับพิกัดเมาส์ตรงกันเป๊ะที่ทุก DPR
+    const size = canvasBufferSizeDpr(rect, window.devicePixelRatio);
     if (!size) return;
     const { w, h } = size;
-    if (w === lastW && h === lastH) return;
+    if (w === lastW && h === lastH && Math.abs(size.cw - cssW) < 0.01 && Math.abs(size.ch - cssH) < 0.01) return;
     lastW = w; lastH = h;
+    kx = size.kx; ky = size.ky; cssW = size.cw; cssH = size.ch;
     const wasUntouched = viewUntouched();
     canvas.resize(w, h);
+    canvas.setDirty(true, true); // resize() ของ LiteGraph ข้ามถ้า buffer เท่าเดิม แต่ kx/ky อาจเปลี่ยน
     // ครั้งแรกที่รู้ขนาดจริง → fit · หลังจากนั้น fit ซ้ำตอน resize เฉพาะเมื่อผู้ใช้ยังไม่ซูม/เลื่อน/รีเซ็ตมุมมอง
     if (!didInitialFit || wasUntouched) {
       didInitialFit = true;
@@ -1003,6 +1122,16 @@ export function createGraphEditor(canvasEl, cb) {
     }
   }
   window.addEventListener("resize", resize);
+  // DPR เปลี่ยนโดยขนาดหน้าต่างไม่เปลี่ยน (ย้ายหน้าต่างข้ามจอที่สเกลต่างกัน) ไม่ยิง resize → ฟังผ่าน matchMedia แล้วผูกใหม่ทุกครั้ง
+  let dprMql = null;
+  function onDprChange() { watchDpr(); resize(); }
+  function watchDpr() {
+    if (typeof matchMedia !== "function") return;
+    if (dprMql && dprMql.removeEventListener) dprMql.removeEventListener("change", onDprChange);
+    dprMql = matchMedia(`(resolution: ${window.devicePixelRatio}dppx)`);
+    if (dprMql.addEventListener) dprMql.addEventListener("change", onDprChange);
+  }
+  watchDpr();
   // ResizeObserver: จับทุกครั้งที่กล่องกราฟถูกบีบ/ขยาย (เช่น grid ผลลัพธ์โตขึ้น)
   // แม้ window ไม่ resize — กันจุดต่อสาย hit-area เพี้ยน
   if (typeof ResizeObserver !== "undefined") {
@@ -1072,5 +1201,19 @@ export function createGraphEditor(canvasEl, cb) {
       }
       canvas.setDirty(true, true);
     },
+    // 3.6 error ราย node: app.js เรียกเมื่อ worker บอก nodeId ที่พัง / ล้างเมื่อเฟรมสำเร็จหรือกราฟเปลี่ยน (เปลี่ยนค่าจริงเท่านั้นถึงวาดใหม่)
+    setNodeError: (id, text) => {
+      const n = id == null ? null : graph.getNodeById(id);
+      if (!n) return false;
+      if (n.__mvError !== text) { n.__mvError = text; canvas.setDirty(true, true); }
+      return true;
+    },
+    clearNodeErrors: () => {
+      let any = false;
+      for (const n of graph._nodes) if (n.__mvError) { n.__mvError = null; any = true; }
+      if (any) canvas.setDirty(true, true);
+    },
+    // 3.5 เปิด/ปิดสายวิ่ง (app.js สั่งตามสถานะกล้อง) — ปิดเมื่อผู้ใช้ตั้ง prefers-reduced-motion ด้วย
+    setFlow: (on) => { flowWanted = !!on; syncFlow(); },
     undo, redo, graph, canvas };
 }

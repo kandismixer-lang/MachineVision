@@ -118,6 +118,43 @@ function saveOpenState(state) {
   try { localStorage.setItem(PALETTE_OPEN_KEY, JSON.stringify(state)); } catch { /* ไม่บันทึกก็ไม่เป็นไร */ }
 }
 
+// ---------- "ใช้ล่าสุด" (Phase 3.3) ----------
+// เก็บ opId ของเครื่องมือที่เพิ่งเพิ่มลงกระดาน (ใหม่สุดก่อน, ไม่ซ้ำ, ≤ 5) ใน localStorage["mv-palette-recent"] เป็น JSON array
+export const PALETTE_RECENT_KEY = "mv-palette-recent";
+export const PALETTE_RECENT_MAX = 5;
+
+// raw = ข้อความดิบจาก localStorage (หรือ null) · isKnown(opId) = ยังมีเครื่องมือนี้บน palette อยู่ไหม → รายการสะอาด (ค่าพัง/ซ้ำ/ไม่รู้จักถูกทิ้ง)
+export function resolveRecent(raw, isKnown, max = PALETTE_RECENT_MAX) {
+  let list = [];
+  if (typeof raw === "string") {
+    try {
+      const a = JSON.parse(raw);
+      if (Array.isArray(a)) list = a;
+    } catch { /* ค่าพัง → ว่าง */ }
+  }
+  const out = [];
+  for (const id of list) {
+    if (typeof id === "string" && !out.includes(id) && (!isKnown || isKnown(id))) out.push(id);
+    if (out.length >= max) break;
+  }
+  return out;
+}
+
+// เพิ่ม opId ที่เพิ่งใช้ไว้หน้าสุด (ถ้ามีอยู่แล้วย้ายขึ้นมา) → รายการใหม่ ไม่แก้ของเดิม
+export function pushRecent(list, opId, max = PALETTE_RECENT_MAX) {
+  if (typeof opId !== "string" || !opId) return list.slice(0, max);
+  return [opId, ...list.filter((x) => x !== opId)].slice(0, max);
+}
+
+function loadRecent() {
+  let raw = null;
+  try { raw = localStorage.getItem(PALETTE_RECENT_KEY); } catch { /* ไม่มีรายการ */ }
+  return resolveRecent(raw, (id) => !!OP_TO_FILTER[id] && !!OPS[id]);
+}
+function saveRecent(list) {
+  try { localStorage.setItem(PALETTE_RECENT_KEY, JSON.stringify(list)); } catch { /* ไม่บันทึกก็ไม่เป็นไร */ }
+}
+
 // ค้นหาเครื่องมือ: ตัวพิมพ์เล็ก/ใหญ่ไม่สำคัญ · ค้นจากชื่อและรหัสภายใน (เช่น "otsu") · คำค้นว่าง = ตรงทุกตัว
 export function toolMatches(name, opId, query) {
   const q = String(query || "").trim().toLowerCase();
@@ -134,6 +171,8 @@ export function createPalettePanel(container, cb) {
   let sections = [];  // [{ title, head, list, countEl, rows: [{el, name, opId}] }]
   let aiRow = null;   // { wrap, el, name } แถว Model Detect (ถ้ามี)
   let emptyEl = null; // "ไม่พบเครื่องมือ"
+  let recent = loadRecent(); // opId ที่ใช้ล่าสุด (ใหม่สุดก่อน)
+  let recentBlock = null; // { wrap, list, rows: [{el, name, opId}] } — ซ่อนทั้งก้อนเมื่อว่าง/ไม่ตรงคำค้น
 
   // ซ่อน/แสดงตามคำค้น โดยไม่ rebuild (คงโฟกัสช่องค้นหา)
   // ค้นอยู่ → หมวดที่มีผลตรงกางออกอัตโนมัติ (ไม่แตะค่าที่บันทึก) · ไม่ค้น → กลับไปตามสถานะที่บันทึก
@@ -157,6 +196,15 @@ export function createPalettePanel(container, cb) {
       s.head.setAttribute("aria-disabled", searching ? "true" : "false");
       s.head.title = searching ? "กำลังค้นหา — ล้างคำค้นก่อนจึงพับ/กางหมวดเองได้" : "";
       s.countEl.textContent = String(searching ? n : s.rows.length);
+    }
+    if (recentBlock) {
+      let n = 0;
+      for (const r of recentBlock.rows) {
+        const m = toolMatches(r.name, r.opId, query);
+        r.el.hidden = !m;
+        if (m) n++;
+      }
+      recentBlock.wrap.hidden = n === 0; // ว่าง/ไม่ตรงคำค้น → ไม่เหลือหัวข้อโดดเดี่ยว
     }
     if (aiRow) {
       const m = toolMatches(aiRow.name, "model detect yolo", query);
@@ -207,10 +255,50 @@ export function createPalettePanel(container, cb) {
     return b;
   }
 
+  // ทุกทางที่เพิ่มเครื่องมือ (แถวปกติ + แถวใน "ใช้ล่าสุด") ผ่านที่เดียว: จำ opId แล้วค่อยเรียก onAdd เดิม
+  function addTool(filterId, opId) {
+    recent = pushRecent(recent, opId);
+    saveRecent(recent);
+    cb.onAdd(filterId, opId);
+    renderRecent();
+  }
+
+  // สร้างบล็อก "ใช้ล่าสุด" ใหม่ในที่เดิม (ไม่ rebuild ทั้งแผง → ไม่เสียตำแหน่งเลื่อน/โฟกัสช่องค้นหา)
+  function renderRecent() {
+    const fresh = document.createElement("div");
+    fresh.className = "palette-recent";
+    const t = document.createElement("div");
+    t.className = "palette-section-title";
+    t.textContent = "ใช้ล่าสุด · RECENT";
+    fresh.appendChild(t);
+    const rows = [];
+    for (const opId of recent) {
+      const filterId = OP_TO_FILTER[opId];
+      const filter = FILTERS[filterId];
+      const op = OPS[opId];
+      if (!filter || !op) continue;
+      const colors = GROUP_COLORS[filter.group] || { title: "#475569" };
+      const el = makeToolRow(op.name, OP_ICON[opId] || GROUP_ICON[filterId] || "◇", colors.title,
+        `${op.name} — เพิ่มลงกระดานอีกครั้ง`, () => addTool(filterId, opId));
+      fresh.appendChild(el);
+      rows.push({ el, name: op.name, opId });
+    }
+    // แถวที่โฟกัสอยู่ (เช่นกดคีย์บอร์ดเพิ่มเครื่องมือ) ถูกแทนที่ทั้งก้อน → คืนโฟกัสให้แถวที่ opId เดียวกัน ไม่ให้หลุดไป body
+    const active = typeof document !== "undefined" ? document.activeElement : null;
+    const focusedOp = recentBlock && active ? (recentBlock.rows.find((r) => r.el === active) || {}).opId : null;
+    if (recentBlock && recentBlock.wrap.isConnected) recentBlock.wrap.replaceWith(fresh);
+    recentBlock = { wrap: fresh, rows };
+    if (focusedOp) { const again = rows.find((r) => r.opId === focusedOp); if (again) again.el.focus(); }
+    if (!rows.length) fresh.hidden = true;
+    applyFilter();
+    return fresh;
+  }
+
   function render() {
     container.innerHTML = "";
     sections = [];
     aiRow = null;
+    recentBlock = null;
 
     const h = document.createElement("h2");
     h.textContent = "เครื่องมือ · Tools";
@@ -254,6 +342,9 @@ export function createPalettePanel(container, cb) {
     if (cb.onAddDisplay) mkProj("add-disp", "＋ Display", "เพิ่มกล่องผลลัพธ์อีกอัน แล้วลากสายจากจุดใดก็ได้มาต่อ เพื่อดูภาพขั้นนั้นแยกต่างหาก", cb.onAddDisplay);
     if (cb.onSaveTemplate) mkProj("tmpl-save-btn", "💾 Save as Template", "บันทึก pipeline บนกระดานตอนนี้เป็นเทมเพลต — เปิดใช้ซ้ำได้ที่ปุ่มเทมเพลต", cb.onSaveTemplate);
     if (proj.children.length) container.appendChild(proj);
+
+    // "ใช้ล่าสุด" อยู่บนสุดของรายการเครื่องมือ (ใต้ปุ่มโปรเจกต์) — ว่างอยู่ = ซ่อน
+    container.appendChild(renderRecent());
 
     // หมวด Deep Learning — เพิ่ม "กล่อง YOLO Detect" ลงกราฟ แล้ว browse โมเดลผ่านกล่อง
     if (cb.onAddDL) {
@@ -302,7 +393,7 @@ export function createPalettePanel(container, cb) {
         if (!filter || !op) continue;
         const colors = GROUP_COLORS[filter.group] || { title: "#475569" };
         const el = makeToolRow(op.name, OP_ICON[opId] || GROUP_ICON[filterId] || "◇", colors.title,
-          `${op.name} — Add this Function to Pipeline Canvas`, () => cb.onAdd(filterId, opId));
+          `${op.name} — Add this Function to Pipeline Canvas`, () => addTool(filterId, opId));
         list.appendChild(el);
         rows.push({ el, name: op.name, opId });
       }

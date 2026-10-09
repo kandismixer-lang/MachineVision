@@ -5405,3 +5405,78 @@ body.stage-fullscreen-open .lr-handle { display: none !important; }
 /* หัวหมวด palette ระหว่างค้นหา: การพับ/กางถูกล็อก */
 .pal-head[aria-disabled="true"] { cursor: default; opacity: .75; }
 .pal-head[aria-disabled="true"]:hover { background: none; color: var(--text-secondary); }
+
+/* =====================================================================
+   UI เฟส 3 (2026-10-09)
+   ===================================================================== */
+/* ---- 3.1 viewport ของจอผลลัพธ์: canvas ถูกซูม/เลื่อนด้วย transform + ตารางพิกเซล + readout ---- */
+.stage-view {
+  position: relative;
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: hidden;
+  background: #000;
+  cursor: crosshair;
+}
+.stage-view .stage-canvas {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  flex: none;
+  transform-origin: 0 0;
+}
+.stage-view .stage-canvas.px-crisp { image-rendering: pixelated; } /* ≥ 800%: เห็นพิกเซลคมชัด ไม่เบลอ */
+.stage-view.is-zoomed { cursor: grab; }
+.stage-view.is-panning { cursor: grabbing; }
+.stage-pxgrid { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; }
+.stage-readout {
+  position: absolute;
+  left: var(--space-2);
+  bottom: var(--space-2);
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  max-width: calc(100% - 16px);
+  padding: var(--space-1) var(--space-2);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-sm);
+  background: color-mix(in srgb, var(--surface-sunken) 86%, transparent);
+  color: var(--text-primary);
+  font-size: var(--fs-sm);
+  line-height: var(--lh-sm);
+  white-space: nowrap;
+  pointer-events: none;
+}
+.stage-readout .px-swatch { flex: none; width: 10px; height: 10px; border: 1px solid var(--border-strong); border-radius: 2px; }
+.stage-readout .px-pos { color: var(--text-secondary); }
+.stage-zoom-badge {
+  position: absolute;
+  top: var(--space-2);
+  right: var(--space-2);
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  height: var(--control-h-sm);
+  padding: 0 var(--space-2);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-sm);
+  background: color-mix(in srgb, var(--surface-sunken) 86%, transparent);
+  color: var(--text-primary);
+  font-size: var(--fs-sm);
+  cursor: pointer;
+}
+.stage-zoom-badge:hover { background: var(--surface-3); border-color: var(--border-active); }
+.stage-zoom-badge .zb-fit { color: var(--text-secondary); font-family: var(--font-ui); }
+.stage-readout[hidden], .stage-zoom-badge[hidden] { display: none; }
+
+/* ---- 3.3 ใช้ล่าสุด ---- */
+.panel-left .palette-recent { margin: 0 0 var(--space-2); }
+.panel-left .palette-recent .palette-section-title {
+  margin: var(--space-2) var(--space-2) var(--space-1);
+  font-size: var(--fs-caps);
+  letter-spacing: 0; /* ป้ายไทย+อังกฤษ — ไทยห้ามมี letter-spacing */
+  text-transform: none;
+  color: var(--text-secondary);
+}
+.palette-recent[hidden] { display: none !important; }

@@ -36,6 +36,12 @@ import { initLayoutResize, initViewMenu } from "./ui/layout-resize.js";
 // ใบอนุญาตฟอนต์ (SIL OFL-1.1) ต้องไปกับตัวแอปที่ bundle ฟอนต์ IBM Plex — import เพื่อให้ Vite คัดลอกเข้า dist/assets (ไม่ได้ใช้ค่า)
 import "../assets/fonts/OFL.txt?url";
 import { statusText, sourceDetail, statusLevel, sourceChipLabel } from "./graph/layout-math.js";
+import { createTileInspector, resetHoveredView } from "./ui/pixel-inspector.js";
+import {
+  histogramPlan, resolveThresholdT, markerX, histogramBufferSize, flowActive, routeWorkerError, ERROR_FALLBACK_TEXT, nthStepNodeId, parseNavKey, selectedIdOf,
+  SELECTED_PREVIEW_PREFIX, SELECTED_INPUT_PREFIX, buildInputPipeline, pickWorkerPipelines, classifyResultId,
+} from "./ui/phase3-math.js";
+import { localParamsFor } from "./filters/ui-meta.js";
 
 // framework เป้าหมายของ dataset/โค้ดเทรน: 'yolo' (YOLO txt) | 'rfdetr' (COCO json) — ตั้งจากหน้าต่าง Export
 let exportFramework = "yolo";
@@ -151,12 +157,19 @@ if (isUiV2) {
   try { localStorage.removeItem("mv-ui-v2-inspector-tab"); } catch {}
   setInspectorTab("inspect");
 }
-const SELECTED_PREVIEW_PREFIX = "__selected_function_preview__";
 let selectedPreviewGeneration = 0;
 let selectedPreviewView = "output";
 let selectedPreviewLatestImage = null;
 let selectedPreviewAnalysisAt = 0;
 const selectedPreviewHistogramBins = [new Uint32Array(256), new Uint32Array(256), new Uint32Array(256)];
+// 3.2 histogram ขาเข้า (ภาพก่อนเข้ากล่องที่เลือก = ผลของสายถึงกล่องก่อนหน้า): ขอจาก worker เป็น pipeline เพิ่มอีกสายเมื่ออยู่แท็บ Histogram
+// และวิธีที่เลือกเป็นกลุ่มเกณฑ์/ปรับภาพเท่านั้น · กล้องสดขอไม่ถี่กว่าทุก 300 ms · ภาพนิ่งขอทุกครั้งที่ประมวลผล (ครั้งเดียวต่อค่าที่ปรับ)
+const selectedInputBins = [new Uint32Array(256), new Uint32Array(256), new Uint32Array(256), new Uint32Array(256)]; // R,G,B,luma
+let selectedInputReady = false;
+let selectedInputSamples = 0;
+let selectedInputAt = 0;
+const HIST_LW = 320; // ขนาด "ตรรกะ" ของ canvas histogram (ขนาด buffer จริง = CSS × DPR — ดู histogramBufferSize)
+const HIST_LH = 172;
 const HISTOGRAM_DEFAULT_OPS = new Set([
   "grayscale", "colorspace", "channel_split", "rgb_adjust", "color_inrange", "invert",
   "brightness_contrast", "gamma", "hist_equalize", "clahe",
@@ -252,6 +265,7 @@ function ensureGrid(order) {
   if (key === gridKey) return;
   gridKey = key;
   closeAllChainMenus();
+  for (const c of cells.values()) c.insp?.destroy();
   gridEl.innerHTML = "";
   cells.clear();
   const cols = Math.min(order.length, Math.ceil(Math.sqrt(order.length)) || 1);
@@ -270,13 +284,35 @@ function ensureGrid(order) {
     cap.appendChild(chip);
     cap.appendChild(chain);
 
+    // viewport ของภาพ (3.1): canvas ผลลัพธ์ + ตารางพิกเซล (overlay) + แถบ readout + ป้ายซูม — ซูม/เลื่อนด้วย CSS transform ของ canvas
+    const view = document.createElement("div");
+    view.className = "stage-view";
     const cvs = document.createElement("canvas");
     cvs.className = "stage-canvas";
+    const gridCv = document.createElement("canvas");
+    gridCv.className = "stage-pxgrid";
+    gridCv.setAttribute("aria-hidden", "true");
+    const readout = document.createElement("div");
+    readout.className = "stage-readout mono";
+    readout.hidden = true;
+    readout.setAttribute("aria-hidden", "true");
+    readout.title = "พิกัดและค่าสีของพิกเซลที่เมาส์ชี้ (นับบนภาพที่ประมวลผลแล้ว)";
+    readout.innerHTML = '<span class="px-swatch"></span><span class="px-pos"></span><span class="px-val"></span>';
+    const badge = document.createElement("button");
+    badge.type = "button";
+    badge.className = "stage-zoom-badge mono";
+    badge.hidden = true;
+    badge.title = "กลับมาพอดีจอ (ดับเบิลคลิกที่ภาพ หรือกดปุ่ม 0)";
+    badge.setAttribute("aria-label", "กลับมาพอดีจอ");
+    badge.innerHTML = '<span class="zb-pct"></span><span class="zb-fit">⤢ พอดีจอ</span>';
+    view.append(cvs, gridCv, readout, badge);
 
     root.appendChild(cap);
-    root.appendChild(cvs);
+    root.appendChild(view);
     gridEl.appendChild(root);
-    cells.set(id, { root, canvas: cvs, ctx: cvs.getContext("2d"), chip, chain });
+    const cell = { root, canvas: cvs, ctx: cvs.getContext("2d"), chip, chain, lastImg: null, insp: null };
+    cell.insp = createTileInspector({ view, canvas: cvs, gridCanvas: gridCv, readout, badge }, { getImage: () => cell.lastImg });
+    cells.set(id, cell);
   }
 }
 
@@ -298,8 +334,9 @@ worker.onmessage = (e) => {
     onOpenCVReady();
   } else if (msg.type === "result") {
     procFrames++; // นับเฟรมที่ประมวลผลจริง → คำนวณ FPS
+    editor.clearNodeErrors(); // เฟรมนี้สำเร็จทั้งหมด → เลิกแสดง error ราย node (3.6)
+    state.notes = msg.notes || []; // ตั้งก่อนวาด: histogram อ่านค่าเกณฑ์ Otsu จาก note ของเฟรมเดียวกัน
     drawResults(msg.results || []);
-    state.notes = msg.notes || [];
     busy = false;
     // U3: detail-panel อัปเดตตัวเลข/ข้อความในเซลล์เองแบบ in-place — rebuild ทั้งแผงเฉพาะตอน "โครง" เปลี่ยนจริง
     // (เลิก JSON.stringify notes ทุกเฟรม ซึ่งทำให้ regionprops/Motion rebuild แผงทุกเฟรม — P-16)
@@ -316,7 +353,12 @@ worker.onmessage = (e) => {
       waiter(msg);
     }
   } else if (msg.type === "error") {
-    statusEl.textContent = "✕ ประมวลผลไม่สำเร็จ — ลองปรับค่าหรือเปลี่ยนภาพดู (" + msg.message + ")";
+    // 3.6 worker บอกว่า node ไหนพัง → กรอบประแดง + "!" + ข้อความบนการ์ดนั้น (ไม่มี nodeId = มีแต่ status bar เหมือนเดิม)
+    const failed = routeWorkerError(msg);
+    // ข้อยกเว้น OpenCV.js เป็นตัวเลขดิบ → ไม่แสดงเลขเปล่าใน status bar (ใช้ข้อความสำรองแล้วไม่ต้องมีวงเล็บซ้ำ)
+    statusEl.textContent = "✕ ประมวลผลไม่สำเร็จ — ลองปรับค่าหรือเปลี่ยนภาพดู" + (failed.text === ERROR_FALLBACK_TEXT ? "" : " (" + failed.text + ")");
+    editor.clearNodeErrors();
+    if (failed.nodeId != null) editor.setNodeError(failed.nodeId, failed.text);
     busy = false;
     // ค่าล่าสุดที่ค้างไว้ควรลองใหม่ ไม่งั้นภาพค้างที่ค่าเก่าจนกว่าจะขยับ slider อีก
     if (pendingProcess && state.source === "image") {
@@ -355,6 +397,7 @@ const editor = createGraphEditor(graphCanvasEl, {
   onZoomChange: (text) => { if (cvZoomPctEl) cvZoomPctEl.textContent = text; },
   onPipelineChange: (pipelines) => {
     state.pipelines = pipelines;
+    editor.clearNodeErrors(); // กราฟเปลี่ยน → เลิกแสดงสถานะ error เดิม (ถ้ายังพังอยู่ เฟรมถัดไปจะตั้งใหม่)
     // เก็บกวาด canvas ของกล่องผลลัพธ์ที่ถูกลบไปแล้ว
     const alive = new Set(pipelines.map((d) => d.displayId));
     for (const id of displayCanvases.keys()) {
@@ -371,6 +414,7 @@ const editor = createGraphEditor(graphCanvasEl, {
     selectedPreviewGeneration++;
     selectedPreviewLatestImage = null;
     selectedPreviewAnalysisAt = 0;
+    selectedInputReady = false;
     selectedPreviewCanvas.classList.add("hidden");
     selectedPreviewHistogram.classList.add("hidden");
     selectedPreviewMetrics.classList.add("hidden");
@@ -419,6 +463,19 @@ function selectedPreviewPipeline() {
   };
 }
 
+// ต้องการ histogram ขาเข้าไหม: อยู่แท็บ Histogram + วิธีเป็นกลุ่มเกณฑ์/ปรับภาพ + มีสาย preview
+function wantsInputHistogram() {
+  return selectedPreviewView === "histogram" && histogramPlan(selectedPreviewOpId()) !== "plain";
+}
+
+// pipeline "ขาเข้า" ของกล่องที่เลือก = สายเดียวกับ preview ตัดขั้นสุดท้ายออก (ขั้นแรก → ภาพต้นฉบับ)
+function selectedInputPipeline() {
+  if (!wantsInputHistogram()) return null;
+  const preview = selectedPreviewPipeline();
+  if (!preview) return null;
+  return buildInputPipeline(preview, `${SELECTED_INPUT_PREFIX}:${state.selectedNode.id}:${selectedPreviewGeneration}`);
+}
+
 function selectedPreviewOpId() {
   if (!state.selectedNode) return "";
   const params = state.selectedNode.getParams?.() || {};
@@ -445,6 +502,8 @@ function setSelectedPreviewView(view, userInitiated = true) {
   selectedPreviewHistogram.classList.toggle("hidden", view !== "histogram" || !selectedPreviewHistogram.dataset.ready);
   selectedPreviewMetrics.classList.toggle("hidden", view !== "metrics" || !selectedPreviewMetrics.dataset.ready);
   if (userInitiated && state.selectedNode) selectedPreviewEmpty.classList.toggle("hidden", Boolean(ready));
+  // ภาพนิ่งไม่มี pump — สลับมาแท็บ Histogram แล้วต้องสั่งประมวลผลเพื่อให้ได้ภาพขาเข้ามาด้วย
+  if (userInitiated && view === "histogram" && !selectedInputReady && wantsInputHistogram()) requestProcess();
   if (userInitiated && view !== "output" && selectedPreviewLatestImage) {
     renderSelectedPreviewAnalysis(
       selectedPreviewLatestImage.img,
@@ -486,6 +545,21 @@ function renderSelectedPreviewState() {
   // canvas จะแสดงหลัง Worker ส่งเฟรมล่าสุดกลับมา
 }
 
+// นับ histogram ของภาพขาเข้า (R,G,B + luma) ลง selectedInputBins ด้วยการสุ่มเท่ากับของขาออก → คืนจำนวนตัวอย่าง
+function accumulateInputHistogram(data, pixelCount) {
+  for (const bins of selectedInputBins) bins.fill(0);
+  const step = Math.max(1, Math.ceil(pixelCount / 160000));
+  let n = 0;
+  for (let p = 0; p < pixelCount; p += step) {
+    const i = p * 4;
+    const r = data[i], g = data[i + 1], b = data[i + 2];
+    selectedInputBins[0][r]++; selectedInputBins[1][g]++; selectedInputBins[2][b]++;
+    selectedInputBins[3][Math.round(0.299 * r + 0.587 * g + 0.114 * b)]++;
+    n++;
+  }
+  return n;
+}
+
 function renderSelectedPreviewAnalysis(img, width, height) {
   const hist = selectedPreviewHistogramBins;
   for (const bins of hist) bins.fill(0);
@@ -518,9 +592,29 @@ function renderSelectedPreviewAnalysis(img, width, height) {
     samples++;
   }
 
+  // วางแผนกราฟตามวิธีที่เลือก (3.2): threshold = histogram ขาเข้า + เส้นเกณฑ์ T · compare = ขาเข้า (จาง) ซ้อนขาออก · plain = เหมือนเดิม
+  const plan = histogramPlan(selectedPreviewOpId());
+  const haveInput = plan !== "plain" && selectedInputReady && selectedInputSamples > 0;
+  let marker = null;
+  let legend = "";
+  if (plan === "threshold" && haveInput) {
+    const sel = state.selectedNode;
+    const { step, notes } = stepAndNotesOf(sel, state.notes);
+    // Otsu ที่ยังไม่มี note (กล่องไม่ได้ต่อ Display) → คำนวณจาก histogram ขาเข้าเอง (สูตรเดียวกับ OpenCV)
+    marker = resolveThresholdT(selectedPreviewOpId(), localParamsFor(sel.filterId, sel.getParams()), infoTextsOf(notes), selectedInputBins[3]);
+    legend = "ขาเข้า (ก่อนตัดเกณฑ์)";
+  } else if (plan === "compare" && haveInput) {
+    legend = "จาง=ขาเข้า เข้ม=ขาออก";
+  }
+
+  // canvas คมที่ DPR > 1: เรขาคณิตคิดบนพื้น 320×172 คงที่ แล้วขยาย transform ตามขนาด buffer จริง (3.8)
+  const hb = histogramBufferSize(selectedPreviewHistogram.getBoundingClientRect().width, window.devicePixelRatio, HIST_LW, HIST_LH);
+  if (selectedPreviewHistogram.width !== hb.w) selectedPreviewHistogram.width = hb.w;
+  if (selectedPreviewHistogram.height !== hb.h) selectedPreviewHistogram.height = hb.h;
   const ctx = selectedPreviewHistogram.getContext("2d");
-  const w = selectedPreviewHistogram.width;
-  const h = selectedPreviewHistogram.height;
+  ctx.setTransform(hb.scale, 0, 0, hb.scale, 0, 0);
+  const w = HIST_LW;
+  const h = HIST_LH;
   ctx.clearRect(0, 0, w, h);
   ctx.fillStyle = "#050b14";
   ctx.fillRect(0, 0, w, h);
@@ -534,30 +628,67 @@ function renderSelectedPreviewAnalysis(img, width, height) {
     const gy = 10 + ((h - 32) * y) / 3;
     ctx.beginPath(); ctx.moveTo(10, gy); ctx.lineTo(w - 10, gy); ctx.stroke();
   }
-  const channels = grayscale ? [[hist[0], "#38d9ff"]] : [
+  // เส้นหลัก: threshold → luma ของภาพขาเข้า · อื่น ๆ → ขาออก (เทา = เส้นเดียว, สี = R/G/B)
+  const mainBins = plan === "threshold" && haveInput ? [[selectedInputBins[3], "#38d9ff"]] : null;
+  const channels = mainBins || (grayscale ? [[hist[0], "#38d9ff"]] : [
     [hist[0], "#ff5577"], [hist[1], "#45e59a"], [hist[2], "#4aa3ff"],
-  ];
+  ]);
+  // ขาเข้าที่จางอยู่ข้างหลัง (compare) — ขาออกเป็นเทาล้วนก็เทียบด้วย luma ขาเข้าเส้นเดียว; ปรับสัดส่วนตามจำนวนตัวอย่างให้เทียบกันได้
+  let faint = null;
+  let faintScale = 1;
+  if (plan === "compare" && haveInput) {
+    faint = grayscale ? [[selectedInputBins[3], "#38d9ff"]] : [
+      [selectedInputBins[0], "#ff5577"], [selectedInputBins[1], "#45e59a"], [selectedInputBins[2], "#4aa3ff"],
+    ];
+    faintScale = samples / selectedInputSamples;
+  }
+  const mainScale = mainBins ? samples / selectedInputSamples : 1; // luma ขาเข้านับตัวอย่างต่างกับขาออก (ปกติเท่ากัน)
   let peak = 1;
   for (const [bins] of channels) {
-    for (let i = 0; i < 256; i++) if (bins[i] > peak) peak = bins[i];
+    for (let i = 0; i < 256; i++) if (bins[i] * mainScale > peak) peak = bins[i] * mainScale;
   }
-  for (const [bins, color] of channels) {
+  if (faint) for (const [bins] of faint) for (let i = 0; i < 256; i++) if (bins[i] * faintScale > peak) peak = bins[i] * faintScale;
+  const plot = (bins, color, lineW, alpha, scale) => {
+    ctx.globalAlpha = alpha;
     ctx.strokeStyle = color;
-    ctx.lineWidth = grayscale ? 2 : 1.35;
+    ctx.lineWidth = lineW;
     ctx.beginPath();
     for (let i = 0; i < 256; i++) {
       const x = 10 + (i / 255) * (w - 20);
-      const normalized = Math.log1p(bins[i]) / Math.log1p(peak);
+      const normalized = Math.log1p(bins[i] * scale) / Math.log1p(peak);
       const y = h - 22 - normalized * (h - 34);
       if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
     }
     ctx.stroke();
+    ctx.globalAlpha = 1;
+  };
+  if (faint) for (const [bins, color] of faint) plot(bins, color, 1.5, 0.5, faintScale);
+  for (const [bins, color] of channels) plot(bins, color, grayscale || mainBins ? 2 : 1.35, 1, mainScale);
+  // เส้นเกณฑ์ T (เส้นประสีส้ม = --warning) + ป้าย "T = 137"
+  if (marker != null) {
+    const mx = markerX(marker, 10, w - 10);
+    ctx.strokeStyle = "#ff9f43";
+    ctx.lineWidth = 1.5;
+    ctx.setLineDash([4, 3]);
+    ctx.beginPath(); ctx.moveTo(mx, 8); ctx.lineTo(mx, h - 22); ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.fillStyle = "#ff9f43";
+    ctx.font = "600 11px 'IBM Plex Mono', Consolas, monospace";
+    const label = "T = " + marker;
+    const right = mx > w - 70;
+    ctx.textAlign = right ? "right" : "left";
+    ctx.fillText(label, right ? mx - 5 : mx + 5, 21);
+    ctx.textAlign = "left";
   }
   ctx.fillStyle = "#71849d";
   ctx.font = "500 10px 'IBM Plex Mono', Consolas, monospace"; // ตัวเลขล้วน → Plex Mono (มี fallback)
   ctx.fillText("0", 10, h - 7);
   ctx.fillText("128", w / 2 - 9, h - 7);
   ctx.fillText("255", w - 30, h - 7);
+  if (legend) {
+    ctx.font = "500 10px 'IBM Plex Sans Thai', 'Leelawadee UI', 'Segoe UI', sans-serif";
+    ctx.fillText(legend, 34, h - 7);
+  }
   selectedPreviewHistogram.dataset.ready = "true";
 
   const mean = samples ? sum / samples : 0;
@@ -1396,6 +1527,7 @@ async function ensureCamera() {
     const stream = await startCamera(videoEl, state.cameraId);
     if (!stream) return true; // ถูกแซงด้วยการเปิดกล้องใหม่ — รุ่นล่าสุดจัดการเอง
     cameraStarted = true;
+    syncWireFlow();
     cameraError.classList.add("hidden");
     gridEl.classList.remove("hidden");
     // จดจำ deviceId ที่ใช้จริง + โหลดรายชื่อกล้อง (label มีค่าหลังได้สิทธิ์แล้ว)
@@ -1451,6 +1583,7 @@ async function setSource(s) {
   if (s !== "video" && videoURL) closeVideoSource(); // ออกจากโหมดวิดีโอ
   state.source = s;
   state.paused = false; // paused มีอายุเฉพาะ session ปัจจุบัน — สลับ source แล้วกลับมารันสด
+  syncWireFlow();
   pendingProcess = false; // กัน pendingProcess ค้างข้ามโหมด (เช่น กล้อง→ภาพนิ่ง) ประมวลผลเกิน
   detPendingArgs = null; // กัน detect ค้างจากภาพ/โหมดเดิมมารันทับภาพใหม่
   invalidateSelectedPreview();
@@ -1484,6 +1617,7 @@ async function setSource(s) {
 function setCameraMode(m) {
   state.cameraMode = m;
   state.paused = false; // สลับโหมดย่อย → เริ่มรันสดเสมอ (กัน paused ค้างขัดกับสถานะจริง)
+  syncWireFlow();
   invalidateSelectedPreview();
   renderSelectedPreviewState(); // เข้าโหมด Pose (ไม่มี preview) → เคลียร์ ไม่ค้างภาพเก่า
   sourceBar.render();
@@ -1586,6 +1720,24 @@ document.addEventListener("keydown", (e) => {
       return;
     }
   }
+  // UI เฟส 3.7: F = Fit · 1–9 = เลือกกล่องที่ N ตามเลขบนการ์ด · 0 = จอผลลัพธ์ที่ชี้อยู่กลับพอดีจอ
+  // อยู่หลังคีย์ที่ผู้ใช้ผูกเอง (ถ้าผูก f/ตัวเลขไว้ ใช้ตามที่ผูก) · โหมดตีกรอบใช้เลข 1–9 เลือกคลาสอยู่แล้ว จึงข้าม
+  if (annotateCanvas.isActive()) return;
+  const nav = parseNavKey(e);
+  if (!nav) return;
+  if (nav.type === "fit") {
+    e.preventDefault();
+    editor.fitView();
+  } else if (nav.type === "step") {
+    const id = nthStepNodeId(state.pipelines, nav.n, selectedIdOf(state));
+    if (id != null) {
+      e.preventDefault();
+      editor.selectNodeById(id);
+    }
+  } else if (nav.type === "reset-view") {
+    e.preventDefault();
+    if (!resetHoveredView()) for (const c of cells.values()) c.insp?.resetView(); // ไม่ได้ชี้จอไหน → ทุกจอ
+  }
 });
 
 function openSettingsDialog() {
@@ -1657,6 +1809,7 @@ setInterval(() => {
     ? (state.cameraMode === "pose" ? "Pose" : "สด")
     : state.source === "video" ? "วิดีโอ" : "ภาพนิ่ง";
   lvModeEl.textContent = mode;
+  syncWireFlow(); // กันสถานะหลุด (กล้องดับ/สลับ source ทางอื่น) — ไม่ทำอะไรถ้าค่าไม่เปลี่ยน
   // จุดเขียวเฉพาะภาพสด — ภาพนิ่ง/วิดีโอ/หยุด ใช้จุดเทา (ไม่พึ่งสีอย่างเดียว: ข้อความโหมดอยู่ข้างจุดเสมอ)
   lvModeEl.parentElement.classList.toggle("is-live", mode === "สด" || mode === "Pose");
   const w = videoEl.videoWidth, h = videoEl.videoHeight;
@@ -1812,8 +1965,17 @@ function captureFrame() {
 }
 
 // Run / Pause การประมวลผลสด (ตรงเจตนา "Run Pipeline" แบบเข้ากับสถาปัตยกรรม live)
+// 3.5 สายวิ่งบนกระดาน: เฉพาะกล้องสดกำลังเดิน (ไม่ pause, โหมดต้นฉบับ) และผู้ใช้ไม่ได้ตั้งลดแอนิเมชัน — editor ไม่มี loop ต่อเนื่องเมื่อปิด
+const reducedMotionMql = typeof matchMedia === "function" ? matchMedia("(prefers-reduced-motion: reduce)") : null;
+function syncWireFlow() {
+  editor.setFlow(flowActive({
+    source: state.source, cameraMode: state.cameraMode, cameraStarted, paused: state.paused,
+    reducedMotion: !!(reducedMotionMql && reducedMotionMql.matches),
+  }));
+}
 function togglePause() {
   state.paused = !state.paused;
+  syncWireFlow();
   if (state.source === "camera" && state.cameraMode === "pose") {
     if (state.paused) pausePose(); else resumePose();
   }
@@ -2016,6 +2178,8 @@ function drawDLCells(dls, src, w, h) {
     if (cell) {
       if (cell.canvas.width !== w) { cell.canvas.width = w; cell.canvas.height = h; }
       cell.ctx.drawImage(oc, 0, 0);
+      cell.lastImg = null; // จอ DL วาดผ่าน drawImage — inspector อ่านพิกเซลจาก canvas ตรง ๆ
+      cell.insp.onFrame();
     }
   }
 }
@@ -2369,10 +2533,17 @@ function connectedDisplayIds() {
 }
 // pipeline ที่ worker OpenCV ต้องทำ (ไม่รวมกล่องที่ผ่าน DL — DL รันในฝั่ง renderer)
 function workerPipelines() {
-  const pipelines = state.pipelines.filter((d) => d.connected && !d.dl);
   const preview = selectedPreviewPipeline();
-  if (preview) pipelines.push(preview);
-  return pipelines;
+  // ภาพขาเข้าต้องมาก่อน preview ในข้อความเดียวกัน · กล้องสดขอไม่ถี่กว่า INPUT_HIST_INTERVAL_MS (ดู pickWorkerPipelines)
+  return pickWorkerPipelines({
+    displays: state.pipelines.filter((d) => d.connected && !d.dl),
+    preview,
+    input: preview ? selectedInputPipeline() : null,
+    source: state.source,
+    inputReady: selectedInputReady,
+    inputAt: selectedInputAt,
+    now: performance.now(),
+  });
 }
 
 async function requestProcess() {
@@ -2615,9 +2786,16 @@ function drawResults(results) {
     const { displayId, width, height, buffer } = r;
     const img = new ImageData(new Uint8ClampedArray(buffer), width, height);
 
-    if (typeof displayId === "string" && displayId.startsWith(SELECTED_PREVIEW_PREFIX)) {
-      const currentPreviewId = selectedPreviewPipeline()?.displayId;
-      if (displayId !== currentPreviewId) continue; // ผลจากกล่องที่เลิกเลือกแล้ว — ห้ามย้อนมาทับ preview ใหม่
+    // 3.2 ภาพขาเข้าของกล่องที่เลือก → เก็บเฉพาะ histogram (ไม่วาดที่ไหน) · ผลของรุ่นเก่า (generation ไม่ตรง) ทิ้ง
+    const kind = classifyResultId(displayId, selectedInputPipeline()?.displayId, selectedPreviewPipeline()?.displayId);
+    if (kind === "stale") continue; // ผลของรุ่นเก่า/กล่องที่เลิกเลือกแล้ว — ห้ามย้อนมาทับ
+    if (kind === "input") {
+      selectedInputSamples = accumulateInputHistogram(img.data, width * height);
+      selectedInputReady = true;
+      selectedInputAt = performance.now();
+      continue;
+    }
+    if (kind === "preview") {
       if (selectedPreviewCanvas.width !== width) selectedPreviewCanvas.width = width;
       if (selectedPreviewCanvas.height !== height) selectedPreviewCanvas.height = height;
       selectedPreviewCanvas.getContext("2d").putImageData(img, 0, 0);
@@ -2644,6 +2822,8 @@ function drawResults(results) {
       if (cell.canvas.width !== width) cell.canvas.width = width;
       if (cell.canvas.height !== height) cell.canvas.height = height;
       cell.ctx.putImageData(img, 0, 0);
+      cell.lastImg = img; // ให้ pixel inspector อ่านค่าตรงจากข้อมูลเฟรมนี้ (ไม่ต้อง getImageData ต่อการขยับเมาส์)
+      cell.insp.onFrame();
     }
   }
   // มีผลลัพธ์ filter ใหม่เข้ามา — ถ้าอยู่ในโหมดตีกรอบและกำลังดูพื้นหลังแบบ filtered ให้รีเฟรชพื้นหลังทันที

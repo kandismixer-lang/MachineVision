@@ -165,19 +165,19 @@ export function runPipeline(baseRGB, pipeline, nodeState, activeNodeIds, frameMe
     const ctx = {};
     let src2Mat = null;
     let src2Owned = false;
-    if (step.src2) {
-      // src2 ประมวลผลจาก baseRGB เดียวกัน (กล้องมีแหล่งเดียวในแอปนี้ — ดู §A.3) ไม่ใช่จาก `current` ของ
-      // chain หลัก เพราะ chain B เป็นสายแยกที่ย้อนกลับไปหา SourceNode ของตัวเอง ไม่ใช่ต่อจาก chain A
-      const r2 = runPipeline(baseRGB, step.src2.pipeline || [], nodeState, activeNodeIds, frameMemo);
-      src2Mat = r2.mat;
-      src2Owned = true;
-      for (const n of r2.notes) notes.push({ ...n, id: `${step.id}(B):${n.id}` }); // prefix กัน id ชนกับ note หลัก (UI ไม่พึ่ง id) — nodeId/view ของ node ต้นทางในสาย B คงไว้ตามเดิมจาก ...n
-    }
-    if (src2Mat) ctx.src2 = src2Mat;
-
     let out = null;
     let memoKey = null;
     try {
+      if (step.src2) {
+        // src2 ประมวลผลจาก baseRGB เดียวกัน (กล้องมีแหล่งเดียวในแอปนี้ — ดู §A.3) ไม่ใช่จาก `current` ของ
+        // chain หลัก เพราะ chain B เป็นสายแยกที่ย้อนกลับไปหา SourceNode ของตัวเอง ไม่ใช่ต่อจาก chain A
+        // อยู่ "ใน" try: สาย B throw → catch ด้านล่างต้องคืน converted/current ของ step นี้ (เดิมอยู่นอก try = รั่วทุกเฟรม)
+        const r2 = runPipeline(baseRGB, step.src2.pipeline || [], nodeState, activeNodeIds, frameMemo);
+        src2Mat = r2.mat;
+        src2Owned = true;
+        for (const n of r2.notes) notes.push({ ...n, id: `${step.id}(B):${n.id}` }); // prefix กัน id ชนกับ note หลัก (UI ไม่พึ่ง id) — nodeId/view ของ node ต้นทางในสาย B คงไว้ตามเดิมจาก ...n
+        ctx.src2 = src2Mat;
+      }
       // ขนาดที่ใช้ fingerprint ต้อง = ขนาดภาพที่ "เข้าถึง op นี้จริง" (input, หลัง auto-gray/Crop/Resize
       // ของสายของ op เอง) ไม่ใช่ width/height ของเฟรมกล้องดิบระดับบนสุด (ดู §A.3 ตาราง reset rules) —
       // ต้องอยู่ "ใน" try นี้ ไม่ใช่ก่อนหน้า: ถ้า getNodeState throw (เช่น __dispose ของ state เก่า
@@ -216,6 +216,18 @@ export function runPipeline(baseRGB, pipeline, nodeState, activeNodeIds, frameMe
       if (converted) converted.delete();
       if (src2Owned && src2Mat) src2Mat.delete();
       if (ownsCurrent) current.delete();
+      // UI เฟส 3.6: บอกว่า step ไหนพัง (nodeId เดียวกับ note) — ชั้นในสุด (สาย B) ตั้งก่อน ชั้นนอกห้ามทับ
+      // ค่า throw ที่ไม่ใช่ object (ข้อยกเว้นของ WASM เป็นตัวเลข) ห่อเป็น Error เพื่อแนบ nodeId ได้
+      if (step.nodeId != null) {
+        // ข้อยกเว้นของ OpenCV.js เป็นเลขพอยน์เตอร์ — ถอดเป็นข้อความจริงถ้า cv มี exceptionFromPtr
+        let text = String(err);
+        if (typeof err === "number" && typeof cv.exceptionFromPtr === "function") {
+          try { text = cv.exceptionFromPtr(err).msg || text; } catch { /* ใช้ตัวเลขเดิม */ }
+        }
+        const e = err !== null && typeof err === "object" ? err : new Error(text);
+        if (e.nodeId === undefined) { try { e.nodeId = step.nodeId; } catch { /* object ที่ freeze — ข้ามไป */ } }
+        throw e;
+      }
       throw err;
     }
     if (ctx.info) notes.push(mkNote(step, f, { info: ctx.info }));
@@ -305,7 +317,7 @@ self.onmessage = async (e) => {
       const { results, transfer, notes } = computeFrame(msg.width, msg.height, msg.buffer, msg.pipelines || []);
       self.postMessage({ type: "result", results, notes }, transfer);
     } catch (err) {
-      self.postMessage({ type: "error", message: err.message });
+      self.postMessage({ type: "error", message: err.message, nodeId: err.nodeId });
     }
     return;
   }
