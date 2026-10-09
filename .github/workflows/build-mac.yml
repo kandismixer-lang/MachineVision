@@ -1,0 +1,43 @@
+# Build macOS (.dmg) แบบยังไม่ sign — กดรันเองจากแท็บ Actions เท่านั้น
+# ไม่ได้อัปโหลดเข้า GitHub Release (ไม่กระทบ auto-update ของ Windows) — ไฟล์อยู่ใน Artifacts ของ run นั้น
+# config แยก: electron-builder-mac.json (ฝั่ง Windows ยังใช้ "build" ใน package.json ตามเดิม)
+name: Build macOS (unsigned)
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build-mac:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - run: npm ci
+
+      # Mac ต้องใช้ไอคอน ≥512px — ขยายจาก electron/icon.ico (ใหญ่สุด 256px) ตอน build เท่านั้น
+      - name: Make mac icon
+        run: |
+          python3 -m pip install --quiet --break-system-packages pillow
+          mkdir -p build-mac
+          python3 -c "from PIL import Image; im=Image.open('electron/icon.ico'); im.size=max(im.ico.sizes()); im.load(); im.convert('RGBA').resize((512,512), Image.LANCZOS).save('build-mac/icon.png')"
+
+      - run: npx vite build
+
+      # ไม่มีบัญชี Apple → identity null + afterPack (.github/mac/adhoc-sign.cjs) sign แบบ ad-hoc
+      # Apple Silicon ต้องมีอย่างน้อยลายเซ็นแบบนี้ถึงจะเปิดได้
+      - name: Build dmg (arm64 + x64)
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: "false"
+        run: npx electron-builder --mac --arm64 --x64 --config electron-builder-mac.json --publish never
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: machine-vision-mac
+          path: release-mac/*.dmg
+          if-no-files-found: error
+          retention-days: 30
