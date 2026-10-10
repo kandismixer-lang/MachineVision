@@ -26,6 +26,9 @@ let mainWindow = null; // อ้างอิงหน้าต่างล่า
 let updateDownloadedInfo = null; // { version, file } เมื่อโหลดเสร็จ (file = path ตัวติดตั้ง), null เมื่อยังไม่มี
 // portable build อัปเดตอัตโนมัติไม่ได้ (ไม่มี installer) — electron-builder ตั้ง env นี้ให้เฉพาะ portable
 const isPortable = !!process.env.PORTABLE_EXECUTABLE_DIR;
+// update feed (latest.yml + ตัวติดตั้ง NSIS) มีเฉพาะ Windows — build Mac ตั้ง publish: null จึงไม่มี app-update.yml
+const isUpdatablePlatform = process.platform === "win32";
+const UNSUPPORTED_PLATFORM_MSG = "เวอร์ชันนี้อัปเดตอัตโนมัติไม่ได้ — โหลดไฟล์ใหม่จากหน้า GitHub Releases";
 
 function createWindow() {
   const win = new BrowserWindow({
@@ -153,6 +156,7 @@ ipcMain.handle("dl:convertPt", async (_e, ptPath) => {
 ipcMain.handle("update:check", async () => {
   if (isDev) return { ok: false, error: "โหมด dev ไม่มี update feed ให้เช็ค" };
   if (isPortable) return { ok: false, error: "เวอร์ชัน portable อัปเดตอัตโนมัติไม่ได้ — โหลดตัวติดตั้ง (Setup) มาใช้แทน" };
+  if (!isUpdatablePlatform) return { ok: false, error: UNSUPPORTED_PLATFORM_MSG };
   try {
     await autoUpdater.checkForUpdates();
     return { ok: true };
@@ -179,6 +183,7 @@ ipcMain.handle("update:getState", () => ({
 ipcMain.handle("update:install", async () => {
   if (isDev) return { ok: false, error: "โหมด dev ติดตั้งอัปเดตไม่ได้" };
   if (isPortable) return { ok: false, error: "เวอร์ชัน portable อัปเดตอัตโนมัติไม่ได้" };
+  if (!isUpdatablePlatform) return { ok: false, error: UNSUPPORTED_PLATFORM_MSG };
   if (!updateDownloadedInfo?.file) return { ok: false, error: "ยังไม่มีไฟล์อัปเดตที่โหลดเสร็จ" };
   const err = await shell.openPath(updateDownloadedInfo.file); // คืน "" เมื่อสำเร็จ, ข้อความ error เมื่อล้มเหลว
   if (err) return { ok: false, error: err };
@@ -203,7 +208,7 @@ app.whenReady().then(() => {
   // เช็ค+โหลด+ติดตั้งอัปเดตจาก GitHub Releases อัตโนมัติ (เฉพาะ build จริง — dev ไม่มี feed ให้เช็ค)
   // ใช้ได้เฉพาะกับตัว NSIS installer (perMachine:false) เท่านั้น — portable/unpacked ไม่รองรับ
   // ทุก event ส่งสถานะกลับไป renderer ด้วย (sendUpdateStatus) ให้ปุ่ม "เช็คอัปเดต" ในแผงตั้งค่าโชว์ผลจริงได้
-  if (!isDev && !isPortable) {
+  if (!isDev && !isPortable && isUpdatablePlatform) {
     autoUpdater.on("checking-for-update", () => sendUpdateStatus("checking"));
     autoUpdater.on("update-available", (info) => sendUpdateStatus("available", {
       version: info?.version, releaseNotes: info?.releaseNotes, releaseName: info?.releaseName,
