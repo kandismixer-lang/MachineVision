@@ -1,14 +1,26 @@
 # Build macOS (.dmg) แบบยังไม่ sign — กดรันเองจากแท็บ Actions เท่านั้น
-# ไม่ได้อัปโหลดเข้า GitHub Release (ไม่กระทบ auto-update ของ Windows) — ไฟล์อยู่ใน Artifacts ของ run นั้น
+# build เสร็จแล้วแนบ .dmg เข้า GitHub Release ของเวอร์ชันใน package.json (v<version>) ที่ต้องมีอยู่แล้ว
+# auto-update ของ Windows อ่านแค่ latest.yml → ไฟล์ .dmg ใน Release ไม่กระทบ
 # config แยก: electron-builder-mac.json (ฝั่ง Windows ยังใช้ "build" ใน package.json ตามเดิม)
 name: Build macOS (unsigned)
 
 on:
   workflow_dispatch:
+    inputs:
+      attach_to_release:
+        description: "แนบ .dmg เข้า GitHub Release v<version ใน package.json>"
+        type: boolean
+        default: true
+
+# ค่าเริ่มต้นอ่านอย่างเดียว — job build รัน npm ci (สคริปต์ของ dependency) จึงไม่ควรถือสิทธิ์เขียน
+permissions:
+  contents: read
 
 jobs:
   build-mac:
     runs-on: macos-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
     steps:
       - uses: actions/checkout@v4
 
@@ -16,6 +28,9 @@ jobs:
         with:
           node-version: 20
           cache: npm
+
+      - id: version
+        run: echo "version=$(node -p "require('./package.json').version")" >> "$GITHUB_OUTPUT"
 
       - run: npm ci
 
@@ -41,3 +56,28 @@ jobs:
           path: release-mac/*.dmg
           if-no-files-found: error
           retention-days: 30
+
+  # แยก job เพื่อให้สิทธิ์เขียน Release อยู่เฉพาะตรงนี้ (ไม่รัน npm ci / โค้ดของ dependency)
+  attach-to-release:
+    needs: build-mac
+    if: ${{ inputs.attach_to_release }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: machine-vision-mac
+          path: dmg
+
+      - name: Upload .dmg to Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: v${{ needs.build-mac.outputs.version }}
+        run: |
+          if ! gh release view "$TAG" --repo "$GITHUB_REPOSITORY" > /dev/null; then
+            echo "::error::ไม่พบ Release $TAG — ออก Release ของ Windows ก่อน (electron-builder --win --publish always) แล้วค่อยรัน workflow นี้"
+            exit 1
+          fi
+          # --clobber: รันซ้ำได้ ไฟล์ชื่อเดิมถูกแทนที่
+          gh release upload "$TAG" dmg/*.dmg --clobber --repo "$GITHUB_REPOSITORY"
