@@ -41,7 +41,8 @@
     "publish": {
       "provider": "github",
       "owner": "kandismixer-lang",
-      "repo": "MachineVision"
+      "repo": "MachineVision",
+      "releaseType": "release"
     }
   },
   "author": "",
