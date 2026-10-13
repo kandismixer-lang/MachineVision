@@ -13,6 +13,7 @@ __pycache__/
 
 # internal docs / notes / screenshots: keep local, not in repo
 /*.md
+!/RELEASE-NOTES.md
 !/README.md
 /*.pdf
 /*.png

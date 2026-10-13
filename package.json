@@ -43,6 +43,9 @@
       "owner": "kandismixer-lang",
       "repo": "MachineVision",
       "releaseType": "release"
+    },
+    "releaseInfo": {
+      "releaseNotesFile": "RELEASE-NOTES.md"
     }
   },
   "author": "",
