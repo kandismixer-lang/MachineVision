@@ -187,26 +187,24 @@
             <div id="split-panel"></div>
           </details>
 
-          <section class="side-section dataset-export-section" id="dataset-export-section">
-            <div class="side-summary"><span class="dataset-step-number">3</span> EXPORT</div>
-            <!-- แบ่งครึ่ง: ซ้าย = ไฟล์ dataset · ขวา = โค้ดเทรน (กดแล้วเปิดหน้าตั้งค่า เลือก YOLO/RF-DETR ในนั้น) -->
-            <div class="dataset-export-split">
-              <div class="dataset-export-card is-dataset">
-                <strong>Dataset</strong>
-                <span>ภาพ + label แบบ YOLO (.zip) ใช้ได้ทั้ง YOLO / RF-DETR</span>
-                <button id="export-yolo-zip-btn" type="button" class="btn dataset-export-btn">
-                  ⇩ Export Dataset
-                </button>
-              </div>
-              <div class="dataset-export-card is-code">
-                <strong id="export-code-title">Training Code</strong>
-                <span>เลือก YOLO / RF-DETR แล้วได้ Notebook สำหรับ Colab</span>
-                <button id="export-yolo-code-btn" type="button" class="btn btn-yolo-ghost dataset-code-btn">
-                  &lt;/&gt; Export Code
-                </button>
-              </div>
+          <details class="side-section dataset-export-section" id="dataset-export-section" open>
+            <summary class="side-summary"><span class="dataset-step-number">3</span> EXPORT</summary>
+            <!-- Guided Export: เลือกว่าจะ export อะไร แล้วโชว์คำอธิบาย + ปุ่มของตัวที่เลือกตัวเดียว -->
+            <div class="export-kind-toggle" role="tablist" aria-label="Export type">
+              <button id="export-kind-dataset" type="button" class="export-kind-btn is-dataset active"
+                role="tab" aria-selected="true" aria-controls="export-pane-dataset" data-export-kind="dataset">Dataset</button>
+              <button id="export-kind-code" type="button" class="export-kind-btn is-code"
+                role="tab" aria-selected="false" aria-controls="export-pane-code" data-export-kind="code" tabindex="-1">Training Code</button>
             </div>
-          </section>
+            <div class="export-pane is-dataset" id="export-pane-dataset" role="tabpanel" aria-labelledby="export-kind-dataset">
+              <p class="export-pane-desc">ภาพ + label แบบ YOLO · ใช้ได้ทั้ง <span class="nowrap">YOLO / RF-DETR</span></p>
+              <button id="export-yolo-zip-btn" type="button" class="btn dataset-export-btn">⇩ Export Dataset</button>
+            </div>
+            <div class="export-pane is-code" id="export-pane-code" role="tabpanel" aria-labelledby="export-kind-code" hidden>
+              <p class="export-pane-desc">เลือก <span class="nowrap">YOLO / RF-DETR</span> แล้วได้ Notebook สำหรับ Google Colab</p>
+              <button id="export-yolo-code-btn" type="button" class="btn dataset-code-btn">&lt;/&gt; Export Code</button>
+            </div>
+          </details>
 
           <!-- บันทึกการทำงาน (Design §18) — secondary, collapsible -->
           <details class="side-section" id="logs-section">

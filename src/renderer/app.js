@@ -137,7 +137,33 @@ function setInspectorTab(next) {
     const split = document.getElementById("split-panel-section");
     if (classes) classes.open = true;
     if (split) split.open = true;
+    const exportSec = document.getElementById("dataset-export-section");
+    if (exportSec) exportSec.open = true;
   }
+}
+
+// EXPORT (Guided): เลือก Dataset / Training Code → โชว์คำอธิบาย + ปุ่มของตัวที่เลือกตัวเดียว
+// ปุ่ม export จริงยังเป็น id เดิม (export-yolo-zip-btn / export-yolo-code-btn) แค่ซ่อนตัวที่ไม่ได้เลือก
+const exportKindBtns = [...document.querySelectorAll(".export-kind-btn")];
+function setExportKind(kind) {
+  for (const btn of exportKindBtns) {
+    const on = btn.dataset.exportKind === kind;
+    btn.classList.toggle("active", on);
+    btn.setAttribute("aria-selected", String(on));
+    btn.tabIndex = on ? 0 : -1;
+    const pane = document.getElementById(btn.getAttribute("aria-controls"));
+    if (pane) pane.hidden = !on;
+  }
+}
+for (const btn of exportKindBtns) {
+  btn.addEventListener("click", () => setExportKind(btn.dataset.exportKind));
+  btn.addEventListener("keydown", (event) => {
+    if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
+    event.preventDefault();
+    const next = exportKindBtns[(exportKindBtns.indexOf(btn) + 1) % exportKindBtns.length];
+    setExportKind(next.dataset.exportKind);
+    next.focus();
+  });
 }
 
 if (isUiV2) {
