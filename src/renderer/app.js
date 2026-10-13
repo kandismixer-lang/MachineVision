@@ -13,6 +13,10 @@ import { startCamera, listCameras } from "./camera.js";
 import { startPose, stopPose, pausePose, resumePose, renderStillErgonomics } from "./mediapipe-pose.js";
 import { loadModel as dlLoadModel, isLoaded as dlLoaded, detect as dlDetect, drawDetections as dlDraw, COCO } from "./dl-yolo.js";
 import { FILTERS } from "./filters/registry.js";
+
+// ปิดโหมด Pose / Ergonomics ไว้ชั่วคราว (กล้องสดกระตุกหนัก) — ซ่อนทุกทางเข้า: ปุ่ม Pose, คีย์ลัด, ปุ่มดู Ergonomics ในคลัง
+// เปลี่ยนเป็น true เพื่อเปิดกลับ — โค้ดใน mediapipe-pose.js ยังอยู่ครบ
+const POSE_ENABLED = false;
 import { buildPythonCode } from "./codegen.js";
 import { showCodeDialog } from "./ui/code-dialog.js";
 import { openSettings } from "./ui/settings-dialog.js";
@@ -1622,6 +1626,7 @@ async function setSource(s) {
 
 // สลับโหมดย่อยของกล้อง: Original (ผ่าน node-graph) / Ergonomics Pose
 function setCameraMode(m) {
+  if (m === "pose" && !POSE_ENABLED) return;
   state.cameraMode = m;
   state.paused = false; // สลับโหมดย่อย → เริ่มรันสดเสมอ (กัน paused ค้างขัดกับสถานะจริง)
   syncWireFlow();
@@ -1666,7 +1671,7 @@ const KEY_ACTIONS = [
   { id: "nextImage", label: "▶ ภาพถัดไป", hint: "โหมดชุดภาพ (batch)", run: () => { if (state.images.length > 1) setImageIndex(state.imageIndex + 1); } },
   { id: "export", label: "⬇ โค้ด YOLO", hint: "เปิดหน้าต่างโค้ดเทรน YOLO", run: () => openExportCode() },
   { id: "saveImages", label: "💾 เซฟภาพ", hint: "บันทึกภาพผลลัพธ์เป็น PNG", run: () => saveImages() },
-];
+].filter((a) => POSE_ENABLED || a.id !== "toggleMode");
 const DEFAULT_KEYMAP = { capture: " ", toggleMode: "m", toggleSource: "c", prevImage: "ArrowLeft", nextImage: "ArrowRight", export: "e" };
 
 function loadKeymap() {
@@ -1831,8 +1836,9 @@ setInterval(() => {
   const originalBtn = document.getElementById("lv-original");
   const poseBtn = document.getElementById("lv-pose");
   const toggleBtn = document.getElementById("lv-toggle");
-  originalBtn.style.display = cameraControlsVisible ? "" : "none";
-  poseBtn.style.display = cameraControlsVisible ? "" : "none";
+  // ปิด Pose → เหลือโหมดเดียว ปุ่ม "ภาพ" ไม่มีอะไรให้สลับ จึงซ่อนคู่กัน
+  originalBtn.style.display = cameraControlsVisible && POSE_ENABLED ? "" : "none";
+  poseBtn.style.display = cameraControlsVisible && POSE_ENABLED ? "" : "none";
   toggleBtn.style.display = cameraControlsVisible ? "" : "none";
   originalBtn.classList.toggle("active", state.cameraMode === "original");
   poseBtn.classList.toggle("active", state.cameraMode === "pose");
@@ -2133,7 +2139,7 @@ function renderTray() {
   clearBtn.className = "btn";
   clearBtn.textContent = "ล้างคลัง";
   clearBtn.addEventListener("click", () => { state.captures = []; state.selectedCapture = -1; renderTray(); });
-  acts.appendChild(ergoBtn);
+  if (POSE_ENABLED) acts.appendChild(ergoBtn);
   acts.appendChild(saveBtn);
   acts.appendChild(clearBtn);
   head.appendChild(acts);

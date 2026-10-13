@@ -66,7 +66,7 @@ export function createSourceBar(container, cb) {
         const capBtn = document.createElement("button");
         capBtn.className = "btn btn-primary";
         capBtn.textContent = "📸 ถ่ายภาพ";
-        capBtn.title = "เก็บเฟรมกล้องปัจจุบันเข้าคลัง (ดูในถาดล่าง — เซฟ/ดู Ergonomics ได้)";
+        capBtn.title = "เก็บเฟรมกล้องปัจจุบันเข้าคลัง (ดูและเซฟได้ในถาดล่าง)";
         // โชว์ keycap ของคีย์ลัดที่ผูกไว้ (ตั้งได้ที่ปุ่มฟันเฟือง ⚙)
         const sc = cb.getShortcut ? cb.getShortcut("capture") : "";
         if (sc) {
