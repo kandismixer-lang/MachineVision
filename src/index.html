@@ -195,18 +195,23 @@
               <button id="fw-rfdetr" type="button" class="fw-btn">RF-DETR</button>
             </div>
             <div class="framework-hint" id="framework-hint">YOLO — เร็ว เบา · dataset แบบ YOLO (.txt)</div>
-            <div class="dataset-code-export">
-              <div class="dataset-code-copy">
-                <strong id="export-code-title">Export Training Code</strong>
-                <span>สร้าง Training Notebook สำหรับ Google Colab</span>
+            <!-- แบ่งครึ่ง: ซ้าย = ไฟล์ dataset · ขวา = โค้ดเทรน (กดแล้วเปิดหน้าตั้งค่าก่อนดาวน์โหลด) -->
+            <div class="dataset-export-split">
+              <div class="dataset-export-card is-dataset">
+                <strong>Dataset</strong>
+                <span>ภาพ + label เป็นไฟล์ .zip</span>
+                <button id="export-yolo-zip-btn" type="button" class="btn dataset-export-btn">
+                  ⇩ Export Dataset
+                </button>
               </div>
-              <button id="export-yolo-code-btn" type="button" class="btn btn-yolo-ghost dataset-code-btn">
-                ⚙ Configure
-              </button>
+              <div class="dataset-export-card is-code">
+                <strong id="export-code-title">Training Code</strong>
+                <span>Notebook สำหรับ Google Colab</span>
+                <button id="export-yolo-code-btn" type="button" class="btn btn-yolo-ghost dataset-code-btn">
+                  &lt;/&gt; Export Code
+                </button>
+              </div>
             </div>
-            <button id="export-yolo-zip-btn" type="button" class="btn dataset-export-btn">
-              ⇩ Export Dataset
-            </button>
           </section>
 
           <!-- บันทึกการทำงาน (Design §18) — secondary, collapsible -->

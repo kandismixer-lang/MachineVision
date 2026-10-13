@@ -3939,37 +3939,49 @@ body.stage-fullscreen-open { overflow: hidden; }
   display: block;
   border-bottom: 1px solid var(--v2-line);
 }
-.ui-v2 .dataset-code-export {
+.ui-v2 .dataset-export-split {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  align-items: center;
-  gap: 10px;
-  padding: 11px;
-  border: 1px solid rgba(168, 85, 247, .28);
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+.ui-v2 .dataset-export-card {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  padding: 10px;
+  border: 1px solid rgba(46, 159, 255, .28);
   border-radius: 8px;
+  background: rgba(33, 137, 232, .07);
+}
+.ui-v2 .dataset-export-card.is-code {
+  border-color: rgba(168, 85, 247, .28);
   background: rgba(126, 34, 206, .08);
 }
-.ui-v2 .dataset-code-copy { min-width: 0; }
-.ui-v2 .dataset-code-copy strong {
-  display: block;
-  color: #f0e9ff;
+.ui-v2 .dataset-export-card strong {
+  color: #eaf6ff;
   font-size: 11px;
 }
-.ui-v2 .dataset-code-copy span {
-  display: block;
-  margin-top: 3px;
-  color: #927fa9;
+.ui-v2 .dataset-export-card.is-code strong { color: #f0e9ff; }
+.ui-v2 .dataset-export-card span {
+  flex: 1;
+  margin: 3px 0 9px;
+  color: #8ea6bf;
   font-size: 9px;
   line-height: 1.35;
 }
-.ui-v2 .dataset-code-btn { min-height: 32px; padding-inline: 10px; }
-.ui-v2 .dataset-export-btn {
+.ui-v2 .dataset-export-card.is-code span { color: #927fa9; }
+.ui-v2 .dataset-export-btn,
+.ui-v2 .dataset-code-btn {
   width: 100%;
-  min-height: 38px;
-  margin-top: 11px;
+  min-height: 34px;
+  padding: 6px;
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 1.2;
+}
+.ui-v2 .dataset-export-btn {
   border-color: #2e9fff;
   color: #eaf6ff;
-  font-weight: 700;
 }
 
 /* Export YOLO Code dialog */
