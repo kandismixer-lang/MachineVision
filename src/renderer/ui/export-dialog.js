@@ -1,6 +1,6 @@
 // หน้าต่างตั้งค่าก่อน Export — ถามค่าเทรน (YOLO หรือ RF-DETR) แล้วส่งค่ากลับ
 // เปิดด้วย open(onConfirm) : onConfirm({ epochs, batch, dataPath, framework, ... })
-import { getExportFramework } from "../app.js";
+import { getExportFramework, setExportFramework } from "../app.js";
 import { getClasses } from "../dataset/annotations.js";
 
 export function createExportDialog() {
@@ -72,11 +72,15 @@ export function createExportDialog() {
     setupTitle.textContent = "Training setup";
     setupPane.appendChild(setupTitle);
 
-    // framework เลือกจากแถบ EXPORT (ข้างปุ่ม Export Dataset) — dialog แค่อ่านค่าปัจจุบันมาปรับหน้าตา/โค้ด
-    const framework = getExportFramework();
+    // framework เลือกในหน้าต่างนี้ (เริ่มจากค่าที่เลือกครั้งก่อน) — dataset .zip ใช้แบบ YOLO ร่วมกันอยู่แล้ว
+    let framework = getExportFramework();
     // ซ่อน field เฉพาะ YOLO (เวอร์ชัน + imgsz) + ปรับ label ปุ่มตาม framework
     function applyFramework() {
       const isYolo = framework === "yolo";
+      fwButtons.forEach((b) => b.classList.toggle("active", b.dataset.fw === framework));
+      fwHint.textContent = isYolo
+        ? "YOLO — เร็ว เบา · ultralytics"
+        : "RF-DETR — แม่นกว่า กิน VRAM มากกว่า · package rfdetr";
       if (vField) vField.style.display = isYolo ? "" : "none";
       if (iField) iField.style.display = isYolo ? "" : "none";
       // aField (augmentation dataset) ใช้ทั้ง YOLO และ RF-DETR — ไม่ซ่อน
@@ -90,6 +94,38 @@ export function createExportDialog() {
     summaryPane.className = "yolo-summary-pane";
     body.append(setupPane, summaryPane);
     modal.appendChild(body);
+
+    // ===== Framework (YOLO / RF-DETR) — เปลี่ยนโมเดล + batch ที่ให้เลือก + โค้ดที่สร้าง =====
+    const fwField = document.createElement("div");
+    fwField.className = "setup-field";
+    const fwLabel = document.createElement("div");
+    fwLabel.className = "setup-label";
+    fwLabel.innerHTML = "<span>Framework</span><span class='setup-hint'>โมเดลที่จะเทรนบน Colab</span>";
+    const fwToggle = document.createElement("div");
+    fwToggle.className = "framework-toggle";
+    fwToggle.setAttribute("role", "tablist");
+    fwToggle.setAttribute("aria-label", "Framework");
+    const fwButtons = [["yolo", "YOLO"], ["rfdetr", "RF-DETR"]].map(([v, label]) => {
+      const b = document.createElement("button");
+      b.type = "button";
+      b.className = "fw-btn";
+      b.dataset.fw = v;
+      b.textContent = label;
+      b.addEventListener("click", () => {
+        if (framework === v) return;
+        framework = v;
+        setExportFramework(v); // จำไว้ เปิดครั้งหน้าเริ่มที่ตัวเดิม
+        renderBatchCards();
+        applyFramework();
+        updateSummary();
+      });
+      fwToggle.appendChild(b);
+      return b;
+    });
+    const fwHint = document.createElement("div");
+    fwHint.className = "framework-hint";
+    fwField.append(fwLabel, fwToggle, fwHint);
+    setupPane.appendChild(fwField);
 
     // ===== Epochs (พิมพ์เอา + ปุ่ม −/+) =====
     const epField = document.createElement("div");
@@ -144,22 +180,28 @@ export function createExportDialog() {
     const grid = document.createElement("div");
     grid.className = "batch-grid batch-select-grid";
     // RF-DETR ใช้ batch จริงเล็ก (2/4/8 กัน OOM บน T4) · YOLO ใช้ batch ปกติ (16/32/64)
-    const batchOptions = framework === "rfdetr" ? [2, 4, 8] : BATCHES;
-    let batch = framework === "rfdetr" ? 4 : 32;
-    const cards = [];
-    for (const b of batchOptions) {
-      const card = document.createElement("button");
-      card.type = "button";
-      card.className = "batch-card" + (b === batch ? " active" : "");
-      card.textContent = String(b);
-      card.addEventListener("click", () => {
-        batch = b;
-        cards.forEach((c) => c.classList.toggle("active", Number(c.textContent) === batch));
-        updateSummary();
-      });
-      cards.push(card);
-      grid.appendChild(card);
+    // สลับ framework → สร้างการ์ดใหม่ + รีเซ็ตเป็นค่าเริ่มของ framework นั้น
+    let batch;
+    function renderBatchCards() {
+      const batchOptions = framework === "rfdetr" ? [2, 4, 8] : BATCHES;
+      batch = framework === "rfdetr" ? 4 : 32;
+      const cards = [];
+      grid.replaceChildren();
+      for (const b of batchOptions) {
+        const card = document.createElement("button");
+        card.type = "button";
+        card.className = "batch-card" + (b === batch ? " active" : "");
+        card.textContent = String(b);
+        card.addEventListener("click", () => {
+          batch = b;
+          cards.forEach((c) => c.classList.toggle("active", Number(c.textContent) === batch));
+          updateSummary();
+        });
+        cards.push(card);
+        grid.appendChild(card);
+      }
     }
+    renderBatchCards();
     bField.appendChild(grid);
     setupPane.appendChild(bField);
 

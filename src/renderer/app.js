@@ -43,7 +43,7 @@ import {
 } from "./ui/phase3-math.js";
 import { localParamsFor } from "./filters/ui-meta.js";
 
-// framework เป้าหมายของ dataset/โค้ดเทรน: 'yolo' (YOLO txt) | 'rfdetr' (COCO json) — ตั้งจากหน้าต่าง Export
+// framework เป้าหมายของ dataset/โค้ดเทรน: 'yolo' (YOLO txt) | 'rfdetr' (COCO json) — เลือกในหน้าต่าง Export Code (จำค่าล่าสุดไว้)
 let exportFramework = "yolo";
 export function getExportFramework() { return exportFramework; }
 export function setExportFramework(v) { exportFramework = v === "rfdetr" ? "rfdetr" : "yolo"; }
@@ -1328,25 +1328,6 @@ if (exportYoloZipBtn) exportYoloZipBtn.addEventListener("click", () => exportYol
 
 // popup แจ้งเตือนอัปเดต (เด้งเองตอนมีเวอร์ชันใหม่ + โชว์ release notes)
 initUpdatePopup();
-
-
-// ---- ปุ่มเลือก framework (YOLO / RF-DETR) ในแถบ EXPORT — คุมทั้งรูปแบบ dataset และโค้ดเทรน ----
-const fwYoloBtn = document.getElementById("fw-yolo");
-const fwRfdetrBtn = document.getElementById("fw-rfdetr");
-const fwHintEl = document.getElementById("framework-hint");
-function syncFrameworkUI() {
-  const fw = getExportFramework();
-  fwYoloBtn?.classList.toggle("active", fw === "yolo");
-  fwRfdetrBtn?.classList.toggle("active", fw === "rfdetr");
-  if (fwHintEl) {
-    fwHintEl.textContent = fw === "rfdetr"
-      ? "RF-DETR · ใช้ YOLO Dataset (.txt) ร่วมกับ YOLO / Roboflow"
-      : "YOLO — เร็ว เบา · dataset แบบ YOLO (.txt)";
-  }
-}
-fwYoloBtn?.addEventListener("click", () => { setExportFramework("yolo"); syncFrameworkUI(); });
-fwRfdetrBtn?.addEventListener("click", () => { setExportFramework("rfdetr"); syncFrameworkUI(); });
-syncFrameworkUI();
 
 const detailPanelEl = document.getElementById("detail-panel");
 
