@@ -493,11 +493,18 @@ function exportBlock(imgsz) {
   return `model.export(format="onnx", imgsz=${sz})`;
 }
 
-// ===== RF-DETR (COCO dataset) — ต่างจาก YOLO: ใช้ package rfdetr + dataset_dir ที่มี train/valid/test =====
+// ===== RF-DETR — ใช้ dataset.zip แบบ YOLO ตัวเดียวกัน (rfdetr>=1.8 อ่าน YOLO ได้เอง) =====
+// rfdetr ตรวจรูปแบบ YOLO จาก data.yaml + <split>/images + <split>/labels และอ่านชื่อคลาสจาก names: ใน data.yaml
+// คลาสเป็น 0-indexed ตรงกับแอป (ไม่มี supercategory แบบ COCO ของ Roboflow มาเลื่อน index)
 // ต้อง [train,loggers] ไม่งั้นขาด pytorch_lightning ตอน model.train()
 const RFDETR_INSTALL_BLOCK = `!pip install "rfdetr[train,loggers]==1.8.2"`;
-// unzip เหมือน YOLO (แตกไป /content/dataset ซึ่งมี train/ valid/ test/ + _annotations.coco.json)
-const RFDETR_UNZIP_BLOCK = UNZIP_BLOCK;
+// rfdetr บังคับต้องมีโฟลเดอร์ valid/ (ไม่อ่าน path จาก data.yaml) — ถ้าผู้ใช้ไม่ได้แบ่ง valid
+// zip จะมีแค่ train/ → rfdetr มองไม่ออกว่าเป็น YOLO แล้วไปหา COCO แทนจน error · เลยก็อป train มาเป็น valid
+const RFDETR_UNZIP_BLOCK = `${UNZIP_BLOCK}
+import os, shutil
+if not os.path.isdir("/content/dataset/valid"):
+    print("ไม่มี valid split — ใช้ภาพ train เป็น valid แทน (ควรแบ่ง valid ในแอปเพื่อวัดผลจริง)")
+    shutil.copytree("/content/dataset/train", "/content/dataset/valid")`;
 
 function rfdetrTrainBlock({ epochs, batch, dataPath, rfModel, numClasses }) {
   const dir = JSON.stringify(dataPath || "/content/dataset");

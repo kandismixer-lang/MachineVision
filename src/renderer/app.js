@@ -1327,7 +1327,7 @@ async function runDatasetExport() {
     } else {
       downloadBlob(blob, "dataset.zip");
     }
-    const kind = stats.framework === "rfdetr" ? "RF-DETR (COCO)" : stats.task === "segment" ? "YOLO segmentation" : "YOLO detect";
+    const kind = stats.task === "segment" ? "YOLO segmentation" : "YOLO detect";
     statusEl.textContent =
       `Export ${kind} dataset เสร็จ — ` +
       `${stats.exported} ภาพ (ข้าม ${stats.skipped} ภาพไม่มีกรอบ), ` +
