@@ -25,17 +25,24 @@ export const COCO = [
 ];
 
 // ดึงชื่อคลาสจาก metadata ที่ ultralytics ฝังในไฟล์ .onnx (ใช้ภายในไฟล์นี้)
+// metadata เป็น str(dict) ของ Python เก็บแบบ UTF-8 → ต้องถอด utf-8 (latin1 ทำชื่อไทยเพี้ยนเป็น "à¸£à¸...")
+// Python ใส่ ' หรือ " แล้วแต่ชื่อ (เช่น "it's") → อ่านทีละคู่ key: 'value' ตาม index จริง
 function extractOnnxNames(bytes) {
   try {
-    const s = new TextDecoder("latin1").decode(bytes);
+    const s = new TextDecoder("utf-8").decode(bytes);
     const i = s.indexOf("names");
     if (i < 0) return null;
     const brace = s.indexOf("{", i);
-    const end = s.indexOf("}", brace);
-    if (brace < 0 || end < 0) return null;
-    const dict = s.slice(brace, end + 1);
-    const names = [...dict.matchAll(/['"]([^'"]+)['"]/g)].map((m) => m[1]);
-    return names.length ? names : null;
+    if (brace < 0) return null;
+    const re = /\s*(\d+)\s*:\s*(['"])((?:\\.|(?!\2)[^\\])*)\2\s*([,}])/y;
+    re.lastIndex = brace + 1;
+    const names = [];
+    let m;
+    while ((m = re.exec(s))) {
+      names[Number(m[1])] = m[3].replace(/\\(.)/g, "$1");
+      if (m[4] === "}") break;
+    }
+    return names.length ? Array.from(names, (n) => n ?? "") : null;
   } catch {
     return null;
   }

@@ -564,5 +564,6 @@ export function buildTrainingCode(opts) {
   if (opts.framework === "rfdetr") {
     return `${RFDETR_INSTALL_BLOCK}\n\n${RFDETR_UNZIP_BLOCK}\n\n${rfdetrTrainBlock(opts)}\n${RFDETR_EXPORT_BLOCK}\n`;
   }
-  return `${IMPORTS_BLOCK}\n\n${UNZIP_BLOCK}\n\n${trainBlock(opts)}\n\n${exportBlock(opts.imgsz)}\n`;
+  // Colab ไม่มี ultralytics ติดมา — วางโค้ดนี้เซลล์เดียวต้องติดตั้งก่อน import (เหมือน notebook)
+  return `${INSTALL_BLOCK}\n\n${IMPORTS_BLOCK}\n\n${UNZIP_BLOCK}\n\n${trainBlock(opts)}\n\n${exportBlock(opts.imgsz)}\n`;
 }

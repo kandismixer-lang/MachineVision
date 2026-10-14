@@ -4,7 +4,7 @@ import { readFile } from 'node:fs/promises';
 // Isolate the code generator from app startup/DOM; generator functions run unchanged.
 const source = (await readFile(new URL('../src/renderer/ui/export-dialog.js', import.meta.url), 'utf8'))
   .replace(/^import .*;\r?$/gm, '');
-const { buildNotebook } = await import(`data:text/javascript;base64,${Buffer.from(source).toString('base64')}`);
+const { buildNotebook, buildTrainingCode } = await import(`data:text/javascript;base64,${Buffer.from(source).toString('base64')}`);
 const opts = { epochs: 50, batch: 4, imgsz: 640, model: 'yolo11n', rfModel: 'RFDETRNano' };
 for (const framework of ['yolo', 'rfdetr']) {
   test(`${framework}: preserve manual ZIP cell and defined training path`, () => {
@@ -22,3 +22,13 @@ for (const framework of ['yolo', 'rfdetr']) {
     }
   });
 }
+
+test('copy-paste code installs its framework before importing it', () => {
+  for (const framework of ['yolo', 'rfdetr']) {
+    const code = buildTrainingCode({ ...opts, framework });
+    const install = code.indexOf('!pip install');
+    assert.ok(install >= 0, `${framework}: missing pip install`);
+    const firstImport = code.search(/^(import|from) (ultralytics|rfdetr)/m);
+    assert.ok(firstImport > install, `${framework}: imports before installing`);
+  }
+});
