@@ -4,12 +4,12 @@ import { GROUP_ICON } from "../filters/ui-meta.js";
 
 export const TOOL_SECTIONS = [
   { title: "COLOR", ops: ["grayscale", "colorspace", "channel_split", "rgb_adjust", "color_inrange", "kmeans_segment", "slic", "white_balance", "invert"] },
-  { title: "ENHANCE", ops: ["brightness_contrast", "gamma", "hist_equalize", "clahe", "contrast_stretch", "flatfield_correction", "unsharp", "laplacian_sharpen", "custom_kernel"] },
+  { title: "ENHANCE", ops: ["brightness_contrast", "gamma", "hist_equalize", "clahe", "contrast_stretch", "flatfield_correction", "quantize", "unsharp", "laplacian_sharpen", "custom_kernel"] },
   { title: "GEOMETRY", ops: ["crop", "roi_polygon", "resize", "rotate", "flip", "perspective_warp", "undistort", "translate_shear"] },
   { title: "FILTER & DENOISE", ops: ["salt_pepper_noise", "gaussian_noise", "median_blur", "gaussian_blur", "box_blur", "bilateral", "wiener_filter"] },
   { title: "MORPHOLOGY", ops: ["morphology"] },
   { title: "SEGMENTATION & EDGE", ops: ["binary_threshold", "otsu_threshold", "adaptive_threshold", "multi_otsu_threshold", "canny", "sobel", "laplacian_edge", "scharr_edge", "prewitt_edge", "roberts_edge", "log_edge", "watershed", "grabcut", "region_growing"] },
-  { title: "ANALYSIS & DETECTION", ops: ["find_contours", "connected_components", "distance_transform", "local_std_filter", "local_entropy_filter", "regionprops", "feret", "line_profile", "bounding_boxes", "hough_circles", "hough_lines", "harris_corners", "shi_tomasi_corners", "orb_keypoints", "akaze_keypoints", "fast_keypoints"] },
+  { title: "ANALYSIS & DETECTION", ops: ["find_contours", "connected_components", "distance_transform", "local_std_filter", "local_entropy_filter", "regionprops", "feret", "line_profile", "shape_filter", "bounding_boxes", "hough_circles", "hough_lines", "harris_corners", "shi_tomasi_corners", "orb_keypoints", "akaze_keypoints", "fast_keypoints"] },
   { title: "FREQUENCY DOMAIN", ops: ["fft_magnitude", "fft_filter", "bandpass_notch"] },
   { title: "IMAGE ARITHMETIC", ops: ["imabsdiff", "imfuse", "mask", "imarith", "logical_ops", "inpaint", "hist_match"] },
   { title: "TEMPLATE MATCHING", ops: ["template_matching"] },
@@ -35,6 +35,9 @@ const OP_ICON = {
   // ใหม่ (2026-10-01, IP batch ENHANCE/MORPHOLOGY) — เช็คแล้วไม่ชนกับ glyph ใดในไฟล์นี้หรือ GROUP_ICON
   contrast_stretch: "↔", // ลูกศรซ้าย-ขวา สื่อ "ยืดช่วง"
   flatfield_correction: "🔆", // ดวงอาทิตย์มีรัศมี สื่อ "แก้แสง"
+  // ใหม่ (2026-10-14, IP batch 3) — เช็คแล้วไม่ชนกับ OP_ICON / GROUP_ICON / NC_ICON_FALLBACK
+  quantize: "≣", // แถบซ้อนกัน สื่อ "ระดับสี"
+  shape_filter: "⛛", // กรวยกรอง สื่อ "คัดวัตถุ"
   crop: "⛝", resize: "⤢", rotate: "↻", flip: "⇋", perspective_warp: "⏢", undistort: "⊙",
   salt_pepper_noise: "⁙", median_blur: "●", gaussian_blur: "✺", box_blur: "▧", bilateral: "◎",
   morphology: "▣", binary_threshold: "◩", otsu_threshold: "◧", adaptive_threshold: "◨", multi_otsu_threshold: "◪",

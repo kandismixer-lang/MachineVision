@@ -73,6 +73,59 @@ const LOGICAL_PY = {
 function pickOwn(table, key, fallback) {
   return Object.hasOwn(table, key) ? table[key] : table[fallback];
 }
+// IP batch 3 — interpolation ของ Resize/Rotate (auto/ไม่รู้จัก = ไม่อยู่ในตาราง → บรรทัดเดิมทุกตัวอักษร) · prop/view ของ shape_filter
+const INTERP_PY = { nearest: "cv2.INTER_NEAREST", bilinear: "cv2.INTER_LINEAR", bicubic: "cv2.INTER_CUBIC" };
+const SHAPE_FILTER_PROP_PY = { circularity: "circularity", solidity: "solidity", eccentricity: "eccentricity", extent: "extent", none: "none" };
+const SHAPE_FILTER_VIEW_PY = { overlay: "overlay", mask: "mask" };
+// IP batch 3 — คู่แฝดของ regionPixelStats + regionShapeValues + hullRowSpans ใน registry.js (สูตร/ลำดับเดียวกัน → เท่ากันทุก bit)
+// ไม่มีตัวแปร img ข้างใน (กันการเปลี่ยนชื่อ img ของสาย 2 ภาพ) · ys เป็นเลขแถวสัมพันธ์กับกรอบ จึงใช้ lo[ys] ได้ตรง ๆ
+function regionStatsPyLines() {
+  return [
+    "def region_stats(c, x, y, w, h, gray, bin_img, need_hull):",
+    "    # ค่ารูปร่างแบบนับพิกเซล — สูตร/ลำดับเดียวกับ regionPixelStats + regionShapeValues ของแอป",
+    "    obj = np.zeros((h, w), np.uint8)",
+    "    cv2.fillPoly(obj, [c], 255, cv2.LINE_8, 0, (-x, -y))",
+    "    sel = (obj > 0) & (bin_img[y:y + h, x:x + w] > 0)  # อยู่ในเส้นขอบนอก และเป็นสีขาว (รูไม่นับ)",
+    "    ys, xs = np.nonzero(sel)",
+    "    xs = xs.astype(np.int64)",
+    "    ys = ys.astype(np.int64)",
+    "    n = int(xs.size)",
+    "    sx, sy = int(xs.sum()), int(ys.sum())",
+    "    sxx, syy, sxy = int((xs * xs).sum()), int((ys * ys).sum()), int((xs * ys).sum())",
+    "    total = int(gray[y:y + h, x:x + w][sel].sum(dtype=np.int64))",
+    "    solidity = None",
+    "    if need_hull:",
+    "        hp = cv2.convexHull(c).reshape(-1, 2).astype(np.int64)",
+    "        lo = np.full(h, 2147483647, np.int64)",
+    "        hi = np.full(h, -2147483648, np.int64)",
+    "        m = len(hp)",
+    "        for i in range(m):",
+    "            ax, ay = int(hp[i, 0]), int(hp[i, 1])",
+    "            bx, by = int(hp[(i + 1) % m, 0]), int(hp[(i + 1) % m, 1])",
+    "            if ay == by:",
+    "                lo[ay - y] = min(int(lo[ay - y]), ax, bx)",
+    "                hi[ay - y] = max(int(hi[ay - y]), ax, bx)",
+    "                continue",
+    "            rows = np.arange(min(ay, by), max(ay, by) + 1, dtype=np.int64)",
+    "            den = by - ay",
+    "            num = ax * den + (rows - ay) * (bx - ax)",
+    "            if den < 0:",
+    "                num, den = -num, -den",
+    "            lo[rows - y] = np.minimum(lo[rows - y], -((-num) // den))  # ปัดขึ้น",
+    "            hi[rows - y] = np.maximum(hi[rows - y], num // den)  # ปัดลง",
+    "        outside = int(((xs + x < lo[ys]) | (xs + x > hi[ys])).sum())",
+    "        solidity = n / (int(np.maximum(hi - lo + 1, 0).sum()) + outside)",
+    "    cxx = float(n * sxx - sx * sx) / (n * n) + 1 / 12",
+    "    cyy = float(n * syy - sy * sy) / (n * n) + 1 / 12",
+    "    cxy = float(n * sxy - sx * sy) / (n * n)",
+    "    common = np.sqrt((cxx - cyy) * (cxx - cyy) + 4 * cxy * cxy)",
+    "    major = 2 * np.sqrt(2) * np.sqrt(cxx + cyy + common)",
+    "    minor = 2 * np.sqrt(2) * np.sqrt(cxx + cyy - common)",
+    "    ecc = 2 * np.sqrt(max(0.0, (major / 2) * (major / 2) - (minor / 2) * (minor / 2))) / major",
+    "    return {'area_px': n, 'equiv_diameter': np.sqrt(4 * n / np.pi), 'extent': n / (w * h), 'solidity': solidity,",
+    "            'major_axis': major, 'minor_axis': minor, 'eccentricity': ecc, 'mean_intensity': total / n}",
+  ];
+}
 // ภาพ B → ขาวดำ → ปรับขนาดเท่า A → threshold 127 ได้ b_bin (ลำดับเดียวกับ GEN.mask และ registry.js)
 function bBinaryLines() {
   return [
@@ -400,6 +453,19 @@ const GEN = {
       "    lut = np.clip(lut, 0, 255).astype(np.uint8)",
       "    img = cv2.LUT(img, lut)",
       '    print(f"stretched [{low}, {high}] -> [0, 255]")',
+    ];
+  } },
+
+  // IP batch 3 — LUT จำนวนเต็มล้วน สูตรเดียวกับ quantizeLut ของ registry.js (ไม่ใช้ round/** 0.5) → ผลเท่าแอปทุก byte
+  quantize: { needs: "any", out: "same", gen: (p) => {
+    const N = Math.round(clampNum(p.levels, 4, 2, 256));
+    let bits = 0;
+    while ((1 << bits) < N) bits++;
+    return [
+      `levels = ${N}`,
+      "q_lut = ((((np.arange(256) * levels) // 256) * 510 + (levels - 1)) // (2 * (levels - 1))).astype(np.uint8)",
+      "img = cv2.LUT(img, q_lut)",
+      `print(f"quantize: {levels} levels per channel (${bits} bit)")`,
     ];
   } },
 
@@ -1047,7 +1113,9 @@ const GEN = {
     return [
       "_, bin_img = cv2.threshold(img, 127, 255, cv2.THRESH_BINARY)",
       "contours, _ = cv2.findContours(bin_img, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)",
+      "gray_src = img  # ภาพเทาก่อนวาด (ใช้วัดความสว่างเฉลี่ย)",
       "img = cv2.cvtColor(img, cv2.COLOR_GRAY2BGR)",
+      ...regionStatsPyLines(),
       "# รอบที่ 1: คัดตาม minArea + เก็บ sort key (area DESC, y ASC, x ASC, cx ASC, cy ASC, tx ASC)",
       "cands = []",
       "for c in contours:",
@@ -1080,6 +1148,7 @@ const GEN = {
       "        orientation = (angle + 90) % 180",
       "    regions.append({'area': area, 'cx': cx, 'cy': cy, 'perimeter': perimeter, 'circularity': circularity,",
       "                     'bx': x, 'by': y, 'bw': w, 'bh': h, 'orientation': orientation})",
+      "    regions[-1].update(region_stats(c, x, y, w, h, gray_src, bin_img, True))",
       "if total_found == 0:",
       "    print(\"ไม่พบวัตถุ\")",
       "else:",
@@ -1092,6 +1161,12 @@ const GEN = {
       "for idx, r in enumerate(regions[:20], start=1):",
       "    ori = '-' if r['orientation'] is None else f\"{r['orientation']:.1f}\"",
       "    print(f\"{idx}  {r['area']:.1f}  {r['cx']:.1f}  {r['cy']:.1f}  {r['perimeter']:.1f}  {r['circularity']:.2f}  ({r['bx']},{r['by']},{r['bw']},{r['bh']})  {ori}\")",
+      "if regions:",
+      "    print('object  area_px  equiv_diam  extent  solidity  major_axis  minor_axis  eccentricity  mean_intensity')",
+      "for idx, r in enumerate(regions[:20], start=1):",
+      "    print(f\"{idx}  {r['area_px']}  {r['equiv_diameter']:.1f}  {r['extent']:.3f}  {r['solidity']:.3f}  {r['major_axis']:.1f}  {r['minor_axis']:.1f}  {r['eccentricity']:.3f}  {r['mean_intensity']:.1f}\")",
+      "if regions and all(r['mean_intensity'] == 255 for r in regions):",
+      "    print(\"note: the input is already black/white, so mean_intensity is 255 for every object\")",
       "for idx, r in enumerate(regions, start=1):",
       "    cv2.rectangle(img, (r['bx'], r['by']), (r['bx'] + r['bw'], r['by'] + r['bh']), (0, 255, 0), 2)",
       "    cv2.circle(img, (int(r['cx'] + 0.5), int(r['cy'] + 0.5)), 3, (0, 0, 255), -1)",
@@ -1189,6 +1264,71 @@ const GEN = {
       "for r in feret_rows[:20]:",
       "    print(f\"{r[0]}  {r[1]:.1f}  {r[2]:.1f}  {r[3]:.1f}  {r[4]:.2f}  {r[5]:.2f}  {r[6]:.2f}  {r[7]:.2f}  {r[8]:.1f}  {r[9]:.1f}\")",
     ];
+  } },
+
+  // IP batch 3 — Filter by Shape: เลือกเฉพาะแขนงของ prop ที่ใช้ตอน gen (ไม่มี if ใน Python) · ตัวเลข/prop/view clamp+สลับตอน gen เหมือน registry.js
+  shape_filter: { needs: "gray", outOf: (p) => (pickOwn(SHAPE_FILTER_VIEW_PY, p.view, "overlay") === "mask" ? "gray" : "color"), gen: (p, ctx) => {
+    const prop = pickOwn(SHAPE_FILTER_PROP_PY, p.prop, "circularity");
+    const mask = pickOwn(SHAPE_FILTER_VIEW_PY, p.view, "overlay") === "mask";
+    let lo = clampNum(p.lo, 0.8, 0, 1), hi = clampNum(p.hi, 1, 0, 1);
+    let minA = clampNum(p.minArea, 50, 0, 100000), maxA = clampNum(p.maxArea, 0, 0, 5000000);
+    let rangeSwapped = false, areaSwapped = false;
+    if (lo > hi) { const t = lo; lo = hi; hi = t; rangeSwapped = true; }
+    if (maxA > 0 && maxA < minA) { const t = minA; minA = maxA; maxA = t; areaSwapped = true; }
+    const lines = [
+      "_, bin_img = cv2.threshold(img, 127, 255, cv2.THRESH_BINARY)",
+      "contours, _ = cv2.findContours(bin_img, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)",
+      ...regionStatsPyLines(),
+      `lo, hi = ${String(lo)}, ${String(hi)}  # ช่วงค่าที่เก็บ`,
+      `min_area, max_area = ${String(minA)}, ${String(maxA)}  # max_area 0 = ไม่จำกัด`,
+      "kept_mask = np.zeros(bin_img.shape, np.uint8)",
+      "kept = removed_area = removed_shape = 0",
+      "for i, c in enumerate(contours):",
+      "    x, y, w, h = cv2.boundingRect(c)",
+      "    if w * h < min_area:",
+      "        removed_area += 1",
+      "        continue",
+      `    st = region_stats(c, x, y, w, h, img, bin_img, ${prop === "solidity" ? "True" : "False"})`,
+      "    if st['area_px'] < min_area or (max_area > 0 and st['area_px'] > max_area):",
+      "        removed_area += 1",
+      "        continue",
+    ];
+    if (prop === "circularity") {
+      lines.push(
+        "    perimeter = cv2.arcLength(c, True)",
+        "    area = cv2.contourArea(c)",
+        "    v = 0 if perimeter == 0 else (4 * np.pi * area) / (perimeter * perimeter)",
+        "    v = max(0.0, min(1.0, v))",
+      );
+    } else if (prop !== "none") {
+      lines.push(`    v = st['${prop}']`);
+    }
+    if (prop !== "none") {
+      lines.push(
+        "    if not (lo <= v <= hi):",
+        "        removed_shape += 1",
+        "        continue",
+      );
+    }
+    lines.push(
+      "    kept += 1",
+      "    cv2.drawContours(kept_mask, contours, i, 255, -1)",
+      "kept_mask = cv2.bitwise_and(kept_mask, bin_img)",
+      'print(f"shape filter: kept {kept} of {len(contours)} objects (removed by area {removed_area}, by shape {removed_shape})")',
+    );
+    if (rangeSwapped) lines.push('print("note: lo/hi were swapped")');
+    if (areaSwapped) lines.push('print("note: min/max area were swapped")');
+    if (mask) {
+      lines.push("img = kept_mask");
+    } else {
+      lines.push(
+        "out = np.zeros((img.shape[0], img.shape[1], 3), np.uint8)",
+        `out[bin_img > 0] = ${pyColor(ctx, [255, 0, 0])}`,
+        "out[kept_mask > 0] = (255, 255, 255)",
+        "img = out",
+      );
+    }
+    return lines;
   } },
 
   // IP batch 2 ชิ้น D — improfile (nearest neighbour) · นิพจน์/ลำดับคำนวณเดียวกับ registry.js จึงได้ภาพ + ตัวเลขเท่าแอปทุก byte
@@ -1424,6 +1564,19 @@ const GEN = {
   ] },
 
   resize: { needs: "any", out: "same", gen: (p) => {
+    if (Object.hasOwn(INTERP_PY, p.interp)) {
+      // เลือกวิธีเอง: ขนาดคำนวณแบบแอป (Math.round + เพดาน 20 ล้านพิกเซล) แล้วส่ง dsize ตรง ๆ — fx/fy ให้ขนาดผิด 1 px ได้ (ไม่ใช้)
+      const sc = Math.max(0.05, finiteOr(p.scale, 50) / 100);
+      return [
+        "h, w = img.shape[:2]",
+        `s = ${String(sc)}`,
+        "nw, nh = max(1, int(np.floor(w * s + 0.5))), max(1, int(np.floor(h * s + 0.5)))",
+        "if nw * nh > 20000000:  # เพดานเดียวกับแอป (กันหน่วยความจำเกิน)",
+        "    k = np.sqrt(20000000 / (nw * nh))",
+        "    nw, nh = max(1, int(np.floor(nw * k + 0.5))), max(1, int(np.floor(nh * k + 0.5)))",
+        `img = cv2.resize(img, (nw, nh), interpolation=${INTERP_PY[p.interp]})`,
+      ];
+    }
     const s = num(p.scale) / 100 || 0.5;
     return [
       `img = cv2.resize(img, None, fx=${s}, fy=${s}, interpolation=cv2.${s < 1 ? "INTER_AREA" : "INTER_CUBIC"})`,
@@ -1431,6 +1584,7 @@ const GEN = {
   } },
 
   rotate: { needs: "any", out: "same", gen: (p) => {
+    const flagArg = Object.hasOwn(INTERP_PY, p.interp) ? `, flags=${INTERP_PY[p.interp]}` : ""; // auto = บรรทัดเดิม
     const lines = [
       "(h, w) = img.shape[:2]",
       "center = (w / 2, h / 2)",
@@ -1445,10 +1599,10 @@ const GEN = {
         "out_h = int(round(w * sin_a + h * cos_a))",
         "M[0, 2] += (out_w - w) / 2",
         "M[1, 2] += (out_h - h) / 2",
-        "img = cv2.warpAffine(img, M, (out_w, out_h))",
+        `img = cv2.warpAffine(img, M, (out_w, out_h)${flagArg})`,
       );
     } else {
-      lines.push("img = cv2.warpAffine(img, M, (w, h))");
+      lines.push(`img = cv2.warpAffine(img, M, (w, h)${flagArg})`);
     }
     return lines;
   } },

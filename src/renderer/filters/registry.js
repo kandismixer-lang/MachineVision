@@ -430,6 +430,142 @@ function contourCentroid(cv, c) {
   return { cx: m.m10 / m.m00, cy: m.m01 / m.m00 };
 }
 
+// ===================================================================
+// ตัวช่วยของ IP batch 3 (2026-10-14 — regionprops +8 คอลัมน์ / shape_filter / quantize / interpolation)
+// ===================================================================
+// IP batch 3 — คอลัมน์ใหม่ของ Region Properties (ลำดับนี้ = ลำดับในตาราง) · shape_filter ใช้ key เดียวกัน
+const REGION_BASE_COLUMNS = ["index", "area", "cx", "cy", "perimeter", "circularity", "bbox_x", "bbox_y", "bbox_w", "bbox_h", "orientation_deg"];
+export const REGION_SHAPE_COLUMNS = ["area_px", "equiv_diameter", "extent", "solidity", "major_axis", "minor_axis", "eccentricity", "mean_intensity"];
+const REGION_COLUMNS_ALL = [...REGION_BASE_COLUMNS, ...REGION_SHAPE_COLUMNS];
+const REGION_MEAN_COL = REGION_COLUMNS_ALL.indexOf("mean_intensity");
+
+// กรอบล้อมของจุด contour (จำนวนเต็ม) = cv.boundingRect เป๊ะ โดยไม่เรียก embind
+export function regionBox(d) {
+  let mx = Infinity, my = Infinity, Mx = -Infinity, My = -Infinity;
+  for (let k = 0; k < d.length; k += 2) {
+    const x = d[k], y = d[k + 1];
+    if (x < mx) mx = x;
+    if (x > Mx) Mx = x;
+    if (y < my) my = y;
+    if (y > My) My = y;
+  }
+  return { x: mx, y: my, w: Mx - mx + 1, h: My - my + 1 };
+}
+
+// ช่วง x (รวมปลาย) ของ "จุดกลางพิกเซล" ที่อยู่ในหรือบนรูปนูน ต่อแถว — เลขจำนวนเต็มล้วน ไม่ขึ้นกับการระบายของ fillPoly
+// hd = hull.data32S (x0,y0,x1,y1,...) · box = กรอบของ contour (รูปนูนอยู่ในกรอบเสมอ)
+export function hullRowSpans(hd, box) {
+  const m = hd.length / 2;
+  const lo = new Int32Array(box.h).fill(2147483647), hi = new Int32Array(box.h).fill(-2147483648);
+  for (let i = 0; i < m; i++) {
+    const j = i + 1 === m ? 0 : i + 1;
+    const ax = hd[2 * i], ay = hd[2 * i + 1], bx = hd[2 * j], by = hd[2 * j + 1];
+    if (ay === by) { // ขอบแนวนอน (รวมรูปนูนจุดเดียว)
+      const r = ay - box.y, a = Math.min(ax, bx), b = Math.max(ax, bx);
+      if (a < lo[r]) lo[r] = a;
+      if (b > hi[r]) hi[r] = b;
+      continue;
+    }
+    const y0 = Math.min(ay, by), y1 = Math.max(ay, by), dx = bx - ax;
+    for (let y = y0; y <= y1; y++) {
+      let num = ax * (by - ay) + (y - ay) * dx, den = by - ay;
+      if (den < 0) { num = -num; den = -den; }
+      const fl = Math.floor(num / den), ce = -Math.floor(-num / den); // |num| เล็ก, den ≤ จำนวนแถว → floor ของ double = floor จริง
+      const r = y - box.y;
+      if (ce < lo[r]) lo[r] = ce;
+      if (fl > hi[r]) hi[r] = fl;
+    }
+  }
+  return { lo, hi };
+}
+
+// ผลรวมดิบต่อวัตถุ: พิกเซลของวัตถุ = อยู่ในเส้นขอบนอก (fillPoly) AND เป็นสีขาวใน bin (รูไม่นับ) · พิกัดนับจากมุมกรอบ
+// needHull = true → hullN = จำนวนพิกเซลของ "รูปนูน ∪ วัตถุ" (นับด้วยเลขจำนวนเต็ม) · false → null
+export function regionPixelStats(cv, c, box, binData, grayData, W, needHull) {
+  let obj = null, vec = null, hull = null;
+  try {
+    obj = cv.Mat.zeros(box.h, box.w, cv.CV_8UC1);
+    vec = new cv.MatVector();
+    vec.push_back(c);
+    cv.fillPoly(obj, vec, new cv.Scalar(255), cv.LINE_8, 0, new cv.Point(-box.x, -box.y));
+    let spans = null;
+    if (needHull) {
+      hull = new cv.Mat();
+      cv.convexHull(c, hull, false, true);
+      spans = hullRowSpans(hull.data32S, box);
+    }
+    const od = obj.data;
+    let n = 0, sx = 0, sy = 0, sxx = 0, syy = 0, sxy = 0, sum = 0, outside = 0;
+    for (let y = 0; y < box.h; y++) {
+      const row = (box.y + y) * W + box.x, orow = y * box.w;
+      for (let x = 0; x < box.w; x++) {
+        if (od[orow + x] === 0 || binData[row + x] === 0) continue;
+        n++; sx += x; sy += y; sxx += x * x; syy += y * y; sxy += x * y; sum += grayData[row + x];
+        if (spans !== null && (box.x + x < spans.lo[y] || box.x + x > spans.hi[y])) outside++;
+      }
+    }
+    let hullN = null;
+    if (spans !== null) {
+      hullN = outside;
+      for (let r = 0; r < box.h; r++) if (spans.hi[r] >= spans.lo[r]) hullN += spans.hi[r] - spans.lo[r] + 1;
+    }
+    return { n, sx, sy, sxx, syy, sxy, sum, hullN };
+  } finally {
+    if (obj) obj.delete();
+    if (vec) vec.delete();
+    if (hull) hull.delete();
+  }
+}
+
+// ค่าแบบ MATLAB regionprops (วงรีที่มี second moment เท่ากัน + 1/12 ต่อพิกเซล) · ตัวเศษเป็น BigInt (เกิน 2^53 ได้ที่ 1080p)
+// Number(BigInt) ของ JS กับ float(int) ของ Python ปัดแบบเดียวกัน (nearest-even) → เท่ากันทุก bit
+export function regionShapeValues(s, box) {
+  const n = s.n, nn = n * n, B = BigInt;
+  const cxx = Number(B(n) * B(s.sxx) - B(s.sx) * B(s.sx)) / nn + 1 / 12;
+  const cyy = Number(B(n) * B(s.syy) - B(s.sy) * B(s.sy)) / nn + 1 / 12;
+  const cxy = Number(B(n) * B(s.sxy) - B(s.sx) * B(s.sy)) / nn;
+  const common = Math.sqrt((cxx - cyy) * (cxx - cyy) + 4 * cxy * cxy);
+  const major = 2 * Math.SQRT2 * Math.sqrt(cxx + cyy + common);
+  const minor = 2 * Math.SQRT2 * Math.sqrt(cxx + cyy - common);
+  const ecc = 2 * Math.sqrt(Math.max(0, (major / 2) * (major / 2) - (minor / 2) * (minor / 2))) / major;
+  return {
+    area_px: n, equiv_diameter: Math.sqrt(4 * n / Math.PI), extent: n / (box.w * box.h),
+    solidity: s.hullN === null ? null : n / s.hullN,
+    major_axis: major, minor_axis: minor, eccentricity: ecc, mean_intensity: s.sum / n,
+  };
+}
+
+// ช่วง 0–255 แบ่ง N ช่วงเท่ากัน · แต่ละช่วงแทนด้วยค่าที่กระจายเต็ม 0–255 (ปัดครึ่งขึ้น, เลขจำนวนเต็มล้วน)
+export function quantizeLut(N) {
+  const t = new Uint8Array(256);
+  for (let v = 0; v < 256; v++) t[v] = Math.floor((Math.floor((v * N) / 256) * 510 + (N - 1)) / (2 * (N - 1)));
+  return t;
+}
+export function quantizeBits(N) { let b = 0; while ((1 << b) < N) b++; return b; }
+
+// IP batch 3 — วิธี interpolation ที่เลือกได้ · "auto" ไม่อยู่ในตาราง = ใช้วิธีเดิมของแต่ละ op (ไฟล์โปรเจกต์/โค้ด export เดิมไม่เปลี่ยน)
+const INTERP_FLAG = { nearest: "INTER_NEAREST", bilinear: "INTER_LINEAR", bicubic: "INTER_CUBIC" };
+const INTERP_NAME = { nearest: "Nearest neighbour", bilinear: "Bilinear", bicubic: "Bicubic" };
+function interpParam(autoLabel) {
+  return { key: "interp", type: "select", label: "วิธีคำนวณพิกเซลใหม่ (interpolation)", options: [
+    { value: "auto", label: autoLabel },
+    { value: "nearest", label: "Nearest neighbour (ใช้พิกเซลเดิมที่อยู่ใกล้ — เห็นเป็นบล็อก/ขั้นบันได)" },
+    { value: "bilinear", label: "Bilinear (เฉลี่ย 2×2 พิกเซลรอบจุด — นุ่ม)" },
+    { value: "bicubic", label: "Bicubic (ใช้ 4×4 พิกเซล — คมกว่า Bilinear ขอบอาจเกินเป็นเส้นจาง ๆ)" },
+  ], default: "auto" };
+}
+function interpKey(v) { return Object.hasOwn(INTERP_FLAG, v) ? v : "auto"; }
+
+// shape_filter: ชื่อไทยของ prop (ใช้ในข้อความ info) · view · ฟิลด์ scalars 4 ตัว (ลำดับตายตัว)
+export const SHAPE_FILTER_PROP_TH = { circularity: "ความกลม", solidity: "ความตัน", eccentricity: "ความรี", extent: "เต็มกรอบ", none: "" };
+const SHAPE_FILTER_VIEWS = { overlay: true, mask: true };
+const SHAPE_FILTER_FIELDS = [
+  ["sf_total", "วัตถุทั้งหมด (ชิ้น)"],
+  ["sf_kept", "เก็บไว้ (ชิ้น)"],
+  ["sf_removed_area", "คัดทิ้งเพราะพื้นที่ (ชิ้น)"],
+  ["sf_removed_shape", "คัดทิ้งเพราะรูปร่าง (ชิ้น)"],
+];
+
 // มุมของทิศทาง (dx, dy) ที่ normalise แล้ว (dy > 0 หรือ dy = 0 กับ dx > 0) → 0–180° · 0° = แนวนอน เพิ่มตามเข็มนาฬิกา (แกน y ของภาพชี้ลง)
 function feretAngle(dx, dy) {
   let a = (Math.atan2(dy, dx) * 180) / Math.PI;
@@ -1112,6 +1248,44 @@ export const OPS = {
         if (ratio) ratio.delete();
         if (meanMat) meanMat.delete();
         if (scaled) scaled.delete();
+      }
+    },
+  },
+
+  quantize: {
+    name: "Quantize / Posterize (ลดจำนวนระดับสี)",
+    needs: "any",
+    desc: "พิกเซลแต่ละจุดถูกเก็บเป็นตัวเลขที่มีจำนวนระดับจำกัด — 8 bit = 256 ระดับ ยิ่งเหลือระดับน้อยก็ยิ่งใช้ bit น้อยลง · เหลือ N ระดับ ภาพที่ไล่สีเนียน ๆ จะกลายเป็นแถบสีเป็นขั้น ๆ (เส้นขอบปลอม — เรียกว่า posterize) ภาพสีทำทีละช่องสี จึงได้ N×N×N สีที่เป็นไปได้ · ช่วง 0–255 ถูกแบ่งเป็น N ช่วงเท่า ๆ กัน เหมือน imquantize(A, thresholds) ของ MATLAB ที่ตั้งเส้นแบ่งห่างเท่ากัน (ถ้าอยากได้เส้นแบ่งที่เลือกจาก histogram ให้ใช้กล่อง Multi-Otsu) · แอปกระจายค่าผลลัพธ์กลับเต็ม 0–255 เพื่อให้เห็นชัด (imquantize ของ MATLAB คืนเลขลำดับ 1..N) · ไม่มี dithering (ไม่กระจาย error ของสี) · 2 ระดับ = ผลเดียวกับ Binary Threshold ที่ 127 · ดู histogram ก่อน/หลัง: หลัง Quantize จะเหลือเป็นแท่งแหลม N แท่ง",
+    params: [
+      { key: "levels", type: "number", label: "จำนวนระดับต่อช่อง", min: 2, max: 256, step: 1, default: 4, desc: "256 = ภาพเดิม (8 bit) · 2 = ขาว/ดำ" },
+    ],
+    apply(cv, src, p, ctx) {
+      if (isEmptyMat(src)) { if (ctx) ctx.info = "ภาพว่าง"; return src.clone(); }
+      const N = intIn(p.levels, 4, 2, 256);
+      let x = null, lut = null, dst = null;
+      try {
+        x = dropAlpha(cv, src);
+        lut = new cv.Mat(1, 256, cv.CV_8UC1);
+        lut.data.set(quantizeLut(N));
+        dst = new cv.Mat();
+        cv.LUT(x || src, lut, dst);
+        if (ctx) {
+          const bits = quantizeBits(N);
+          let info;
+          if (N === 256) info = "256 ระดับ = 8 bit เท่าภาพเดิม — ภาพไม่เปลี่ยน";
+          else if (src.channels() === 1) info = `เหลือ ${N} ระดับเทา (ใช้ ${bits} bit ต่อพิกเซล · ภาพเดิม 256 ระดับ = 8 bit) · ค่า 0–255 ถูกแบ่งเป็น ${N} ช่วงเท่ากัน แต่ละช่วงเหลือค่าเดียว`;
+          else info = `เหลือ ${N} ระดับต่อช่องสี × 3 ช่อง = ${N * N * N} สีที่เป็นไปได้ (${bits} bit ต่อช่อง = ${3 * bits} bit ต่อพิกเซล · ภาพเดิม 24 bit)`;
+          if (N !== 256 && (N & (N - 1)) !== 0) info += ` · ${N} ไม่ใช่กำลังของ 2: ${bits} bit เก็บได้ ${2 ** bits} ระดับ จึงใช้ไม่เต็ม`;
+          if (N === 2) info += " · 2 ระดับ = ผลเดียวกับ Binary Threshold ที่ 127";
+          ctx.info = info;
+        }
+        return dst;
+      } catch (err) {
+        if (dst) dst.delete();
+        throw err;
+      } finally {
+        if (x) x.delete();
+        if (lut) lut.delete();
       }
     },
   },
@@ -2440,12 +2614,25 @@ export const OPS = {
   regionprops: {
     name: "Region Properties (วัดค่าต่อวัตถุ)",
     needs: "gray",
-    desc: "วัดคุณสมบัติของแต่ละวัตถุ (blob) แยกเป็นรายชิ้น ไม่ใช่แค่นับจำนวนรวมแบบ Find Contours — ต่อชิ้น: พื้นที่ (area), จุดศูนย์กลาง (centroid), กรอบล้อม (bounding box), เส้นรอบรูป (perimeter), ความกลม (circularity, 1=กลมสมบูรณ์), และมุมเอียงของแกนหลัก (orientation) เป็นเครื่องมือวัดค่าจริงจังที่สุดในแอปนี้ ใกล้เคียง regionprops ของ MATLAB — ภาพที่ไม่ใช่ขาว-ดำล้วนจะถูก binarize ที่ค่ากึ่งกลาง 127 ก่อนเสมอ (เหมือนธรรมเนียม fill_holes ในไฟล์นี้) วัตถุที่แตะขอบภาพจะยังถูกวัด/นับตามปกติ (ค่าที่ได้อาจไม่สมบูรณ์เพราะถูกตัดด้วยขอบเฟรม — เหมือนพฤติกรรมเริ่มต้นของ regionprops ใน MATLAB) · มุมเอียง (orientation_deg) มีหน่วยเป็นองศา ช่วง 0–180°: 0° = แนวนอน และมุมเพิ่มขึ้นตามเข็มนาฬิกา (เพราะแกน y ของภาพชี้ลงล่าง ไม่ใช่ขึ้นบนแบบกราฟคณิตศาสตร์) เช่น 90° = แนวตั้ง, 45° = เอียงลงไปทางขวา — 0° กับ 180° คือแนวเดียวกัน (แกนไม่มีหัวท้าย) · วัตถุที่มีจุดบนเส้นรอบรูปน้อยกว่า 5 จุด (เช่น สี่เหลี่ยมตรง) จะไม่มีค่ามุม",
+    desc: "วัดคุณสมบัติของแต่ละวัตถุ (blob) แยกเป็นรายชิ้น ไม่ใช่แค่นับจำนวนรวมแบบ Find Contours — ต่อชิ้น: พื้นที่ (area), จุดศูนย์กลาง (centroid), กรอบล้อม (bounding box), เส้นรอบรูป (perimeter), ความกลม (circularity, 1=กลมสมบูรณ์), และมุมเอียงของแกนหลัก (orientation) เป็นเครื่องมือวัดค่าจริงจังที่สุดในแอปนี้ ใกล้เคียง regionprops ของ MATLAB — ภาพที่ไม่ใช่ขาว-ดำล้วนจะถูก binarize ที่ค่ากึ่งกลาง 127 ก่อนเสมอ (เหมือนธรรมเนียม fill_holes ในไฟล์นี้) วัตถุที่แตะขอบภาพจะยังถูกวัด/นับตามปกติ (ค่าที่ได้อาจไม่สมบูรณ์เพราะถูกตัดด้วยขอบเฟรม — เหมือนพฤติกรรมเริ่มต้นของ regionprops ใน MATLAB) · มุมเอียง (orientation_deg) มีหน่วยเป็นองศา ช่วง 0–180°: 0° = แนวนอน และมุมเพิ่มขึ้นตามเข็มนาฬิกา (เพราะแกน y ของภาพชี้ลงล่าง ไม่ใช่ขึ้นบนแบบกราฟคณิตศาสตร์) เช่น 90° = แนวตั้ง, 45° = เอียงลงไปทางขวา — 0° กับ 180° คือแนวเดียวกัน (แกนไม่มีหัวท้าย) · วัตถุที่มีจุดบนเส้นรอบรูปน้อยกว่า 5 จุด (เช่น สี่เหลี่ยมตรง) จะไม่มีค่ามุม" +
+      " · คอลัมน์เพิ่มเติม (ชื่อตรงกับ regionprops ของ MATLAB): ความตัน (solidity) = พื้นที่ ÷ พื้นที่รูปนูนที่ห่อวัตถุ (1 = ไม่เว้า/ไม่มีรู) · ความรี (eccentricity) 0 = กลม → ใกล้ 1 = เป็นเส้น (0.87 ≈ ยาว 2 เท่าของกว้าง, 0.97 ≈ 4 เท่า) · แกนยาว/แกนสั้น (major/minor axis) ของวงรีที่กระจายตัวเท่าวัตถุ · เต็มกรอบ (extent) = พื้นที่ ÷ กรอบสี่เหลี่ยมตรง · เส้นผ่านศูนย์กลางเทียบเท่า (equivalent diameter) · ความสว่างเฉลี่ย (mean intensity)" +
+      " · คอลัมน์ใหม่เหล่านี้นับจากพิกเซลจริง (area_px = พื้นที่นับพิกเซล รูไม่ถูกนับ เหมือน MATLAB) ส่วน area เดิมคือพื้นที่ของเส้นหลายเหลี่ยมที่ลากผ่านกลางพิกเซลขอบ และนับรวมรู (สี่เหลี่ยม 10×10: area 81, area_px 100)" +
+      " · แกนยาว/แกนสั้น/ความรี มีค่าให้ทุกวัตถุ แม้มุมเอียง (orientation) จะแสดง —" +
+      " · ความสว่างเฉลี่ย = ความสว่างของภาพที่เข้ากล่องนี้ (MATLAB ใช้ภาพที่สองใน regionprops(BW, I) แต่กล่องนี้มีทางเข้าเดียว) — หลัง Threshold จึงเป็น 255 เสมอ; ถ้าอยากวัดความสว่างจริงให้ต่อภาพเทาเข้ากล่องนี้ตรง ๆ (กล่องแยกวัตถุที่ > 127 เอง)" +
+      " · เส้นรูปนูนของความตัน ผ่านกลางพิกเซล วัตถุเล็กมากจึงอาจต่างจาก MATLAB (ซึ่งห่อที่มุมพิกเซล)" +
+      " · วัตถุเกาะที่อยู่ในรูของวัตถุอื่นจะนับรวมกับวัตถุชั้นนอก (MATLAB นับเป็นอีกชิ้นหนึ่ง)",
     params: [
       { key: "minArea", type: "number", label: "พื้นที่ขั้นต่ำ (px)", min: 0, max: 5000, step: 10, default: 50, desc: "วัตถุที่เล็กกว่านี้จะไม่ถูกนับ/วัด (กันจุด noise เล็ก ๆ ปนเข้ามา)" },
       { key: "maxObjects", type: "number", label: "แสดงวัตถุสูงสุด", min: 0, max: 5000, step: 50, default: 500, hint: "0 = ไม่จำกัด", desc: "วัด/วาดเฉพาะวัตถุที่ใหญ่ที่สุดตามจำนวนนี้ (จำนวนวัตถุทั้งหมดที่พบยังนับครบและแสดงเสมอ) — กันภาพที่มีจุด noise เป็นหมื่นจุดทำให้โปรแกรมค้าง ค่าที่แสดงทุกแถวยังเป็นค่าจริงเต็มความละเอียด ไม่ได้ประมาณ; ตั้ง 0 = วัดทุกชิ้นไม่จำกัด (อาจช้ามากถ้าวัตถุเยอะ)" },
     ],
     apply(cv, src, p, ctx) {
+      if (isEmptyMat(src)) {
+        if (ctx) {
+          ctx.info = "ภาพว่าง";
+          ctx.values = { kind: "table", columns: [...REGION_COLUMNS_ALL], rows: [], total: 0 };
+        }
+        return src.clone();
+      }
       // (1) การ์ด binary input: gray จากกล้อง/แหล่งอื่นยังมีค่าระหว่าง 0..255 ไม่ใช่ binary ล้วน —
       // binarize ที่ 127 ก่อนเสมอ (ธรรมเนียมเดียวกับ fill_holes/connected_components ในไฟล์นี้)
       const bin = new cv.Mat();
@@ -2525,13 +2712,16 @@ export const OPS = {
         const rows = [];
         for (let idx = 0; idx < shown.length; idx++) {
           const rec = shown[idx];
-          let perimeter, r, orientation = null;
+          let perimeter, r, orientation = null, shape;
           const c = contours.get(rec.i);
           try {
             // (6) perimeter: cv.arcLength(c, true) — เส้นรอบรูปแบบปิด ตามสเปก
             perimeter = cv.arcLength(c, true);
             r = cv.boundingRect(c); // plain {x,y,width,height} ไม่มี .delete()
             if (rec.cx === undefined) setCentroid(rec, c);
+            // IP batch 3: คอลัมน์รูปร่างแบบนับพิกเซล (ตัวช่วยชุดเดียวกับ shape_filter) — ไม่เรียก boundingRect/moments/contourArea ซ้ำ
+            const sv = regionShapeValues(regionPixelStats(cv, c, { x: r.x, y: r.y, w: r.width, h: r.height }, bin.data, src.data, src.cols, true), { w: r.width, h: r.height });
+            shape = REGION_SHAPE_COLUMNS.map((k) => sv[k]);
             // (3) fitEllipse ต้องมีอย่างน้อย 5 จุดบนเส้นรอบรูป ไม่งั้น throw C++ exception ตรง ๆ → null
             if (c.rows >= 5) {
               const rot = cv.fitEllipse(c);
@@ -2550,7 +2740,7 @@ export const OPS = {
           let circularity = perimeter === 0 ? 0 : (4 * Math.PI * rec.area) / (perimeter * perimeter);
           circularity = Math.max(0, Math.min(1, circularity));
           const index = idx + 1; // ตรงกับตัวเลขที่วาดบนภาพ ให้ผู้เรียนจับคู่แถวในตาราง <-> วัตถุที่เห็นได้
-          rows.push([index, rec.area, rec.cx, rec.cy, perimeter, circularity, r.x, r.y, r.width, r.height, orientation]);
+          rows.push([index, rec.area, rec.cx, rec.cy, perimeter, circularity, r.x, r.y, r.width, r.height, orientation, ...shape]);
           // วาด: กรอบล้อม (เขียว) + จุดศูนย์กลาง (แดง) + เลขลำดับ (เหลือง) — ctx.values ยังไม่มีที่แสดงบนจอ
           // (detail-panel.js ปิดไว้ตามสเปก §F) เลขที่วาดจึงเป็นทางเดียวที่ผู้เรียนจับคู่แถวกับวัตถุได้
           cv.rectangle(dst, new cv.Point(r.x, r.y), new cv.Point(r.x + r.width, r.y + r.height), new cv.Scalar(0, 255, 0), 2);
@@ -2567,10 +2757,11 @@ export const OPS = {
             ctx.info = shown.length < total
               ? `พบวัตถุ ${total} ชิ้น แสดง ${shown.length} ชิ้นที่ใหญ่ที่สุด (ปรับ 'แสดงวัตถุสูงสุด' ได้) — พื้นที่เฉลี่ย ${avg}px²`
               : `พบวัตถุ ${total} ชิ้น — พื้นที่เฉลี่ย ${avg}px²`;
+            if (rows.length > 0 && rows.every((row) => row[REGION_MEAN_COL] === 255)) ctx.info += " · ภาพที่เข้ามาเป็นขาว-ดำอยู่แล้ว ความสว่างเฉลี่ยจึงเท่ากับค่าขาวเต็มทุกชิ้น";
           }
           // ctx.values: table แถวต่อวัตถุ (ทุกแถวยาวเท่า columns.length เป๊ะ) + total = จำนวนที่พบจริงทั้งหมด
           // (field เสริม additive — rows อาจน้อยกว่า total เมื่อ cap ทำงาน)
-          ctx.values = { kind: "table", columns: ["index", "area", "cx", "cy", "perimeter", "circularity", "bbox_x", "bbox_y", "bbox_w", "bbox_h", "orientation_deg"], rows, total };
+          ctx.values = { kind: "table", columns: [...REGION_COLUMNS_ALL], rows, total };
         }
         return dst;
       } catch (err) {
@@ -3571,11 +3762,14 @@ export const OPS = {
   resize: {
     name: "Resize",
     needs: "any",
-    desc: "ปรับขนาดภาพทั้งใบด้วยการ resample พิกเซลใหม่ — ย่อ (Area) ให้ภาพเรียบ ไม่มีจุดฟันปลา ส่วนขยาย (Cubic) ให้ภาพเนียนกว่าการเพิ่มพิกเซลแบบซ้ำตรง ๆ",
+    desc: "ปรับขนาดภาพทั้งใบด้วยการ resample พิกเซลใหม่ — ย่อ (Area) ให้ภาพเรียบ ไม่มีจุดฟันปลา ส่วนขยาย (Cubic) ให้ภาพเนียนกว่าการเพิ่มพิกเซลแบบซ้ำตรง ๆ" +
+      " · วิธีคำนวณพิกเซลใหม่ (interpolation): ตำแหน่งพิกเซลใหม่มักตกอยู่ระหว่างพิกเซลเดิม จึงต้องคำนวณค่า — Nearest neighbour ใช้พิกเซลเดิมที่อยู่ใกล้จุดนั้น (ขยายแล้วเห็นเป็นบล็อก), Bilinear เฉลี่ย 2×2 พิกเซลรอบจุด (นุ่ม), Bicubic ใช้ 4×4 พิกเซล (คมกว่า ขอบอาจมีเส้นจาง ๆ เกินออกมา) · ย่อภาพโดยไม่เฉลี่ยพิกเซลที่ถูกทิ้งจะเกิดลายคลื่น (aliasing) — Resize แบบอัตโนมัติใช้ Area ซึ่งเฉลี่ยให้ · ค่าเริ่มต้นของ MATLAB ต่างกัน (imresize = bicubic พร้อม antialiasing, imrotate = nearest) ส่วน \"อัตโนมัติ\" ของแอปนี้ยังใช้วิธีเดิมของตัวเอง",
     params: [
       { key: "scale", type: "number", label: "อัตราขยาย/ย่อ (%)", min: 10, max: 400, step: 5, default: 50, desc: "100% = ขนาดเดิม, ต่ำกว่า = ย่อ, สูงกว่า = ขยาย" },
+      interpParam("อัตโนมัติ (ย่อ = Area · ขยาย = Bicubic — แบบเดิม)"),
     ],
     apply(cv, src, p, ctx) {
+      if (isEmptyMat(src)) { if (ctx) ctx.info = "ภาพว่าง"; return src.clone(); }
       const rawScale = Number(p.scale);
       const s = Math.max(0.05, (Number.isFinite(rawScale) ? rawScale : 50) / 100);
       let w = Math.max(1, Math.round(src.cols * s));
@@ -3594,11 +3788,18 @@ export const OPS = {
       let dst = null;
       try {
         dst = new cv.Mat();
-        const interp = s < 1 ? cv.INTER_AREA : cv.INTER_CUBIC;
+        const k = interpKey(p.interp);
+        const interp = k === "auto" ? (s < 1 ? cv.INTER_AREA : cv.INTER_CUBIC) : cv[INTERP_FLAG[k]];
         cv.resize(src, dst, new cv.Size(w, h), 0, 0, interp);
-        if (ctx) ctx.info = clamped
-          ? `ปรับขนาดเป็น ${w}×${h} px (ลดขนาดลงจากที่ตั้งไว้ เพื่อกันหน่วยความจำเกิน ${(MAX_OUTPUT_PIXELS / 1e6).toFixed(0)} ล้านพิกเซล)`
-          : `ปรับขนาดเป็น ${w}×${h} px`;
+        if (ctx) {
+          ctx.info = clamped
+            ? `ปรับขนาดเป็น ${w}×${h} px (ลดขนาดลงจากที่ตั้งไว้ เพื่อกันหน่วยความจำเกิน ${(MAX_OUTPUT_PIXELS / 1e6).toFixed(0)} ล้านพิกเซล)`
+            : `ปรับขนาดเป็น ${w}×${h} px`;
+          if (k !== "auto") {
+            ctx.info += ` · ${INTERP_NAME[k]}`;
+            if (s < 1) ctx.info += " · ย่อด้วยวิธีนี้ไม่เฉลี่ยพิกเซลที่ถูกทิ้ง ลายละเอียดถี่ ๆ อาจกลายเป็นลายคลื่น (aliasing) — แบบอัตโนมัติใช้ Area ซึ่งเฉลี่ยให้";
+          }
+        }
         return dst;
       } catch (err) {
         if (dst) dst.delete();
@@ -3610,12 +3811,16 @@ export const OPS = {
   rotate: {
     name: "Rotate",
     needs: "any",
-    desc: "หมุนภาพรอบจุดกึ่งกลางตามมุมที่กำหนด — เลือกได้ว่าจะ 'คงขนาดเดิม' (มุมภาพอาจถูกตัดออกไปถ้าหมุนเฉียง) หรือ 'ขยายผืนภาพให้พอดี' (เห็นภาพเต็มไม่ถูกตัด แต่ขนาดภาพใหญ่ขึ้น มีพื้นหลังเติมเข้ามา)",
+    desc: "หมุนภาพรอบจุดกึ่งกลางตามมุมที่กำหนด — เลือกได้ว่าจะ 'คงขนาดเดิม' (มุมภาพอาจถูกตัดออกไปถ้าหมุนเฉียง) หรือ 'ขยายผืนภาพให้พอดี' (เห็นภาพเต็มไม่ถูกตัด แต่ขนาดภาพใหญ่ขึ้น มีพื้นหลังเติมเข้ามา)" +
+      " · วิธีคำนวณพิกเซลใหม่ (interpolation): ตำแหน่งพิกเซลใหม่มักตกอยู่ระหว่างพิกเซลเดิม จึงต้องคำนวณค่า — Nearest neighbour ใช้พิกเซลเดิมที่อยู่ใกล้จุดนั้น (ขยายแล้วเห็นเป็นบล็อก), Bilinear เฉลี่ย 2×2 พิกเซลรอบจุด (นุ่ม), Bicubic ใช้ 4×4 พิกเซล (คมกว่า ขอบอาจมีเส้นจาง ๆ เกินออกมา) · ย่อภาพโดยไม่เฉลี่ยพิกเซลที่ถูกทิ้งจะเกิดลายคลื่น (aliasing) — Resize แบบอัตโนมัติใช้ Area ซึ่งเฉลี่ยให้ · ค่าเริ่มต้นของ MATLAB ต่างกัน (imresize = bicubic พร้อม antialiasing, imrotate = nearest) ส่วน \"อัตโนมัติ\" ของแอปนี้ยังใช้วิธีเดิมของตัวเอง",
     params: [
       { key: "angle", type: "number", label: "มุมหมุน (องศา)", min: -180, max: 180, step: 1, default: 15, desc: "ค่าบวก = หมุนทวนเข็มนาฬิกา, ค่าลบ = หมุนตามเข็มนาฬิกา (ตามธรรมเนียม OpenCV)" },
       { key: "expand", type: "boolean", label: "ขยายผืนภาพให้พอดี (ไม่ตัดมุม)", default: true },
+      interpParam("อัตโนมัติ (Bilinear — แบบเดิม)"),
     ],
     apply(cv, src, p, ctx) {
+      if (isEmptyMat(src)) { if (ctx) ctx.info = "ภาพว่าง"; return src.clone(); }
+      const k = interpKey(p.interp);
       const angle = Number(p.angle) || 0; // กัน undefined/NaN (params ยังไม่ถูกตั้งค่า)
       const w = src.cols, h = src.rows;
       const center = new cv.Point(w / 2, h / 2);
@@ -3637,8 +3842,8 @@ export const OPS = {
         }
         dst = new cv.Mat();
         const borderValue = src.channels() === 1 ? new cv.Scalar(0) : new cv.Scalar(0, 0, 0);
-        cv.warpAffine(src, dst, M, new cv.Size(outW, outH), cv.INTER_LINEAR, cv.BORDER_CONSTANT, borderValue);
-        if (ctx) ctx.info = `หมุน ${angle}° → ${outW}×${outH} px`;
+        cv.warpAffine(src, dst, M, new cv.Size(outW, outH), k === "auto" ? cv.INTER_LINEAR : cv[INTERP_FLAG[k]], cv.BORDER_CONSTANT, borderValue);
+        if (ctx) ctx.info = `หมุน ${angle}° → ${outW}×${outH} px` + (k === "auto" ? "" : ` · ${INTERP_NAME[k]}`);
         return dst;
       } catch (err) {
         if (dst) dst.delete();
@@ -5473,6 +5678,116 @@ export const OPS = {
     },
   },
 
+  // IP batch 3 — bwpropfilt + bwareafilt ในกล่องเดียว: เก็บ/ทิ้งทั้งชิ้นตามค่าที่วัดได้ (ตัวช่วยชุดเดียวกับคอลัมน์ใหม่ของ Region Properties)
+  shape_filter: {
+    name: "Filter by Shape (คัดวัตถุตามรูปร่าง)",
+    needs: "gray",
+    desc: "เก็บหรือทิ้งวัตถุ 'ทั้งชิ้น' ตามตัวเลขที่วัดได้ — เป็นขั้นต่อจาก Remove Small (ที่คัดตามพื้นที่อย่างเดียว) เทียบได้กับ bwpropfilt + bwareafilt ของ MATLAB รวมในกล่องเดียว · ตัวเลขที่ใช้คัดคือค่าเดียวกับคอลัมน์ใน Region Properties ของวัตถุชิ้นเดียวกัน (ความกลม ความตัน ความรี เต็มกรอบ พื้นที่นับพิกเซล) — ดูตารางก่อนแล้วค่อยตั้งช่วงที่ต้องการ · ความกลม = 4π×พื้นที่ ÷ เส้นรอบรูป² (วงกลมในภาพพิกเซลไม่มีทางได้ 1 — ราว 0.85–0.89, สี่เหลี่ยม ≈ 0.79) · ความตัน = พื้นที่ ÷ รูปนูนที่ห่อวัตถุ (1 = ไม่เว้า/ไม่มีรู) · ความรี 0 = กลม, 0.87 ≈ ยาว 2 เท่าของกว้าง, 0.97 ≈ 4 เท่า, เส้น ≈ 1 · เต็มกรอบ = พื้นที่ ÷ กรอบสี่เหลี่ยมตรง (สี่เหลี่ยมตรง = 1, วงกลม ≈ 0.77) · ช่วงพื้นที่ใช้จำนวนพิกเซลที่นับจริง ไม่ใช่ 'area' แบบเส้นหลายเหลี่ยมที่ 'พื้นที่ขั้นต่ำ' ของ Region Properties ใช้ · วัตถุ = บริเวณสีขาวหลังตัดที่ > 127 รูในวัตถุยังเป็นรู วัตถุเกาะที่อยู่ในรูจะตามวัตถุชั้นนอก · แสดงผลแบบ overlay: ขาว = เก็บ, แดง = คัดทิ้ง ทั้ง overlay และ Mask ต่อเข้า Region Properties ได้ (สีแดงถูกตัดทิ้งที่ 127) · ต่างจาก MATLAB: bwpropfilt ใช้ 8-connected components และนับวัตถุเกาะเป็นอีกชิ้นหนึ่ง ส่วนเส้นรูปนูนของความตัน ผ่านกลางพิกเซล",
+    params: [
+      { key: "prop", type: "select", label: "คัดตามค่า", options: [
+        { value: "circularity", label: "ความกลม (circularity)", hint: "4π×พื้นที่ ÷ เส้นรอบรูป² (ค่าเดียวกับคอลัมน์ 'ความกลม') · วงกลมในภาพพิกเซลได้ราว 0.85–0.89 · สี่เหลี่ยม ≈ 0.79 · วงกลมรัศมีน้อยกว่า 8 px ได้ต่ำกว่า 0.8" },
+        { value: "solidity", label: "ความตัน (solidity)", hint: "1 = ไม่มีรอยเว้า/รู · รูปตัว L ≈ 0.61 · วงแหวน ≈ 0.61" },
+        { value: "eccentricity", label: "ความรี (eccentricity)", hint: "0 = กลม · 0.87 ≈ ยาว 2 เท่าของกว้าง · 0.97 ≈ 4 เท่า · เส้น ≈ 1" },
+        { value: "extent", label: "เต็มกรอบ (extent)", hint: "สี่เหลี่ยมตรง = 1 · วงกลม ≈ 0.77 · วัตถุเอียงหรือบางยาว = ต่ำ" },
+        { value: "none", label: "ไม่ใช้ (คัดตามพื้นที่อย่างเดียว)" },
+      ], default: "circularity" },
+      { key: "lo", type: "number", label: "ค่าต่ำสุดที่เก็บ", min: 0, max: 1, step: 0.01, default: 0.8, desc: "เก็บวัตถุที่ค่าที่เลือกไม่ต่ำกว่านี้ (รวมค่านี้)" },
+      { key: "hi", type: "number", label: "ค่าสูงสุดที่เก็บ", min: 0, max: 1, step: 0.01, default: 1, desc: "เก็บวัตถุที่ค่าที่เลือกไม่สูงกว่านี้ (รวมค่านี้)" },
+      { key: "minArea", type: "number", label: "พื้นที่ขั้นต่ำ (นับพิกเซล)", min: 0, max: 100000, step: 10, default: 50, desc: "วัตถุที่มีพิกเซลขาวน้อยกว่านี้ถูกทิ้ง (กันจุด noise)" },
+      { key: "maxArea", type: "number", label: "พื้นที่สูงสุด (นับพิกเซล)", min: 0, max: 5000000, step: 100, default: 0, hint: "0 = ไม่จำกัด", desc: "วัตถุที่มีพิกเซลขาวมากกว่านี้ถูกทิ้ง" },
+      { key: "view", type: "select", label: "แสดงผลเป็น", options: [
+        { value: "overlay", label: "ขาว = เก็บ · แดง = คัดทิ้ง" },
+        { value: "mask", label: "Mask ขาว-ดำ (เฉพาะที่เก็บ)" },
+      ], default: "overlay" },
+    ],
+    apply(cv, src, p, ctx) {
+      if (isEmptyMat(src)) {
+        if (ctx) { ctx.info = "ภาพว่าง"; ctx.values = scalarValues(SHAPE_FILTER_FIELDS, []); }
+        return src.clone();
+      }
+      const prop = ownKey(SHAPE_FILTER_PROP_TH, p.prop, "circularity");
+      const view = ownKey(SHAPE_FILTER_VIEWS, p.view, "overlay");
+      let lo = numIn(p.lo, 0.8, 0, 1), hi = numIn(p.hi, 1, 0, 1);
+      let minA = numIn(p.minArea, 50, 0, 100000), maxA = numIn(p.maxArea, 0, 0, 5000000);
+      let rangeSwapped = false, areaSwapped = false;
+      if (lo > hi) { const t = lo; lo = hi; hi = t; rangeSwapped = true; }
+      if (maxA > 0 && maxA < minA) { const t = minA; minA = maxA; maxA = t; areaSwapped = true; }
+      const W = src.cols, H = src.rows;
+      let gray = null, bin = null, contours = null, hier = null, keptMask = null, result = null;
+      try {
+        gray = grayIfNeeded(cv, src);
+        const g = gray || src;
+        bin = new cv.Mat();
+        contours = new cv.MatVector();
+        hier = new cv.Mat();
+        cv.threshold(g, bin, 127, 255, cv.THRESH_BINARY);
+        cv.findContours(bin, contours, hier, cv.RETR_EXTERNAL, cv.CHAIN_APPROX_SIMPLE);
+        keptMask = cv.Mat.zeros(H, W, cv.CV_8UC1);
+        const total = contours.size();
+        let kept = 0, removedArea = 0, removedShape = 0;
+        for (let i = 0; i < total; i++) {
+          const c = contours.get(i);
+          try {
+            const box = regionBox(c.data32S);
+            if (box.w * box.h < minA) { removedArea++; continue; } // เร็วขึ้นอย่างเดียว: area_px ≤ w·h
+            const s = regionPixelStats(cv, c, box, bin.data, g.data, W, prop === "solidity");
+            if (s.n < minA || (maxA > 0 && s.n > maxA)) { removedArea++; continue; }
+            if (prop !== "none") {
+              let val;
+              if (prop === "circularity") {
+                const per = cv.arcLength(c, true);
+                const A = regionScan(c.data32S).area;
+                val = per === 0 ? 0 : (4 * Math.PI * A) / (per * per);
+                val = Math.max(0, Math.min(1, val));
+              } else {
+                val = regionShapeValues(s, box)[prop];
+              }
+              if (!(val >= lo && val <= hi)) { removedShape++; continue; }
+            }
+            kept++;
+            cv.drawContours(keptMask, contours, i, new cv.Scalar(255), cv.FILLED, cv.LINE_8, hier, 0);
+          } finally {
+            c.delete();
+          }
+        }
+        cv.bitwise_and(keptMask, bin, keptMask); // รูของวัตถุที่เก็บยังดำ · วัตถุเกาะตามวัตถุชั้นนอก
+        if (view === "mask") {
+          result = keptMask;
+          keptMask = null;
+        } else {
+          result = new cv.Mat(H, W, cv.CV_8UC3, new cv.Scalar(0, 0, 0));
+          result.setTo(new cv.Scalar(255, 0, 0, 0), bin);
+          result.setTo(new cv.Scalar(255, 255, 255, 0), keptMask);
+        }
+        if (ctx) {
+          let info;
+          if (total === 0) {
+            info = "ไม่พบวัตถุ (ภาพดำล้วน — ต่อจาก Threshold ให้เป็นขาว-ดำก่อน)";
+          } else {
+            info = `เก็บ ${kept} จาก ${total} ชิ้น · คัดทิ้งเพราะพื้นที่ ${removedArea} ชิ้น`
+              + (prop !== "none" ? ` · คัดทิ้งเพราะ${SHAPE_FILTER_PROP_TH[prop]} ${removedShape} ชิ้น (เก็บช่วง ${fixed2(lo)}–${fixed2(hi)})` : "")
+              + ` · พื้นที่ที่เก็บ ${minA}–${maxA > 0 ? maxA : "ไม่จำกัด"} px`;
+          }
+          if (rangeSwapped) info += " · สลับค่าต่ำสุด/สูงสุดให้แล้ว";
+          if (areaSwapped) info += " · สลับพื้นที่ขั้นต่ำ/สูงสุดให้แล้ว";
+          if (view === "overlay") info += " · ขาว = เก็บ แดง = คัดทิ้ง (ต่อเข้า Region Properties ได้เลย สีแดงจะถูกตัดทิ้งที่ 127)";
+          ctx.info = info;
+          ctx.values = scalarValues(SHAPE_FILTER_FIELDS, [total, kept, removedArea, removedShape]);
+        }
+        return result;
+      } catch (err) {
+        if (result) result.delete();
+        throw err;
+      } finally {
+        if (gray) gray.delete();
+        if (bin) bin.delete();
+        if (contours) contours.delete();
+        if (hier) hier.delete();
+        if (keptMask) keptMask.delete();
+      }
+    },
+  },
+
   // roipoly ของ MATLAB — ROI หลายเหลี่ยม 3–6 จุด หน่วย % (สเปก D §4.3)
   roi_polygon: {
     name: "ROI Polygon (บริเวณที่สนใจแบบหลายเหลี่ยม)",
@@ -5970,7 +6285,7 @@ export const FILTERS = {
     ["grayscale", "colorspace", "channel_split", "rgb_adjust", "color_inrange", "kmeans_segment", "slic", "white_balance", "invert"], "grayscale"),
 
   enhance_tools: mergeGroup("Enhance", "Enhance",
-    ["brightness_contrast", "gamma", "hist_equalize", "clahe", "contrast_stretch", "flatfield_correction", "unsharp", "laplacian_sharpen", "custom_kernel"], "brightness_contrast"),
+    ["brightness_contrast", "gamma", "hist_equalize", "clahe", "contrast_stretch", "flatfield_correction", "quantize", "unsharp", "laplacian_sharpen", "custom_kernel"], "brightness_contrast"),
 
   filter_denoise: mergeGroup("Filter & Denoise", "Filter & Denoise",
     ["salt_pepper_noise", "gaussian_noise", "median_blur", "gaussian_blur", "box_blur", "bilateral", "wiener_filter"], "salt_pepper_noise"),
@@ -5979,7 +6294,7 @@ export const FILTERS = {
     ["binary_threshold", "otsu_threshold", "adaptive_threshold", "multi_otsu_threshold", "canny", "sobel", "laplacian_edge", "scharr_edge", "prewitt_edge", "roberts_edge", "log_edge", "watershed", "grabcut", "region_growing"], "binary_threshold"),
 
   analysis_detect: mergeGroup("Analyze / Detect", "Analysis & Detection",
-    ["find_contours", "connected_components", "distance_transform", "local_std_filter", "local_entropy_filter", "regionprops", "feret", "line_profile", "bounding_boxes", "hough_circles", "hough_lines", "harris_corners", "shi_tomasi_corners", "orb_keypoints", "akaze_keypoints", "fast_keypoints"], "find_contours"),
+    ["find_contours", "connected_components", "distance_transform", "local_std_filter", "local_entropy_filter", "regionprops", "feret", "line_profile", "shape_filter", "bounding_boxes", "hough_circles", "hough_lines", "harris_corners", "shi_tomasi_corners", "orb_keypoints", "akaze_keypoints", "fast_keypoints"], "find_contours"),
 
   // name (ชื่อบนการ์ด node, ถูกตัดที่ ~92px) ของ 2 กลุ่มข้างบนย่อให้พอดี · group (ชิปหมวดใน detail-panel/สี) ยังเป็นชื่อเต็มเหมือนหมวด palette
 

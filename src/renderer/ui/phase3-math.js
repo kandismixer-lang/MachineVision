@@ -132,7 +132,7 @@ export function formatZoomPct(scale) {
 export const HISTOGRAM_THRESHOLD_OPS = new Set(["binary_threshold", "otsu_threshold", "adaptive_threshold"]);
 // op ปรับภาพ/เพิ่มคุณภาพ — ดู histogram ขาเข้า (จาง) ซ้อนขาออก
 export const HISTOGRAM_COMPARE_OPS = new Set([
-  "brightness_contrast", "gamma", "hist_equalize", "clahe", "contrast_stretch", "rgb_adjust", "invert", "white_balance",
+  "brightness_contrast", "gamma", "hist_equalize", "clahe", "contrast_stretch", "rgb_adjust", "invert", "white_balance", "quantize",
 ]);
 
 // opId = วิธีที่เลือกอยู่จริง (กล่องหมวดรวมใช้ params.mode) → "threshold" | "compare" | "plain"

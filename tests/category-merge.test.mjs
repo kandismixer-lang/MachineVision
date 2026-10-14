@@ -131,6 +131,7 @@ const OLD_HOST = {};
     if (m) for (const o of m.options) OLD_HOST[o.value] = fid; else OLD_HOST[fid] = fid;
   }
 }
+const POST_MERGE_OPS = ['quantize', 'shape_filter']; // op ใหม่หลัง 2026-10-07 อยู่เฉพาะกลุ่มระดับหมวด ไม่มี node เดิมให้เทียบ
 const CATEGORY_OPS = TOOL_SECTIONS.filter((s) => CATEGORY_FILTER_IDS.includes(OP_TO_FILTER[s.ops[0]])).flatMap((s) => s.ops);
 
 function paramsFor(fid, op) {
@@ -201,7 +202,9 @@ function runFilterRaw(fid, params, withSrc2) {
 
 test('cm-5. needs(): new group == old node for every op of the 7 re-grouped categories', () => {
   assert.ok(CATEGORY_OPS.length >= 50, `expected the 7 categories to cover many ops, got ${CATEGORY_OPS.length}`);
+  assert.deepEqual(CATEGORY_OPS.filter((op) => !OLD_HOST[op]), POST_MERGE_OPS);
   for (const op of CATEGORY_OPS) {
+    if (POST_MERGE_OPS.includes(op)) continue;
     const nf = OP_TO_FILTER[op];
     const of = OLD_HOST[op];
     assert.equal(needsOf(FILTERS[nf], paramsFor(nf, op)), needsOf(FILTERS[of], paramsFor(of, op)), op);
@@ -212,6 +215,7 @@ test('cm-5. needs(): new group == old node for every op of the 7 re-grouped cate
 
 test('cm-6. apply(): new group output == old node output (pixels, size, ctx.info, ctx.values) for every op of the 7 categories', () => {
   for (const op of CATEGORY_OPS) {
+    if (POST_MERGE_OPS.includes(op)) continue;
     const nf = OP_TO_FILTER[op];
     const of = OLD_HOST[op];
     const two = FILTERS[nf].inputs === 2;
@@ -226,6 +230,7 @@ test('cm-6. apply(): new group output == old node output (pixels, size, ctx.info
 
 test('cm-7. codegen: Python code of the new group == old node for every op of the 7 categories', () => {
   for (const op of CATEGORY_OPS) {
+    if (POST_MERGE_OPS.includes(op)) continue;
     const nf = OP_TO_FILTER[op];
     const of = OLD_HOST[op];
     const mk = (fid) => {

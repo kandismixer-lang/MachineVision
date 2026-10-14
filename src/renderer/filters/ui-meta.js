@@ -1,5 +1,5 @@
 // UI metadata — เพิ่มความสวย/สื่อความ โดยไม่แตะ backend algorithm
-import { OPS, fixed2, signedText } from "./registry.js";
+import { OPS, fixed2, signedText, quantizeBits, SHAPE_FILTER_PROP_TH } from "./registry.js";
 
 // ไอคอนประจำการ์ดเครื่องมือ (Design §7.1 — ภาพ mockup มี icon chip หน้าแต่ละเครื่องมือ)
 export const GROUP_ICON = {
@@ -128,6 +128,22 @@ export const OP_PRIMARY = {
   regionprops: (p) => `วัดค่าต่อวัตถุ · พื้นที่ขั้นต่ำ ${p.minArea ?? 50}px · แสดงสูงสุด ${Number(p.maxObjects ?? 500) === 0 ? "ไม่จำกัด" : (p.maxObjects ?? 500)}`,
   // ใหม่ (2026-10-03, IP batch 2 ชิ้น D) — ตัวเลขผ่าน pnum (ค่าที่ op ใช้จริงหลัง clamp) · view เลือกด้วย own-property เหมือน registry
   feret: (p) => `Feret · พื้นที่ขั้นต่ำ ${pnum("feret", "minArea", p.minArea)}px · สูงสุด ${pnum("feret", "maxObjects", p.maxObjects, { int: true })} ชิ้น`,
+  // ใหม่ (2026-10-14, IP batch 3) — ตัวเลขผ่าน pnum (ค่าหลัง clamp ที่ op ใช้จริง) · ช่วง lo–hi / พื้นที่แสดงจากน้อยไปมากเหมือนที่ op สลับให้
+  quantize: (p) => {
+    const n = pnum("quantize", "levels", p.levels, { int: true });
+    return `${n} ระดับต่อช่อง (${quantizeBits(n)} bit)`;
+  },
+  shape_filter: (p) => {
+    const op = "shape_filter";
+    const prop = ownOr(SHAPE_FILTER_PROP_TH, p.prop, "circularity");
+    let lo = pnum(op, "lo", p.lo), hi = pnum(op, "hi", p.hi);
+    if (lo > hi) { const t = lo; lo = hi; hi = t; }
+    let a = pnum(op, "minArea", p.minArea), b = pnum(op, "maxArea", p.maxArea);
+    if (b > 0 && b < a) { const t = a; a = b; b = t; }
+    const area = b > 0 ? `${a}–${b} px` : `≥ ${a} px`;
+    const base = prop === "" ? `พื้นที่ ${area}` : `${prop} ${fixed2(lo)}–${fixed2(hi)} · ${area}`;
+    return base + ownOr({ overlay: "", mask: " · Mask" }, p.view, "overlay");
+  },
   line_profile: (p) => {
     const op = "line_profile";
     const base = `เส้น (${pnum(op, "x1", p.x1)}%,${pnum(op, "y1", p.y1)}%) → (${pnum(op, "x2", p.x2)}%,${pnum(op, "y2", p.y2)}%)`;
@@ -149,8 +165,9 @@ export const OP_PRIMARY = {
   white_balance: () => "ปรับสมดุลสีอัตโนมัติ (Gray World)",
   invert: () => "กลับสี",
   crop: (p) => `${p.w ?? 80}%×${p.h ?? 80}% @ (${p.x ?? 10}%,${p.y ?? 10}%)`,
-  resize: (p) => "สเกล: " + (p.scale ?? 50) + "%",
-  rotate: (p) => `มุม ${p.angle ?? 15}° · ${p.expand ? "ขยายผืนภาพ" : "คงขนาดเดิม"}`,
+  // interp: auto = ข้อความเดิมทุกตัวอักษร · เลือกเอง = ต่อท้ายชื่อวิธี (ไม่รู้จัก → ว่าง)
+  resize: (p) => "สเกล: " + (p.scale ?? 50) + "%" + ownOr({ auto: "", nearest: " · Nearest", bilinear: " · Bilinear", bicubic: " · Bicubic" }, p.interp, "auto"),
+  rotate: (p) => `มุม ${p.angle ?? 15}° · ${p.expand ? "ขยายผืนภาพ" : "คงขนาดเดิม"}` + ownOr({ auto: "", nearest: " · Nearest", bilinear: " · Bilinear", bicubic: " · Bicubic" }, p.interp, "auto"),
   flip: (p) => "แนว: " + (p.mode === "v" ? "แนวตั้ง" : p.mode === "both" ? "ทั้งสองแนว" : "แนวนอน"),
   perspective_warp: () => "บิด perspective ตาม 4 มุม",
   undistort: (p) => `k1=${p.k1 ?? -0.3} k2=${p.k2 ?? 0}`,
