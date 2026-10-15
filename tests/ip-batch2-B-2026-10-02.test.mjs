@@ -696,7 +696,8 @@ test('ipB-7. (static structure) the 4 ops exist in OPS (the OPS total is NOT pin
   const ia = FILTERS.image_arithmetic;
   assert.equal(ia.inputs, 2);
   const modes = ia.params.find((p) => p.key === 'mode').options.map((o) => o.value);
-  assert.deepEqual(modes, ['imabsdiff', 'imfuse', 'mask', 'imarith', 'logical_ops', 'inpaint', 'hist_match']);
+  // op ใหม่ batch 4 ต่อท้าย — ห้ามสลับลำดับเดิม (IP batch 4A เพิ่ม roi_apply)
+  assert.deepEqual(modes.slice(0, 7), ['imabsdiff', 'imfuse', 'mask', 'imarith', 'logical_ops', 'inpaint', 'hist_match']);
   for (const id of NEW_OPS) {
     assert.equal(OPS[id].needs, 'any', `${id}.needs`);
     for (const p of OPS[id].params) assert.notEqual(p.key, 'mode', `${id}: param key "mode" would collide with MODE_KEY`);
@@ -762,7 +763,8 @@ test('ipB-9. ui-meta.js OP_PRIMARY: card text for every operation/method, clampe
 
 test('ipB-10. palette-panel.js: the IMAGE ARITHMETIC section lists the 3 original ops then the 4 new ones, each resolves to the image_arithmetic node through OP_TO_FILTER, and the 4 new OP_ICON glyphs are distinct from every other OP_ICON glyph and every GROUP_ICON glyph', () => {
   const sec = TOOL_SECTIONS.find((s) => s.title === 'IMAGE ARITHMETIC');
-  assert.deepEqual(sec.ops, ['imabsdiff', 'imfuse', 'mask', 'imarith', 'logical_ops', 'inpaint', 'hist_match']);
+  // op ใหม่ batch 4 ต่อท้าย — ห้ามสลับลำดับเดิม (IP batch 4A เพิ่ม roi_apply)
+  assert.deepEqual(sec.ops.slice(0, 7), ['imabsdiff', 'imfuse', 'mask', 'imarith', 'logical_ops', 'inpaint', 'hist_match']);
   for (const id of NEW_OPS) assert.equal(OP_TO_FILTER[id], 'image_arithmetic');
   for (const id of NEW_OPS) assert.equal(TOOL_SECTIONS.filter((s) => s.ops.includes(id)).length, 1, `${id} must appear in exactly one section`);
   const src = fs.readFileSync(new URL('../src/renderer/ui/palette-panel.js', import.meta.url), 'utf8');

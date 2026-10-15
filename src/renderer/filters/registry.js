@@ -897,6 +897,260 @@ function bandpassInfo(kind, shape, prm, P, Q, swapped, scale, aw, ah, view, dcGa
 }
 
 // ===================================================================
+// ตัวช่วยของ IP batch 4A (2026-10-15) — psfKernel / guidedFilterF32 / PSEUDOCOLOR_MAPS / MM_COLUMNS / ΔE
+// batch 4B ใช้ psfKernel (Wiener/Lucy-Richardson) และ guidedFilterF32 (Dehaze) ตัวเดียวกัน — ห้ามเขียนซ้ำ
+// ===================================================================
+// PSF สำหรับ Custom Kernel (motion/disk) — นับ "จุดย่อย" 16×16 ต่อพิกเซลที่อยู่ในรูป แล้วหารด้วยจำนวนจุดย่อยรวม → ผลรวม = 1 เสมอ
+export const PSF_SS = 16;
+export function psfKernel(kind, size, angleDeg) {
+  const SS = PSF_SS;
+  let n, cnt;
+  if (kind === "disk") {
+    const R = size, h = Math.ceil(R - 0.5);
+    n = 2 * h + 1; cnt = new Int32Array(n * n);
+    const lim = 4 * SS * SS * R * R; // (2·SS·R)² — พิกัดจุดย่อยคูณ 2·SS ให้เป็นจำนวนเต็ม → เทียบแบบไม่มีเศษ
+    for (let y = 0; y < n; y++) for (let x = 0; x < n; x++) {
+      let c = 0;
+      for (let sy = 0; sy < SS; sy++) for (let sx = 0; sx < SS; sx++) {
+        const px = (x - h) * 2 * SS + (2 * sx + 1 - SS), py = (y - h) * 2 * SS + (2 * sy + 1 - SS);
+        if (px * px + py * py <= lim) c++;
+      }
+      cnt[y * n + x] = c;
+    }
+  } else { // motion: เส้นยาว L ผ่านจุดกลาง หนา 1 px (ปลายมน) · มุมทวนเข็มแบบ MATLAB (แกน y ของภาพชี้ลง จึงใช้ −sin)
+    const L = size, th = (angleDeg * Math.PI) / 180, c = Math.cos(th), s = -Math.sin(th), hl = (L - 1) / 2;
+    const h = Math.ceil(hl * Math.max(Math.abs(c), Math.abs(s)) + 0.5);
+    n = 2 * h + 1; cnt = new Int32Array(n * n);
+    for (let y = 0; y < n; y++) for (let x = 0; x < n; x++) {
+      let k = 0;
+      for (let sy = 0; sy < SS; sy++) for (let sx = 0; sx < SS; sx++) {
+        const px = (x - h) + (2 * sx + 1 - SS) / (2 * SS), py = (y - h) + (2 * sy + 1 - SS) / (2 * SS);
+        const t = Math.max(-hl, Math.min(hl, px * c + py * s));
+        const dx = px - t * c, dy = py - t * s;
+        if (dx * dx + dy * dy <= 0.25) k++;
+      }
+      cnt[y * n + x] = k;
+    }
+  }
+  // ตัดวงนอกที่เป็น 0 ทั้งวง (ทั้ง 4 ด้านพร้อมกัน — ขนาดยังเป็นเลขคี่ จุดกลางไม่ขยับ)
+  let t = 0;
+  const ringZero = (r) => { for (let i = r; i < n - r; i++) if (cnt[r * n + i] || cnt[(n - 1 - r) * n + i] || cnt[i * n + r] || cnt[i * n + n - 1 - r]) return false; return true; };
+  while (n - 2 * t > 1 && ringZero(t)) t++;
+  const m = n - 2 * t, k = new Float64Array(m * m);
+  let tot = 0;
+  for (let y = 0; y < m; y++) for (let x = 0; x < m; x++) tot += cnt[(y + t) * n + x + t];
+  for (let y = 0; y < m; y++) for (let x = 0; x < m; x++) k[y * m + x] = cnt[(y + t) * n + x + t] / tot;
+  return { n: m, k };
+}
+
+// Guided Filter (He et al. 2010) บน float32 สเกล 0–255 — I = ภาพนำทาง, P = ภาพที่กรอง (Mat CV_32FC1 ขนาดเท่ากัน)
+// I, P ต้องเป็น Mat ต่อเนื่อง (continuous) เพราะอ่าน data32F ตรง ๆ — ห้ามส่ง roi() ที่ยังไม่ clone · คืน Mat CV_32FC1 ใหม่ที่ "ผู้เรียกเป็นเจ้าของ" · eps255 = ε × 65025 · ทุกขั้น float32 ด้วย Math.fround ตรงกับ numpy float32 ใน Python ที่ export
+// (opencv.js build นี้ไม่มี ximgproc.guidedFilter จึงสร้างจาก boxFilter)
+export function guidedFilterF32(cv, I, P, r, eps255) {
+  const f = Math.fround;
+  const e32 = f(eps255);
+  const temps = [];
+  const mk = () => { const m = new cv.Mat(); temps.push(m); return m; };
+  const size = new cv.Size(2 * r + 1, 2 * r + 1), anchor = new cv.Point(-1, -1);
+  const box = (m) => { const o = mk(); cv.boxFilter(m, o, -1, size, anchor, true, cv.BORDER_REFLECT_101); return o; };
+  let q = null;
+  try {
+    const mI = box(I), mP = box(P);
+    const II = mk(); cv.multiply(I, I, II);
+    const IP = mk(); cv.multiply(I, P, IP);
+    const cI = box(II), cIP = box(IP);
+    const rows = I.rows, cols = I.cols, n = rows * cols;
+    const A = mk(); A.create(rows, cols, cv.CV_32FC1);
+    const B = mk(); B.create(rows, cols, cv.CV_32FC1);
+    const aI = mI.data32F, aP = mP.data32F, aCI = cI.data32F, aCIP = cIP.data32F, aA = A.data32F, aB = B.data32F;
+    for (let i = 0; i < n; i++) {
+      const v = f(aCI[i] - f(aI[i] * aI[i]));
+      const cov = f(aCIP[i] - f(aI[i] * aP[i]));
+      const a = f(cov / f(v + e32));
+      aA[i] = a;
+      aB[i] = f(aP[i] - f(a * aI[i]));
+    }
+    const mA = box(A), mB = box(B);
+    q = new cv.Mat(); q.create(rows, cols, cv.CV_32FC1);
+    const aq = q.data32F, dI = I.data32F, dA = mA.data32F, dB = mB.data32F;
+    for (let i = 0; i < n; i++) aq[i] = f(f(dA[i] * dI[i]) + dB[i]);
+    const out = q; q = null;
+    return out;
+  } finally {
+    if (q) q.delete();
+    for (const m of temps) m.delete();
+  }
+}
+
+// แผนที่สี 256 ระดับ → [R,G,B] · ใช้แค่เลขจำนวนเต็ม/ครึ่ง (JS = Python ทุกค่า) · เพิ่มแผนที่ใหม่ = เพิ่ม 1 แถว (+ 1 แถวใน PSEUDOCOLOR_PY ของ codegen.js)
+const clamp255 = (v) => Math.floor(Math.min(255, Math.max(0, v)) + 0.5);
+export const PSEUDOCOLOR_MAPS = {
+  jet: (i) => [clamp255(382.5 - Math.abs(4 * i - 765)), clamp255(382.5 - Math.abs(4 * i - 510)), clamp255(382.5 - Math.abs(4 * i - 255))],
+  hot: (i) => [clamp255(3 * i), clamp255(3 * i - 255), clamp255(3 * i - 510)],
+  cool: (i) => [i, 255 - i, 255],
+};
+const PSEUDOCOLOR_TH = { jet: "Jet", hot: "Hot", cool: "Cool" };
+const PSEUDOCOLOR_ENDS = { jet: ["น้ำเงินเข้ม", "แดงเข้ม"], hot: ["ดำ", "ขาว"], cool: ["ฟ้า", "ชมพู"] };
+
+// px → mm ด้วยตัวคูณเดียว · power 1 = ความยาว, 2 = พื้นที่ · [key ใหม่, key ต้นทาง, power]
+export const MM_COLUMNS = {
+  regionprops: [["area_mm2", "area_px", 2], ["perimeter_mm", "perimeter", 1], ["equiv_diameter_mm", "equiv_diameter", 1], ["major_axis_mm", "major_axis", 1], ["minor_axis_mm", "minor_axis", 1]],
+  feret: [["feret_max_mm", "feret_max", 1], ["feret_min_mm", "feret_min", 1], ["feret_len_mm", "feret_len", 1]],
+  line_profile: [["line_length_mm", "line_length_px", 1], ["edge_pos_mm", "edge_pos_px", 1], ["edge_pair_mm", "edge_pair_px", 1]],
+};
+export function mmValue(v, f, power) { return v === null || v === undefined ? null : power === 2 ? v * (f * f) : v * f; }
+function mmScaleParam() {
+  return { key: "mmPerPx", type: "number", label: "ขนาดจริงต่อพิกเซล (มม./px)", min: 0, max: 100, step: 0.001, default: 0,
+    hint: "0 = แสดงเป็นพิกเซลอย่างเดียว",
+    desc: "วัดของที่รู้ขนาดจริงในภาพก่อน เช่น เหรียญ 26 มม. วัดได้ 130 px → 26 ÷ 130 = 0.2 มม./px · ใช้ได้เมื่อกล้องตั้งฉากกับชิ้นงานและระยะเท่ากันทั้งภาพ" };
+}
+
+// ตารางที่ต่อคอลัมน์ mm ท้ายตาราง (f > 0 เท่านั้น — f = 0 คืนคอลัมน์/แถวเดิมทุก byte) · แถวเดิมไม่ถูกแก้ (สร้างแถวใหม่)
+function mmTable(opId, f, columns, rows) {
+  if (!(f > 0)) return { columns: [...columns], rows };
+  const spec = MM_COLUMNS[opId];
+  const idx = spec.map((sp) => columns.indexOf(sp[1]));
+  return {
+    columns: [...columns, ...spec.map((sp) => sp[0])],
+    rows: rows.map((r) => [...r, ...spec.map((sp, j) => mmValue(r[idx[j]], f, sp[2]))]),
+  };
+}
+const MM_SUFFIX = (f) => ` · 1 px = ${f} มม.`;
+const LINE_PROFILE_MM_LABELS = ["ความยาวเส้น (มม.)", "ตำแหน่งขอบที่กระโดดแรง นับจาก A (มม.)", "ระยะระหว่างขอบขึ้นกับขอบลง (มม.)"];
+function lineProfileValues(vals, f) {
+  const v = scalarValues(LINE_PROFILE_FIELDS, vals);
+  if (f > 0) {
+    MM_COLUMNS.line_profile.forEach((sp, j) => {
+      const src = LINE_PROFILE_FIELDS.findIndex((fl) => fl[0] === sp[1]);
+      v.fields.push({ key: sp[0], label: LINE_PROFILE_MM_LABELS[j], value: mmValue(vals[src] === undefined ? null : vals[src], f, sp[2]) });
+    });
+  }
+  return v;
+}
+
+// ฟิลด์/ตัวเลือกของ op ใหม่ batch 4A (select อ่านด้วย ownKey — ค่าแปลก/"constructor" ตกค่าเริ่มต้น)
+const FOCUS_FIELDS = [["focus_score", "คะแนนความคม"], ["focus_mean", "ความสว่างเฉลี่ยในบริเวณที่วัด"]];
+const FOCUS_METHODS = { lap_var: true, tenengrad: true };
+const FOCUS_VIEWS = { lap: true, pass: true };
+const DELTA_E_FIELDS = [
+  ["de_mean", "ΔE เฉลี่ย"], ["de_max", "ΔE สูงสุด"], ["de_over_pct", "พื้นที่ที่ ΔE เกินเกณฑ์ (%)"],
+  ["de_a_L", "A: L* เฉลี่ย"], ["de_a_a", "A: a* เฉลี่ย"], ["de_a_b", "A: b* เฉลี่ย"],
+  ["de_b_L", "B: L* เฉลี่ย"], ["de_b_a", "B: a* เฉลี่ย"], ["de_b_b", "B: b* เฉลี่ย"],
+];
+const DELTA_E_FORMULAS = { cie76: true, ciede2000: true };
+const DELTA_E_COMPARES = { pixel: true, mean_b: true };
+const DELTA_E_VIEWS = { heatmap: true, over: true };
+const ROI_APPLY_FIELDS = [["ra_px", "พิกเซลที่ใช้ผล B"], ["ra_pct", "สัดส่วนที่ใช้ผล B (%)"]];
+const ROI_APPLY_SHAPES = { rect: true, ellipse: true };
+const ROI_APPLY_VIEWS = { result: true, outline: true };
+// RGB 8 bit → Lab float32 (L 0–100, a/b ประมาณ ±128) — convertTo(1/255) ก่อน cvtColor ตรงกับ img.astype(np.float32) / 255 ใน Python · คืน Mat ใหม่ที่ผู้เรียกเป็นเจ้าของ
+function toLabF32(cv, rgb) {
+  const F = new cv.Mat();
+  const lab = new cv.Mat();
+  try {
+    rgb.convertTo(F, cv.CV_32F, 1 / 255);
+    cv.cvtColor(F, lab, cv.COLOR_RGB2Lab);
+    return lab;
+  } catch (err) {
+    lab.delete();
+    throw err;
+  } finally {
+    F.delete();
+  }
+}
+
+// ΔE (ความต่างสี) ระหว่างสอง Lab — CIE76 = ระยะตรง · CIEDE2000 = Sharma, Wu, Dalal (2005) kL = kC = kH = 1 · double ล้วน
+export function deltaE76(L1, a1, b1, L2, a2, b2) {
+  const dL = L1 - L2, da = a1 - a2, db = b1 - b2;
+  return Math.sqrt(dL * dL + da * da + db * db);
+}
+const POW25_7 = 6103515625; // 25^7
+const RAD = Math.PI / 180;
+function hueDeg(b, ap) { // 0–360 · a′ = b = 0 → 0
+  if (ap === 0 && b === 0) return 0;
+  const h = Math.atan2(b, ap) * (180 / Math.PI);
+  return h < 0 ? h + 360 : h;
+}
+export function deltaE2000(L1, a1, b1, L2, a2, b2) {
+  const C1 = Math.sqrt(a1 * a1 + b1 * b1), C2 = Math.sqrt(a2 * a2 + b2 * b2);
+  const Cb = (C1 + C2) / 2, Cb7 = Math.pow(Cb, 7);
+  const G = 0.5 * (1 - Math.sqrt(Cb7 / (Cb7 + POW25_7)));
+  const ap1 = (1 + G) * a1, ap2 = (1 + G) * a2;
+  const Cp1 = Math.sqrt(ap1 * ap1 + b1 * b1), Cp2 = Math.sqrt(ap2 * ap2 + b2 * b2);
+  const h1 = hueDeg(b1, ap1), h2 = hueDeg(b2, ap2);
+  const dLp = L2 - L1, dCp = Cp2 - Cp1;
+  const cc = Cp1 * Cp2;
+  let dhp = 0;
+  if (cc !== 0) {
+    dhp = h2 - h1;
+    if (dhp > 180) dhp -= 360; else if (dhp < -180) dhp += 360;
+  }
+  const dHp = 2 * Math.sqrt(cc) * Math.sin((dhp * RAD) / 2);
+  const Lb = (L1 + L2) / 2, Cbp = (Cp1 + Cp2) / 2;
+  let hb;
+  if (cc === 0) hb = h1 + h2;
+  else if (Math.abs(h1 - h2) <= 180) hb = (h1 + h2) / 2;
+  else if (h1 + h2 < 360) hb = (h1 + h2 + 360) / 2;
+  else hb = (h1 + h2 - 360) / 2;
+  const T = 1 - 0.17 * Math.cos((hb - 30) * RAD) + 0.24 * Math.cos(2 * hb * RAD) + 0.32 * Math.cos((3 * hb + 6) * RAD) - 0.20 * Math.cos((4 * hb - 63) * RAD);
+  const dth = 30 * Math.exp(-(((hb - 275) / 25) * ((hb - 275) / 25)));
+  const Cbp7 = Math.pow(Cbp, 7);
+  const RC = 2 * Math.sqrt(Cbp7 / (Cbp7 + POW25_7));
+  const SL = 1 + (0.015 * (Lb - 50) * (Lb - 50)) / Math.sqrt(20 + (Lb - 50) * (Lb - 50));
+  const SC = 1 + 0.045 * Cbp, SH = 1 + 0.015 * Cbp * T;
+  const RT = -Math.sin(2 * dth * RAD) * RC;
+  const tL = dLp / SL, tC = dCp / SC, tH = dHp / SH;
+  return Math.sqrt(tL * tL + tC * tC + tH * tH + RT * tC * tH);
+}
+
+// White Balance แบบ White Patch / จุดอ้างอิง (IP batch 4A) — ทำบนข้อมูลตรง ๆ ไม่ใช้ convertTo (ปัดครึ่งขึ้นด้วย floor(x+0.5) เหมือน Python ที่ export)
+// src ต้องเป็นภาพสี 3/4 ช่อง ไม่ว่าง · คืน Mat RGB ใหม่ที่ผู้เรียกเป็นเจ้าของ
+function whiteBalanceByGain(cv, src, p, ctx, method) {
+  const rgb = dropAlpha(cv, src); // null เมื่อ 3 ช่องอยู่แล้ว
+  let dst = null;
+  try {
+    const x = rgb || src;
+    const W = x.cols, H = x.rows, N = W * H, d = x.data;
+    const gains = [1, 1, 1];
+    let info;
+    if (method === "white_patch") {
+      const hist = [new Int32Array(256), new Int32Array(256), new Int32Array(256)];
+      for (let i = 0; i < N; i++) { const o = i * 3; hist[0][d[o]]++; hist[1][d[o + 1]]++; hist[2][d[o + 2]]++; }
+      const k = Math.floor((N * 99 + 99) / 100); // ตำแหน่งที่ 99% (นับจากพิกเซลมืดสุด) ปัดขึ้น
+      const v99 = [0, 0, 0];
+      for (let c = 0; c < 3; c++) {
+        let cum = 0, v = 0;
+        for (; v < 255; v++) { cum += hist[c][v]; if (cum >= k) break; }
+        v99[c] = v;
+        gains[c] = v > 0 ? 255 / v : 1;
+      }
+      info = `White Patch: ค่าที่ 99% R/G/B = ${v99[0]}/${v99[1]}/${v99[2]} → เกน R×${fixed2(gains[0])} G×${fixed2(gains[1])} B×${fixed2(gains[2])}`;
+    } else {
+      const cx = pctToPx(p.refX, 50, W), cy = pctToPx(p.refY, 50, H), r = intIn(p.refSize, 5, 1, 50);
+      const x0 = Math.max(0, cx - r), x1 = Math.min(W - 1, cx + r), y0 = Math.max(0, cy - r), y1 = Math.min(H - 1, cy + r);
+      const sum = [0, 0, 0];
+      for (let y = y0; y <= y1; y++) for (let xx = x0; xx <= x1; xx++) { const o = (y * W + xx) * 3; sum[0] += d[o]; sum[1] += d[o + 1]; sum[2] += d[o + 2]; }
+      const n = (x1 - x0 + 1) * (y1 - y0 + 1);
+      const m = [sum[0] / n, sum[1] / n, sum[2] / n];
+      const t = (m[0] + m[1] + m[2]) / 3;
+      for (let c = 0; c < 3; c++) gains[c] = m[c] > 1e-3 ? t / m[c] : 1;
+      info = `จุดอ้างอิง (${cx}, ${cy}) px รัศมี ${r} · สีเฉลี่ย R/G/B = ${fixed1(m[0])}/${fixed1(m[1])}/${fixed1(m[2])} → เกน R×${fixed2(gains[0])} G×${fixed2(gains[1])} B×${fixed2(gains[2])}`;
+      if (t < 20) info += " · จุดอ้างอิงมืดมาก ผลอาจเพี้ยน — เลือกบริเวณเทาหรือขาว";
+    }
+    const luts = gains.map((g) => { const l = new Uint8Array(256); for (let v = 0; v < 256; v++) l[v] = Math.min(255, Math.floor(v * g + 0.5)); return l; });
+    dst = new cv.Mat(H, W, cv.CV_8UC3);
+    const od = dst.data, len = N * 3;
+    for (let k = 0; k < len; k++) od[k] = luts[k % 3][d[k]];
+    if (ctx) ctx.info = info;
+    const out = dst; dst = null;
+    return out;
+  } finally {
+    if (dst) dst.delete();
+    if (rgb) rgb.delete();
+  }
+}
+
+// ===================================================================
 // OPS — operation ย่อยแต่ละตัว (logic เดิม ไม่เปลี่ยน)
 // ===================================================================
 export const OPS = {
@@ -917,13 +1171,16 @@ export const OPS = {
   colorspace: {
     name: "Color Space Convert",
     needs: "any",
-    desc: "แปลงภาพจาก RGB ไปยังปริภูมิสีอื่น แล้วแสดงค่าแต่ละ channel เป็นสีตรง ๆ (false-color) เพื่อให้เห็นว่าข้อมูลถูกจัดเก็บต่างกันอย่างไร — HSV/HLS แยกเนื้อสีออกจากความสว่าง, Lab ใกล้การรับรู้ของมนุษย์, YCrCb ใช้ในระบบวิดีโอ/JPEG",
+    desc: "แปลงภาพจาก RGB ไปยังปริภูมิสีอื่น แล้วแสดงค่าแต่ละ channel เป็นสีตรง ๆ (false-color) เพื่อให้เห็นว่าข้อมูลถูกจัดเก็บต่างกันอย่างไร — HSV/HLS แยกเนื้อสีออกจากความสว่าง, Lab ใกล้การรับรู้ของมนุษย์, YCrCb ใช้ในระบบวิดีโอ/JPEG · XYZ/Luv/YUV: ภาพ 8 bit ทุกช่องถูกบีบให้อยู่ใน 0–255 ตัวเลขจึงไม่ใช่ค่าจริงตามตำรา — ถ้าจะวัดความต่างสีเป็นตัวเลขจริงให้ใช้ Color Difference (ΔE)",
     params: [
       { key: "space", type: "select", label: "ปริภูมิสี", options: [
         { value: "hsv", label: "HSV (เนื้อสี-ความอิ่ม-ความสว่าง)", hint: "แยกเนื้อสีออกจากความสว่าง เหมาะกับตรวจจับวัตถุด้วยสี" },
         { value: "hls", label: "HLS", hint: "คล้าย HSV แต่สลับลำดับ Lightness/Saturation" },
         { value: "lab", label: "Lab", hint: "ใกล้เคียงการรับรู้สีของมนุษย์ นิยมใช้เทียบความต่างสี" },
         { value: "ycrcb", label: "YCrCb", hint: "แยกความสว่าง (Y) ออกจากสี ใช้ในวิดีโอ/JPEG" },
+        { value: "xyz", label: "XYZ (CIE 1931)", hint: "ปริภูมิมาตรฐานที่ใช้เป็นตัวกลางแปลงสี · Y ≈ ความสว่าง" },
+        { value: "luv", label: "Luv (CIE L*u*v*)", hint: "คล้าย Lab ใกล้การรับรู้ของคน · ภาพ 8 bit เก็บ L×255/100 และเลื่อน u, v ให้เป็นบวก" },
+        { value: "yuv", label: "YUV", hint: "Y = ความสว่าง U/V = ความต่างสี ใช้ในวิดีโอ (คล้าย YCrCb แต่สูตรต่างกันเล็กน้อย)" },
       ], default: "hsv" },
     ],
     apply(cv, src, p) {
@@ -931,7 +1188,7 @@ export const OPS = {
       if (src.channels() === 1) cv.cvtColor(src, rgb, cv.COLOR_GRAY2RGB);
       else src.copyTo(rgb);
       const dst = new cv.Mat();
-      const code = { hsv: cv.COLOR_RGB2HSV, hls: cv.COLOR_RGB2HLS, lab: cv.COLOR_RGB2Lab, ycrcb: cv.COLOR_RGB2YCrCb }[p.space];
+      const code = { hsv: cv.COLOR_RGB2HSV, hls: cv.COLOR_RGB2HLS, lab: cv.COLOR_RGB2Lab, ycrcb: cv.COLOR_RGB2YCrCb, xyz: cv.COLOR_RGB2XYZ, luv: cv.COLOR_RGB2Luv, yuv: cv.COLOR_RGB2YUV }[p.space];
       cv.cvtColor(rgb, dst, code);
       rgb.delete();
       return dst;
@@ -1041,11 +1298,32 @@ export const OPS = {
   gamma: {
     name: "Gamma Correction",
     needs: "any",
-    desc: "ปรับความสว่างแบบไม่เชิงเส้นด้วยเส้นโค้ง power-law: ใหม่ = (เดิม/255)^(1/γ)·255 — γ>1 ดึงส่วนมืดให้สว่างขึ้นโดยไม่ทำให้ส่วนสว่างแตก (ต่างจากการเพิ่ม brightness ตรง ๆ) ใช้แก้ภาพย้อนแสง/มืดเกิน",
+    desc: "ปรับความสว่างแบบไม่เชิงเส้นด้วยเส้นโค้ง power-law: ใหม่ = (เดิม/255)^(1/γ)·255 — γ>1 ดึงส่วนมืดให้สว่างขึ้นโดยไม่ทำให้ส่วนสว่างแตก (ต่างจากการเพิ่ม brightness ตรง ๆ) ใช้แก้ภาพย้อนแสง/มืดเกิน · Log: ใหม่ = 255·ln(1+เดิม)/ln(256) เป็นการแปลงความเข้มแบบที่ 3 ในตำรา (negative, log, power-law) ใช้ดูภาพที่ช่วงค่ากว้างมาก เช่น สเปกตรัม FFT · ช่วงมืดถูกดึงขึ้นแรงกว่า γ ทั่วไป",
     params: [
       { key: "g", type: "number", label: "ค่า Gamma (γ)", min: 0.2, max: 3, step: 0.1, default: 1.5, desc: "โค้งความสว่าง — γ>1 ดึงส่วนมืดให้สว่างขึ้น, γ<1 กดส่วนสว่างให้มืดลง" },
+      { key: "curve", type: "select", label: "รูปโค้ง", options: [
+        { value: "power", label: "Power-law / Gamma (ใช้ค่า γ)" },
+        { value: "log", label: "Log: c·log(1+r) (ไม่ใช้ค่า γ)", hint: "ขยายช่วงมืดให้เห็นรายละเอียด บีบช่วงสว่าง · c = 255/log(256) ให้ 255 → 255" },
+      ], default: "power" },
     ],
-    apply(cv, src, p) {
+    apply(cv, src, p, ctx) {
+      if (p.curve === "log") {
+        if (isEmptyMat(src)) { if (ctx) ctx.info = "ภาพว่าง"; return src.clone(); }
+        const logArr = new Array(256);
+        for (let i = 0; i < 256; i++) logArr[i] = Math.floor(Math.log1p(i) * (255 / Math.log(256)) + 0.5);
+        const logLut = cv.matFromArray(1, 256, cv.CV_8UC1, logArr);
+        const out = new cv.Mat();
+        try {
+          cv.LUT(src, logLut, out);
+          if (ctx) ctx.info = `Log transform: ใหม่ = 255·ln(1+เดิม)/ln(256) — เดิม 10 → ${logArr[10]}, 128 → ${logArr[128]} (ค่า γ ไม่ถูกใช้)`;
+          return out;
+        } catch (err) {
+          out.delete();
+          throw err;
+        } finally {
+          logLut.delete();
+        }
+      }
       const lutArr = new Array(256);
       for (let i = 0; i < 256; i++) lutArr[i] = Math.min(255, Math.round(Math.pow(i / 255, 1 / p.g) * 255));
       const lut = cv.matFromArray(1, 256, cv.CV_8UC1, lutArr);
@@ -1332,7 +1610,7 @@ export const OPS = {
   custom_kernel: {
     name: "Custom Kernel (Convolution)",
     needs: "any",
-    desc: "ทดลอง 'ตัวกรองภาพ' (kernel/mask) แบบต่าง ๆ ที่ใช้กันจริงในตำรา — แต่ละแบบคือตัวเลข 3x3 หรือ 5x5 ที่คูณ-บวกกับพิกเซลรอบข้างแล้วได้ผลต่างกันโดยสิ้นเชิง (คมขึ้น/หาขอบ/นูนสามมิติ/เบลอ) รอบนี้ยังพิมพ์ matrix เองไม่ได้ ใช้ preset สำเร็จรูปก่อน",
+    desc: "ทดลอง 'ตัวกรองภาพ' (kernel/mask) แบบต่าง ๆ ที่ใช้กันจริงในตำรา — แต่ละแบบคือตัวเลข 3x3 หรือ 5x5 ที่คูณ-บวกกับพิกเซลรอบข้างแล้วได้ผลต่างกันโดยสิ้นเชิง (คมขึ้น/หาขอบ/นูนสามมิติ/เบลอ) รอบนี้ยังพิมพ์ matrix เองไม่ได้ ใช้ preset สำเร็จรูปก่อน · Motion/Disk คือ PSF (point spread function = หน้าตาของจุดเดียวหลังเบลอ) ใช้สร้างภาพเบลอที่รู้สาเหตุแน่นอน เพื่อทดลองแก้เบลอ (deblurring) · ค่าใน kernel ได้จากการนับว่าแต่ละพิกเซลถูกเส้น/วงกลมทับกี่ส่วน จึงใกล้เคียง fspecial ของ MATLAB แต่ไม่เท่าทุกทศนิยม",
     params: [
       { key: "preset", type: "select", label: "แบบ Kernel", options: [
         { value: "identity", label: "Identity (ไม่เปลี่ยนภาพ)", hint: "kernel ที่ให้ผลเหมือนภาพเดิม — ใช้เทียบว่า 'ไม่ทำอะไร' หน้าตาเป็นอย่างไร" },
@@ -1342,8 +1620,12 @@ export const OPS = {
         { value: "outline", label: "Outline (เส้นขอบหนา)", hint: "คล้าย Sharpen แต่ใช้เพื่อนบ้านครบ 8 ทิศ (แรงกว่า) — ผลรวม kernel = 1 จึงยังคงความสว่างเฉลี่ยไว้ ไม่ใช่ตัวหาขอบแท้ ๆ ที่ผลรวมเป็น 0 แบบ Edge Detect" },
         { value: "box3", label: "Box Blur 3x3 (เบลอเฉลี่ย)", hint: "เฉลี่ยพิกเซลรอบข้างเท่า ๆ กัน 9 จุด — เทียบกับ Blur node ที่มีอยู่แล้ว" },
         { value: "box5", label: "Box Blur 5x5 (เบลอเฉลี่ยกว้างขึ้น)", hint: "เฉลี่ยพิกเซลรอบข้าง 25 จุด — เบลอแรงกว่า box3" },
+        { value: "motion", label: "Motion Blur (เบลอจากการขยับ)", hint: "จำลองภาพเบลอเพราะกล้องหรือวัตถุขยับเป็นเส้นตรง ยาว 'ขนาด PSF' px ที่ 'มุม PSF' — เทียบ fspecial('motion') ของ MATLAB" },
+        { value: "disk", label: "Disk (เบลอจากโฟกัสหลุด)", hint: "เฉลี่ยในวงกลมรัศมี 'ขนาด PSF' px — เทียบ fspecial('disk')" },
       ], default: "sharpen" },
       { key: "amount", type: "number", label: "ความแรง (ผสมกับภาพเดิม)", min: 0, max: 2, step: 0.1, default: 1, desc: "0 = ภาพเดิมล้วน, 1 = ผลจาก kernel เต็มที่, มากกว่า 1 = เน้นผลต่างจากภาพเดิมให้แรงขึ้นอีก (เหมือน unsharp mask)" },
+      { key: "psfSize", type: "number", label: "ขนาด PSF (px) — ใช้กับ Motion/Disk เท่านั้น", min: 1, max: 50, step: 1, default: 9, desc: "Motion = ความยาวของรอยขยับ · Disk = รัศมีวงกลม" },
+      { key: "psfAngle", type: "number", label: "มุม PSF (องศา) — ใช้กับ Motion เท่านั้น", min: 0, max: 179, step: 1, default: 0, desc: "0° = ขยับแนวนอน · 90° = แนวตั้ง · มุมเพิ่มทวนเข็มนาฬิกาแบบ MATLAB" },
     ],
     apply(cv, src, p, ctx) {
       // fspecial-style presets: ระบุ kernel + ค่า scale (ผลรวม, ใช้ normalize เพื่อไม่ให้ภาพสว่าง/มืดขึ้นเวลาเบลอ)
@@ -1356,8 +1638,22 @@ export const OPS = {
         box3: { k: new Array(9).fill(1 / 9), size: 3 },
         box5: { k: new Array(25).fill(1 / 25), size: 5 },
       };
-      const preset = PRESETS[p.preset] || PRESETS.sharpen;
-      const kernel = cv.matFromArray(preset.size, preset.size, cv.CV_32FC1, preset.k);
+      // Motion/Disk = PSF จาก psfKernel (ตัวเดียวกับที่ batch 4B ใช้) · preset เดิมเลือกด้วย own-property (ค่าแปลกเช่น "constructor" → sharpen)
+      const psfKind = p.preset === "motion" || p.preset === "disk" ? p.preset : null;
+      if (psfKind && isEmptyMat(src)) { if (ctx) ctx.info = "ภาพว่าง"; return src.clone(); }
+      let preset = null;
+      let psfInfo = null;
+      let kernel;
+      if (psfKind) {
+        const L = intIn(p.psfSize, 9, 1, 50);
+        const ang = intIn(p.psfAngle, 0, 0, 179);
+        const psf = psfKernel(psfKind, L, ang);
+        kernel = cv.matFromArray(psf.n, psf.n, cv.CV_32FC1, Array.from(psf.k));
+        psfInfo = psfKind === "motion" ? `Kernel: motion (${psf.n}x${psf.n}) · ยาว ${L} px มุม ${ang}°` : `Kernel: disk (${psf.n}x${psf.n}) · รัศมี ${L} px`;
+      } else {
+        preset = Object.hasOwn(PRESETS, p.preset) ? PRESETS[p.preset] : PRESETS.sharpen;
+        kernel = cv.matFromArray(preset.size, preset.size, cv.CV_32FC1, preset.k);
+      }
       let filtered = null;
       let dst = null;
       try {
@@ -1371,7 +1667,7 @@ export const OPS = {
           // ผสมระหว่างภาพเดิมกับผลลัพธ์ตามน้ำหนัก amount (0=เดิมล้วน, 1=ผลเต็มที่, >1=เน้นผลต่างเพิ่ม)
           cv.addWeighted(src, 1 - amount, filtered, amount, 0, dst);
         }
-        if (ctx) ctx.info = `Kernel: ${p.preset} (${preset.size}x${preset.size})`;
+        if (ctx) ctx.info = psfInfo || `Kernel: ${p.preset} (${preset.size}x${preset.size})`;
         return dst;
       } catch (err) {
         if (dst) dst.delete();
@@ -1928,16 +2224,27 @@ export const OPS = {
     name: "Otsu Threshold",
     modeHint: "ให้ระบบหาเกณฑ์ที่ดีที่สุดให้เอง ไม่ต้องเดาค่า",
     needs: "gray",
-    desc: "ขี้เกียจหาเกณฑ์เองก็ให้ Otsu หาให้ มันดูการกระจายความสว่างทั้งภาพ แล้วเลือกจุดตัดที่แยกของมืดกับของสว่างออกจากกันได้เด็ดขาดที่สุด ไม่ต้องนั่งเดาค่าเอง ค่าที่มันคิดได้จะโผล่ที่แถบรายละเอียด",
+    desc: "ขี้เกียจหาเกณฑ์เองก็ให้ Otsu หาให้ มันดูการกระจายความสว่างทั้งภาพ แล้วเลือกจุดตัดที่แยกของมืดกับของสว่างออกจากกันได้เด็ดขาดที่สุด ไม่ต้องนั่งเดาค่าเอง ค่าที่มันคิดได้จะโผล่ที่แถบรายละเอียด · Triangle (Zack 1977) ไม่มีใน MATLAB · ภาพค่าเดียวทั้งภาพ OpenCV ให้ค่าเกณฑ์ ≈ ค่านั้น − 1 (ค่า 0 ได้ 1, ค่า 1 ได้ −1 ซึ่งแสดงเป็น = -1)",
     params: [
       { key: "invert", type: "boolean", label: "สลับขาว-ดำ", default: false },
+      { key: "method", type: "select", label: "วิธีหาเกณฑ์", options: [
+        { value: "otsu", label: "Otsu (แยกสองกลุ่มให้ห่างกัน)" },
+        { value: "triangle", label: "Triangle (เหมาะกับ histogram ยอดเดียว)", hint: "ลากเส้นจากยอด histogram ไปปลายหาง แล้วเลือกจุดที่ห่างจากเส้นมาก — เหมาะกับวัตถุเล็กบนพื้นเรียบ" },
+      ], default: "otsu" },
     ],
     apply(cv, src, p, ctx) {
+      const triangle = p.method === "triangle";
+      if (triangle && isEmptyMat(src)) { if (ctx) ctx.info = "ภาพว่าง"; return src.clone(); }
       const dst = new cv.Mat();
-      const type = (p.invert ? cv.THRESH_BINARY_INV : cv.THRESH_BINARY) + cv.THRESH_OTSU;
-      const val = cv.threshold(src, dst, 0, 255, type);
-      if (ctx) ctx.info = `ค่าเกณฑ์ที่ Otsu คำนวณได้ = ${Math.round(val)}`;
-      return dst;
+      const type = (p.invert ? cv.THRESH_BINARY_INV : cv.THRESH_BINARY) + (triangle ? cv.THRESH_TRIANGLE : cv.THRESH_OTSU);
+      try {
+        const val = cv.threshold(src, dst, 0, 255, type);
+        if (ctx) ctx.info = `ค่าเกณฑ์ที่ ${triangle ? "Triangle" : "Otsu"} คำนวณได้ = ${Math.round(val)}`;
+        return dst;
+      } catch (err) {
+        dst.delete();
+        throw err;
+      }
     },
   },
 
@@ -2620,16 +2927,19 @@ export const OPS = {
       " · แกนยาว/แกนสั้น/ความรี มีค่าให้ทุกวัตถุ แม้มุมเอียง (orientation) จะแสดง —" +
       " · ความสว่างเฉลี่ย = ความสว่างของภาพที่เข้ากล่องนี้ (MATLAB ใช้ภาพที่สองใน regionprops(BW, I) แต่กล่องนี้มีทางเข้าเดียว) — หลัง Threshold จึงเป็น 255 เสมอ; ถ้าอยากวัดความสว่างจริงให้ต่อภาพเทาเข้ากล่องนี้ตรง ๆ (กล่องแยกวัตถุที่ > 127 เอง)" +
       " · เส้นรูปนูนของความตัน ผ่านกลางพิกเซล วัตถุเล็กมากจึงอาจต่างจาก MATLAB (ซึ่งห่อที่มุมพิกเซล)" +
-      " · วัตถุเกาะที่อยู่ในรูของวัตถุอื่นจะนับรวมกับวัตถุชั้นนอก (MATLAB นับเป็นอีกชิ้นหนึ่ง)",
+      " · วัตถุเกาะที่อยู่ในรูของวัตถุอื่นจะนับรวมกับวัตถุชั้นนอก (MATLAB นับเป็นอีกชิ้นหนึ่ง)" +
+      " · แปลงเป็นหน่วยจริงต้องมีของอ้างอิงในภาพ · ตัวคูณเดียวใช้ได้เมื่อเลนส์ไม่บิดเบี้ยวมาก (ดู Undistort) และชิ้นงานอยู่ระนาบเดียว · พื้นที่คูณ (มม./px)²",
     params: [
       { key: "minArea", type: "number", label: "พื้นที่ขั้นต่ำ (px)", min: 0, max: 5000, step: 10, default: 50, desc: "วัตถุที่เล็กกว่านี้จะไม่ถูกนับ/วัด (กันจุด noise เล็ก ๆ ปนเข้ามา)" },
       { key: "maxObjects", type: "number", label: "แสดงวัตถุสูงสุด", min: 0, max: 5000, step: 50, default: 500, hint: "0 = ไม่จำกัด", desc: "วัด/วาดเฉพาะวัตถุที่ใหญ่ที่สุดตามจำนวนนี้ (จำนวนวัตถุทั้งหมดที่พบยังนับครบและแสดงเสมอ) — กันภาพที่มีจุด noise เป็นหมื่นจุดทำให้โปรแกรมค้าง ค่าที่แสดงทุกแถวยังเป็นค่าจริงเต็มความละเอียด ไม่ได้ประมาณ; ตั้ง 0 = วัดทุกชิ้นไม่จำกัด (อาจช้ามากถ้าวัตถุเยอะ)" },
+      mmScaleParam(),
     ],
     apply(cv, src, p, ctx) {
+      const mmF = numIn(p.mmPerPx, 0, 0, 100);
       if (isEmptyMat(src)) {
         if (ctx) {
           ctx.info = "ภาพว่าง";
-          ctx.values = { kind: "table", columns: [...REGION_COLUMNS_ALL], rows: [], total: 0 };
+          ctx.values = { kind: "table", ...mmTable("regionprops", mmF, REGION_COLUMNS_ALL, []), total: 0 };
         }
         return src.clone();
       }
@@ -2761,7 +3071,8 @@ export const OPS = {
           }
           // ctx.values: table แถวต่อวัตถุ (ทุกแถวยาวเท่า columns.length เป๊ะ) + total = จำนวนที่พบจริงทั้งหมด
           // (field เสริม additive — rows อาจน้อยกว่า total เมื่อ cap ทำงาน)
-          ctx.values = { kind: "table", columns: [...REGION_COLUMNS_ALL], rows, total };
+          if (mmF > 0) ctx.info += MM_SUFFIX(mmF);
+          ctx.values = { kind: "table", ...mmTable("regionprops", mmF, REGION_COLUMNS_ALL, rows), total };
         }
         return dst;
       } catch (err) {
@@ -3565,9 +3876,23 @@ export const OPS = {
   white_balance: {
     name: "White Balance (Gray World)",
     needs: "any",
-    desc: "แก้สีที่เพี้ยนจากแสงไม่ปกติ (เช่น ภาพออกเหลือง/ฟ้าทั้งภาพ) ด้วยสมมติฐาน 'Gray World': เฉลี่ยสีทั้งภาพควรออกเป็นสีเทากลาง ๆ ถ้าไม่เป็นแบบนั้น แสดงว่าแสงเพี้ยน จึงปรับแต่ละช่องสี (R/G/B) ให้ค่าเฉลี่ยเท่ากันหมด — ใช้ได้ผลดีกับภาพที่มีสีหลากหลายทั่วเฟรม",
-    params: [],
+    desc: "แก้สีที่เพี้ยนจากแสงไม่ปกติ (เช่น ภาพออกเหลือง/ฟ้าทั้งภาพ) ด้วยสมมติฐาน 'Gray World': เฉลี่ยสีทั้งภาพควรออกเป็นสีเทากลาง ๆ ถ้าไม่เป็นแบบนั้น แสดงว่าแสงเพี้ยน จึงปรับแต่ละช่องสี (R/G/B) ให้ค่าเฉลี่ยเท่ากันหมด — ใช้ได้ผลดีกับภาพที่มีสีหลากหลายทั่วเฟรม · มี 3 สมมติฐานให้เลือก: เฉลี่ยเป็นเทา (Gray World) / ส่วนสว่างเป็นขาว (White Patch) / จุดที่บอกว่าเป็นเทา (จุดอ้างอิง) · Gray World พังเมื่อสีเดียวครอบภาพ (เช่น ใบไม้เต็มเฟรม) · MATLAB chromadapt แปลงในปริภูมิ XYZ แบบ Bradford แต่แอปคูณเกนตรงในช่อง R/G/B (หลักการเดียวกัน ตัวเลขต่างกัน)",
+    params: [
+      { key: "method", type: "select", label: "วิธี", options: [
+        { value: "gray_world", label: "Gray World (เฉลี่ยทั้งภาพควรเป็นเทา)" },
+        { value: "white_patch", label: "White Patch (ส่วนสว่างควรเป็นขาว)", hint: "ใช้ค่าที่ตำแหน่ง 99% ของแต่ละช่องเป็น 'ขาว' — เหมาะกับภาพที่มีของขาวจริงในฉาก" },
+        { value: "ref_point", label: "จุดอ้างอิงสีเทา/ขาว", hint: "บอกตำแหน่งของที่รู้ว่าเป็นเทาหรือขาว (กระดาษ/การ์ดเทา) — ใช้ได้แม้สีเดียวครอบภาพ" },
+      ], default: "gray_world" },
+      { key: "refX", type: "number", label: "จุดอ้างอิง แนวนอน (%) — ใช้กับจุดอ้างอิงเท่านั้น", min: 0, max: 100, step: 1, default: 50 },
+      { key: "refY", type: "number", label: "จุดอ้างอิง แนวตั้ง (%) — ใช้กับจุดอ้างอิงเท่านั้น", min: 0, max: 100, step: 1, default: 50 },
+      { key: "refSize", type: "number", label: "รัศมีบริเวณอ้างอิง (px) — ใช้กับจุดอ้างอิงเท่านั้น", min: 1, max: 50, step: 1, default: 5 },
+    ],
     apply(cv, src, p, ctx) {
+      const wbMethod = p.method === "white_patch" || p.method === "ref_point" ? p.method : null;
+      if (wbMethod) {
+        if (isEmptyMat(src)) { if (ctx) ctx.info = "ภาพว่าง"; return src.clone(); }
+        if (src.channels() !== 1) return whiteBalanceByGain(cv, src, p, ctx, wbMethod);
+      }
       let rgb = null;
       let vec = null;
       let rCh = null;
@@ -4047,7 +4372,7 @@ export const OPS = {
   fft_filter: {
     name: "FFT Low/High-pass Filter",
     needs: "gray",
-    desc: "กรองภาพในโดเมนความถี่: Low-pass เก็บเฉพาะความถี่ต่ำ (ภาพรวม/เบลอ, ตัดรายละเอียด/noise ทิ้ง) ส่วน High-pass เก็บเฉพาะความถี่สูง (ขอบ/รายละเอียด, ตัดภาพรวมทิ้ง) — แบบ Ideal ตัดเฉียบขาดที่รัศมีเดียว (อาจเห็นรอยคลื่นแทรกซ้อน 'ringing' ทั่วภาพ), แบบ Gaussian ตัดแบบค่อยเป็นค่อยไป (นุ่มกว่า ไม่มี ringing แบบนั้น) — หมายเหตุ: FFT มองภาพเป็น 'ภาพวนซ้ำ' (periodic) เสมอ ถ้าขอบซ้าย-ขวา หรือบน-ล่างของภาพมีความสว่างต่างกันมาก อาจเห็นแถบ ringing บาง ๆ ที่ริมภาพได้แม้ใช้ Gaussian — เป็นข้อจำกัดของ FFT พื้นฐาน ไม่ใช่บั๊ก",
+    desc: "กรองภาพในโดเมนความถี่: Low-pass เก็บเฉพาะความถี่ต่ำ (ภาพรวม/เบลอ, ตัดรายละเอียด/noise ทิ้ง) ส่วน High-pass เก็บเฉพาะความถี่สูง (ขอบ/รายละเอียด, ตัดภาพรวมทิ้ง) — แบบ Ideal ตัดเฉียบขาดที่รัศมีเดียว (อาจเห็นรอยคลื่นแทรกซ้อน 'ringing' ทั่วภาพ), แบบ Gaussian ตัดแบบค่อยเป็นค่อยไป (นุ่มกว่า ไม่มี ringing แบบนั้น) — หมายเหตุ: FFT มองภาพเป็น 'ภาพวนซ้ำ' (periodic) เสมอ ถ้าขอบซ้าย-ขวา หรือบน-ล่างของภาพมีความสว่างต่างกันมาก อาจเห็นแถบ ringing บาง ๆ ที่ริมภาพได้แม้ใช้ Gaussian — เป็นข้อจำกัดของ FFT พื้นฐาน ไม่ใช่บั๊ก · Butterworth: H = 1/(1+(D/D0)^2n) — n = 1–2 แทบไม่มี ringing, n สูงคล้าย Ideal (ตำราสอนคู่กับ Ideal/Gaussian)",
     params: [
       { key: "type", type: "select", label: "ชนิดตัวกรอง", options: [
         { value: "low", label: "Low-pass (เก็บภาพรวม/เบลอ)", hint: "ตัดรายละเอียด/ขอบ/noise ความถี่สูงทิ้ง" },
@@ -4056,10 +4381,14 @@ export const OPS = {
       { key: "shape", type: "select", label: "รูปแบบขอบตัด", options: [
         { value: "gaussian", label: "Gaussian (นุ่ม, ไม่มี ringing)" },
         { value: "ideal", label: "Ideal (ตัดเฉียบขาด, อาจมี ringing)" },
+        { value: "butterworth", label: "Butterworth (นุ่ม ปรับความชันด้วยลำดับ n)" },
       ], default: "gaussian" },
       { key: "cutoff", type: "number", label: "รัศมีตัด (ความถี่ นับจากกลางสเปกตรัม)", min: 2, max: 200, step: 2, default: 30, desc: "รัศมีวงกลมความถี่ที่เป็นเส้นแบ่งเก็บ/ตัด — Gaussian ใช้ค่านี้เป็น σ โดยประมาณ" },
+      { key: "order", type: "number", label: "ลำดับ n — ใช้กับ Butterworth เท่านั้น", min: 1, max: 10, step: 1, default: 2, desc: "n น้อย = ลาดนุ่มคล้าย Gaussian · n มาก = ชันเข้าใกล้ Ideal (เริ่มเห็น ringing)" },
     ],
     apply(cv, src, p, ctx) {
+      // IP batch 4A: Butterworth เท่านั้นที่มี guard ภาพว่าง (รูปแบบเดิมคงพฤติกรรมเดิม — throw บน 0×0)
+      if (p.shape === "butterworth" && isEmptyMat(src)) { if (ctx) ctx.info = "ภาพว่าง"; return src.clone(); }
       const maxAnalysisSide = 640;
       const scale = Math.min(1, maxAnalysisSide / Math.max(src.cols, src.rows));
       const analysis = new cv.Mat();
@@ -4107,6 +4436,7 @@ export const OPS = {
 
         // สร้าง mask 1 channel เป็น float ด้วยลูป JS ตรง ๆ (เร็วพอ — ทดสอบแล้ว ~640x480 ใช้ <10ms)
         const cutoff = Number.isFinite(p.cutoff) ? p.cutoff : 30;
+        const bwN = intIn(p.order, 2, 1, 10); // ลำดับของ Butterworth (ไม่ใช้กับรูปแบบอื่น)
         // รัศมีความถี่ (รอบต่อภาพ) ไม่เปลี่ยนตามความละเอียด ห้ามคูณ scale ซ้ำ — ไม่เช่นนั้นภาพ >640px จะถูกกรองแรงเกินจริง
         const cx = dftOut.cols / 2, cy = dftOut.rows / 2;
         const maskData = new Float32Array(dftOut.rows * dftOut.cols);
@@ -4117,6 +4447,8 @@ export const OPS = {
             let lowVal;
             if (p.shape === "ideal") {
               lowVal = d <= cutoff ? 1 : 0;
+            } else if (p.shape === "butterworth") {
+              lowVal = 1 / (1 + Math.pow(d / cutoff, 2 * bwN));
             } else {
               lowVal = Math.exp(-(d * d) / (2 * cutoff * cutoff));
             }
@@ -4146,7 +4478,7 @@ export const OPS = {
 
         dst = new cv.Mat();
         cv.resize(u8, dst, new cv.Size(src.cols, src.rows), 0, 0, cv.INTER_LINEAR);
-        if (ctx) ctx.info = `${p.type === "high" ? "High" : "Low"}-pass (${p.shape}), รัศมี ${cutoff} (หน่วยความถี่ นับจากกลางสเปกตรัม — ไม่ใช่พิกเซลของภาพจริง)`;
+        if (ctx) ctx.info = `${p.type === "high" ? "High" : "Low"}-pass (${p.shape}${p.shape === "butterworth" ? ` n=${bwN}` : ""}), รัศมี ${cutoff} (หน่วยความถี่ นับจากกลางสเปกตรัม — ไม่ใช่พิกเซลของภาพจริง)`;
         return dst;
       } catch (err) {
         if (dst) dst.delete();
@@ -5291,10 +5623,14 @@ export const OPS = {
   gaussian_noise: {
     name: "Gaussian Noise (เกรนแบบเกาส์)",
     needs: "any",
-    desc: "จำลองภาพที่มีเกรน (เช่นภาพถ่ายในที่แสงน้อย) ด้วย noise แบบบวก: ทุกพิกเซลและทุกช่องสีถูกบวกด้วยค่าสุ่มของตัวเองอย่างอิสระ ค่าสุ่มมาจากการแจกแจงแบบเกาส์ (ระฆังคว่ำ) ค่าเฉลี่ย 0 — ราว 68% ของค่าสุ่มอยู่ในช่วง ±σ · ค่าที่เกิน 0–255 ถูกตัดที่ขอบ บริเวณที่มืดหรือสว่างจัดจึงได้ noise ไม่สมมาตร · seed เดิม = ลาย noise เดิมทุกเฟรม (เทียบก่อน/หลังกรองได้นิ่ง และสคริปต์ Python ที่ export ได้ผลเท่ากันทุก byte) ต่างจาก imnoise ของ MATLAB ที่สุ่มใหม่ทุกครั้งที่เรียก · ชวนลอง: ต่อ Gaussian Blur หรือ Wiener Filter แล้วเทียบกับ Median Blur ขนาดเดียวกัน — กับ noise แบบนี้การเฉลี่ยมักลดเกรนได้มากกว่า ตรงข้ามกับกรณี Salt & Pepper ที่ Median ได้เปรียบ",
+    desc: "จำลองภาพที่มีเกรน (เช่นภาพถ่ายในที่แสงน้อย) ด้วย noise แบบบวก: ทุกพิกเซลและทุกช่องสีถูกบวกด้วยค่าสุ่มของตัวเองอย่างอิสระ ค่าสุ่มมาจากการแจกแจงแบบเกาส์ (ระฆังคว่ำ) ค่าเฉลี่ย 0 — ราว 68% ของค่าสุ่มอยู่ในช่วง ±σ · ค่าที่เกิน 0–255 ถูกตัดที่ขอบ บริเวณที่มืดหรือสว่างจัดจึงได้ noise ไม่สมมาตร · seed เดิม = ลาย noise เดิมทุกเฟรม (เทียบก่อน/หลังกรองได้นิ่ง และสคริปต์ Python ที่ export ได้ผลเท่ากันทุก byte) ต่างจาก imnoise ของ MATLAB ที่สุ่มใหม่ทุกครั้งที่เรียก · ชวนลอง: ต่อ Gaussian Blur หรือ Wiener Filter แล้วเทียบกับ Median Blur ขนาดเดียวกัน — กับ noise แบบนี้การเฉลี่ยมักลดเกรนได้มากกว่า ตรงข้ามกับกรณี Salt & Pepper ที่ Median ได้เปรียบ · แบบ Speckle (คูณ): ใหม่ = เดิม + เดิม × (σ/255) × z — พิกเซลดำ (0) ไม่เปลี่ยนเลย · ต่างจาก MATLAB imnoise('speckle') ที่ใช้ค่าสุ่มแบบ uniform — แอปใช้แบบเกาส์ (ตัวสุ่มเดียวกับแบบบวก seed เดิมได้ลายเดิม)",
     params: [
       { key: "sigma", type: "number", label: "ความแรง σ (ระดับสี 0–255)", min: 0, max: 100, step: 1, default: 20, hint: "MATLAB imnoise ค่าเริ่มต้น var 0.01 ≈ σ 25.5", desc: "ส่วนเบี่ยงเบนมาตรฐานของ noise ในหน่วยระดับสี — มาก = เกรนแรงขึ้น · 0 = ไม่เติม noise" },
       { key: "seed", type: "number", label: "seed (ลายสุ่ม)", min: 1, max: 99999, step: 1, default: 1, desc: "เลขตั้งต้นของการสุ่ม — seed เดิมได้ลาย noise เดิมทุกครั้ง เปลี่ยนเลขเพื่อดูลายใหม่" },
+      { key: "kind", type: "select", label: "ชนิด noise", options: [
+        { value: "additive", label: "แบบบวก (เกรนเท่ากันทุกความสว่าง)" },
+        { value: "speckle", label: "Speckle (แบบคูณ — เกรนแรงตามความสว่าง)", hint: "พบในภาพอัลตราซาวด์/เรดาร์ · บริเวณมืดแทบไม่มีเกรน" },
+      ], default: "additive" },
     ],
     apply(cv, src, p, ctx) {
       if (isEmptyMat(src)) { if (ctx) ctx.info = "ภาพว่าง"; return src.clone(); }
@@ -5312,6 +5648,15 @@ export const OPS = {
         const z = seededGaussian(seed, n);
         const d = dst.data;
         let clipped = 0;
+        if (p.kind === "speckle") {
+          const sc = sigma / 255;
+          for (let k = 0; k < n; k++) {
+            const v = Math.floor(d[k] + d[k] * sc * z[k] + 0.5);
+            if (v < 0) { d[k] = 0; clipped++; } else if (v > 255) { d[k] = 255; clipped++; } else d[k] = v;
+          }
+          if (ctx) ctx.info = `เติม speckle noise (แรงตามความสว่าง) σ=${sigma} ที่ความสว่าง 255 (seed ${seed}) · ชนขอบ 0/255 ${fixed1((clipped * 100) / n)}% ของค่า`;
+          return dst;
+        }
         for (let k = 0; k < n; k++) {
           const v = Math.floor(d[k] + sigma * z[k] + 0.5);
           if (v < 0) { d[k] = 0; clipped++; } else if (v > 255) { d[k] = 255; clipped++; } else d[k] = v;
@@ -5461,14 +5806,16 @@ export const OPS = {
   feret: {
     name: "Feret Diameter (วัดความกว้างแบบคาลิปเปอร์)",
     needs: "gray",
-    desc: "วัดขนาดวัตถุแบบเอาคาลิปเปอร์ (เวอร์เนียร์) หนีบจากทุกทิศทาง: ระยะที่ปากคาลิปเปอร์กางกว้างสุดคือ Max Feret (เส้นแดง) ระยะที่หนีบได้แคบสุดคือ Min Feret (กรอบเขียว = กรอบแคบสุดที่ล้อมวัตถุได้) — ค่าไม่ขึ้นกับการหมุนของวัตถุ ต่างจาก Bounding Box ที่เป็นกรอบตั้งตรงเสมอ วัตถุเอียงจึงได้กรอบใหญ่กว่าตัวจริง · วัดบนขอบพิกเซล (ไม่ใช่จุดกึ่งกลางพิกเซล): วัตถุยาว 10 px วัดได้ 10 พอดี พิกเซลเดี่ยว 1 จุดได้ Min = 1 และ Max = 1.41 (เส้นทแยงของสี่เหลี่ยม 1×1) · Max Feret ของสี่เหลี่ยมผืนผ้าคือ 'เส้นทแยงมุม' ไม่ใช่ด้านยาว — ความยาวด้านยาวดูที่คอลัมน์ 'ยาวตามกรอบแคบสุด' · คาลิปเปอร์แตะเฉพาะเปลือกนอก (convex hull) วัตถุที่มีรูจึงได้ค่าเท่ากับวัตถุตันขนาดเดียวกัน และส่วนที่เว้าเข้าไปไม่มีผล · ภาพที่ไม่ใช่ขาว-ดำล้วนจะถูกตัดที่ 127 ก่อน (เหมือน Region Properties) · เลขและลำดับวัตถุตรงกับ Region Properties เมื่อตั้งพื้นที่ขั้นต่ำเท่ากันและจำนวนวัตถุไม่เกินจำนวนสูงสุดของทั้งสองกล่อง · มุม: 0° = แนวนอน เพิ่มตามเข็มนาฬิกา (แกน y ของภาพชี้ลง) ช่วง 0–180° · ใกล้เคียง bwferet ของ MATLAB แต่ไม่รับประกันว่าตรงทุกทศนิยม (วิธีนับขอบพิกเซลอาจต่างกันเล็กน้อย)",
+    desc: "วัดขนาดวัตถุแบบเอาคาลิปเปอร์ (เวอร์เนียร์) หนีบจากทุกทิศทาง: ระยะที่ปากคาลิปเปอร์กางกว้างสุดคือ Max Feret (เส้นแดง) ระยะที่หนีบได้แคบสุดคือ Min Feret (กรอบเขียว = กรอบแคบสุดที่ล้อมวัตถุได้) — ค่าไม่ขึ้นกับการหมุนของวัตถุ ต่างจาก Bounding Box ที่เป็นกรอบตั้งตรงเสมอ วัตถุเอียงจึงได้กรอบใหญ่กว่าตัวจริง · วัดบนขอบพิกเซล (ไม่ใช่จุดกึ่งกลางพิกเซล): วัตถุยาว 10 px วัดได้ 10 พอดี พิกเซลเดี่ยว 1 จุดได้ Min = 1 และ Max = 1.41 (เส้นทแยงของสี่เหลี่ยม 1×1) · Max Feret ของสี่เหลี่ยมผืนผ้าคือ 'เส้นทแยงมุม' ไม่ใช่ด้านยาว — ความยาวด้านยาวดูที่คอลัมน์ 'ยาวตามกรอบแคบสุด' · คาลิปเปอร์แตะเฉพาะเปลือกนอก (convex hull) วัตถุที่มีรูจึงได้ค่าเท่ากับวัตถุตันขนาดเดียวกัน และส่วนที่เว้าเข้าไปไม่มีผล · ภาพที่ไม่ใช่ขาว-ดำล้วนจะถูกตัดที่ 127 ก่อน (เหมือน Region Properties) · เลขและลำดับวัตถุตรงกับ Region Properties เมื่อตั้งพื้นที่ขั้นต่ำเท่ากันและจำนวนวัตถุไม่เกินจำนวนสูงสุดของทั้งสองกล่อง · มุม: 0° = แนวนอน เพิ่มตามเข็มนาฬิกา (แกน y ของภาพชี้ลง) ช่วง 0–180° · ใกล้เคียง bwferet ของ MATLAB แต่ไม่รับประกันว่าตรงทุกทศนิยม (วิธีนับขอบพิกเซลอาจต่างกันเล็กน้อย) · แปลงเป็นหน่วยจริงต้องมีของอ้างอิงในภาพ · ตัวคูณเดียวใช้ได้เมื่อเลนส์ไม่บิดเบี้ยวมาก (ดู Undistort) และชิ้นงานอยู่ระนาบเดียว · พื้นที่คูณ (มม./px)²",
     params: [
       { key: "minArea", type: "number", label: "พื้นที่ขั้นต่ำ (px)", min: 0, max: 5000, step: 10, default: 50, desc: "วัตถุที่เล็กกว่านี้ไม่ถูกวัด (กันจุด noise เล็ก ๆ) — ความหมายเดียวกับ Region Properties: พื้นที่ภายในเส้นขอบของวัตถุ" },
       { key: "maxObjects", type: "number", label: "วัดวัตถุสูงสุด", min: 1, max: 500, step: 1, default: 50, desc: "วัดและวาดเฉพาะวัตถุตามจำนวนนี้ เรียงจากใหญ่ไปเล็ก (จำนวนวัตถุทั้งหมดที่พบยังรายงานครบ) — ไม่มีตัวเลือก 'ไม่จำกัด' เพราะกรอบหลายร้อยกรอบซ้อนกันจะอ่านไม่ออก" },
+      mmScaleParam(),
     ],
     apply(cv, src, p, ctx) {
+      const mmF = numIn(p.mmPerPx, 0, 0, 100);
       if (isEmptyMat(src)) { // cvtColor(GRAY2RGB) throw จริงบน 0×0
-        if (ctx) { ctx.info = "ภาพว่าง"; ctx.values = { kind: "table", columns: FERET_COLUMNS.slice(), rows: [], total: 0 }; }
+        if (ctx) { ctx.info = "ภาพว่าง"; ctx.values = { kind: "table", ...mmTable("feret", mmF, FERET_COLUMNS, []), total: 0 }; }
         return src.clone();
       }
       const minArea = numIn(p.minArea, 50, 0, 5000);
@@ -5537,7 +5884,8 @@ export const OPS = {
               : `วัด Feret ของวัตถุ ${total} ชิ้น`;
             ctx.info = `${head} · ชิ้น #1 ยาวสุด ${fixed1(rows[0][4])} px · แคบสุด ${fixed1(rows[0][5])} px (กรอบเขียว = กรอบที่แคบสุด, เส้นแดง = แนวที่ยาวสุด)`;
           }
-          ctx.values = { kind: "table", columns: FERET_COLUMNS.slice(), rows, total };
+          if (mmF > 0) ctx.info += MM_SUFFIX(mmF);
+          ctx.values = { kind: "table", ...mmTable("feret", mmF, FERET_COLUMNS, rows), total };
         }
         return dst;
       } catch (err) {
@@ -5556,7 +5904,7 @@ export const OPS = {
   line_profile: {
     name: "Line Profile (กราฟความสว่างตามเส้น)",
     needs: "any",
-    desc: "อ่านความสว่างของพิกเซลทีละจุดตามเส้นตรงจาก A (จุดเขียว) ไป B (จุดแดง) แล้ววาดเป็นกราฟ: แกนนอน = ระยะจาก A, แกนตั้ง = ความสว่าง 0–255 (เส้นเทาล่าง/บน = 0/255) — บริเวณเรียบกราฟจะแบน ขอบวัตถุกราฟจะกระโดดขึ้นหรือลง ส่วน noise ทำให้กราฟหยัก · ภาพสีวัดจากความสว่างแบบขาวดำ (แปลงเป็นเทาก่อน) · อ่านจากพิกเซลที่อยู่ใกล้จุดบนเส้นมากสุด (nearest neighbour) ตามค่าเริ่มต้นของ improfile ใน MATLAB · วงกลมม่วงบนภาพและเส้นม่วงบนกราฟ = ตำแหน่งที่ค่ากระโดดแรงสุด (ถ้าค่าบนเส้นเท่ากันทุกจุดจะไม่มีขอบ จึงไม่วาดวงกลม/เส้นม่วงและช่องตัวเลขขอบเป็น —) · ระยะระหว่างขอบขึ้นกับขอบลงคือความกว้างของแถบสว่าง/มืดที่เส้นตัดผ่าน ใช้วัดความกว้างชิ้นงานได้ แต่ตรงเฉพาะเมื่อเส้นตัดแถบในแนวตั้งฉาก ถ้าเส้นเฉียงค่าจะยาวกว่าความกว้างจริง · ตำแหน่ง A/B ตั้งเป็น % ของขนาดภาพ (ยังลากเส้นบนภาพโดยตรงไม่ได้) · ภาพที่เล็กกว่า 64×64 px ไม่วาดกราฟ แต่ตัวเลขยังคำนวณครบ",
+    desc: "อ่านความสว่างของพิกเซลทีละจุดตามเส้นตรงจาก A (จุดเขียว) ไป B (จุดแดง) แล้ววาดเป็นกราฟ: แกนนอน = ระยะจาก A, แกนตั้ง = ความสว่าง 0–255 (เส้นเทาล่าง/บน = 0/255) — บริเวณเรียบกราฟจะแบน ขอบวัตถุกราฟจะกระโดดขึ้นหรือลง ส่วน noise ทำให้กราฟหยัก · ภาพสีวัดจากความสว่างแบบขาวดำ (แปลงเป็นเทาก่อน) · อ่านจากพิกเซลที่อยู่ใกล้จุดบนเส้นมากสุด (nearest neighbour) ตามค่าเริ่มต้นของ improfile ใน MATLAB · วงกลมม่วงบนภาพและเส้นม่วงบนกราฟ = ตำแหน่งที่ค่ากระโดดแรงสุด (ถ้าค่าบนเส้นเท่ากันทุกจุดจะไม่มีขอบ จึงไม่วาดวงกลม/เส้นม่วงและช่องตัวเลขขอบเป็น —) · ระยะระหว่างขอบขึ้นกับขอบลงคือความกว้างของแถบสว่าง/มืดที่เส้นตัดผ่าน ใช้วัดความกว้างชิ้นงานได้ แต่ตรงเฉพาะเมื่อเส้นตัดแถบในแนวตั้งฉาก ถ้าเส้นเฉียงค่าจะยาวกว่าความกว้างจริง · ตำแหน่ง A/B ตั้งเป็น % ของขนาดภาพ (ยังลากเส้นบนภาพโดยตรงไม่ได้) · ภาพที่เล็กกว่า 64×64 px ไม่วาดกราฟ แต่ตัวเลขยังคำนวณครบ · แปลงเป็นหน่วยจริงต้องมีของอ้างอิงในภาพ · ตัวคูณเดียวใช้ได้เมื่อเลนส์ไม่บิดเบี้ยวมาก (ดู Undistort) และชิ้นงานอยู่ระนาบเดียว · พื้นที่คูณ (มม./px)²",
     params: [
       { key: "x1", type: "number", label: "จุด A แนวนอน (%)", min: 0, max: 100, step: 1, default: 10, desc: "ตำแหน่งจุดเริ่มเส้น (เขียว) เป็น % ของความกว้างภาพ — 100% = พิกเซลขวาสุด" },
       { key: "y1", type: "number", label: "จุด A แนวตั้ง (%)", min: 0, max: 100, step: 1, default: 50, desc: "ตำแหน่งจุดเริ่มเส้น (เขียว) เป็น % ของความสูงภาพ — 100% = แถวล่างสุด" },
@@ -5566,10 +5914,12 @@ export const OPS = {
         { value: "overlay", label: "เส้น + กราฟบนภาพ", hint: "เห็นทั้งตำแหน่งเส้นและกราฟ (แถบกราฟย้ายขึ้นบนเองถ้าเส้นอยู่ด้านล่าง)" },
         { value: "plot", label: "กราฟเต็มภาพ", hint: "ใช้ทั้งภาพวาดกราฟ อ่านรายละเอียดง่ายขึ้น" },
       ], default: "overlay" },
+      mmScaleParam(),
     ],
     apply(cv, src, p, ctx) {
+      const mmF = numIn(p.mmPerPx, 0, 0, 100);
       if (isEmptyMat(src)) {
-        if (ctx) { ctx.info = "ภาพว่าง"; ctx.values = scalarValues(LINE_PROFILE_FIELDS, []); }
+        if (ctx) { ctx.info = "ภาพว่าง"; ctx.values = lineProfileValues([], mmF); }
         return src.clone();
       }
       const W = src.cols, H = src.rows;
@@ -5662,8 +6012,9 @@ export const OPS = {
             ? "จุด A กับ B อยู่ตำแหน่งเดียวกัน — ปรับให้ห่างกันก่อน"
             : `เส้น A(${ax},${ay})→B(${bx},${by}) ยาว ${fixed1(L)} px · อ่าน ${N} จุด · ค่า ${vMin}–${vMax} · ${iStar < 0 ? "ค่าบนเส้นเท่ากันทุกจุด ไม่มีขอบ" : `ขอบแรงสุดห่างจาก A ${fixed1(edgePos)} px (กระโดด ${edgeJump >= 0 ? "+" : ""}${edgeJump})`}`;
           if (small) info += ` · ภาพเล็กกว่า ${LINE_PROFILE_MIN_GRAPH}×${LINE_PROFILE_MIN_GRAPH} px จึงไม่วาดกราฟ (ตัวเลขยังคำนวณครบ)`;
+          if (mmF > 0) info += MM_SUFFIX(mmF);
           ctx.info = info;
-          ctx.values = scalarValues(LINE_PROFILE_FIELDS, [L, N, vMin, vMax, sum / N, vMax - vMin, edgeJump, edgePos, edgePair]);
+          ctx.values = lineProfileValues([L, N, vMin, vMax, sum / N, vMax - vMin, edgeJump, edgePos, edgePair], mmF);
         }
         return dst;
       } catch (err) {
@@ -6126,6 +6477,401 @@ export const OPS = {
       }
     },
   },
+
+  // ===================================================================
+  // IP batch 4A (2026-10-15) — 5 op ใหม่: guided_filter · focus_score · pseudocolor · delta_e · roi_apply
+  // ===================================================================
+  // imguidedfilter ของ MATLAB (แบบ self-guided) — He et al. 2010 ผ่าน guidedFilterF32 (ตัวช่วยกลาง batch 4B ใช้ต่อ)
+  guided_filter: {
+    name: "Guided Filter (เกลี่ยแบบรักษาขอบ)",
+    needs: "any",
+    desc: "เกลี่ยภาพให้เรียบแต่คงขอบไว้: ใช้ 'ภาพนำทาง' (guide) บอกว่าขอบอยู่ตรงไหน แล้วเกลี่ยเฉพาะบริเวณเรียบ — กล่องนี้ใช้ภาพตัวเองเป็นภาพนำทาง (self-guided แบบค่าเริ่มต้นของ imguidedfilter ใน MATLAB) · ผลคล้าย Bilateral แต่คำนวณด้วย box filter ล้วน ความเร็วจึงไม่ขึ้นกับขนาดหน้าต่าง · ภาพสีทำทีละช่อง R/G/B — MATLAB กับภาพสีใช้ทั้ง 3 ช่องร่วมกันเป็นภาพนำทาง ขอบสีจึงต่างจาก MATLAB เล็กน้อย · ขอบภาพใช้การสะท้อนค่า · เป็นตัวช่วยของ Dehaze ในชุดถัดไป (ปรับแผนที่ความโปร่งใสให้ตามขอบวัตถุ)",
+    params: [
+      { key: "radius", type: "number", label: "รัศมีหน้าต่าง r", min: 1, max: 20, step: 1, default: 2, desc: "หน้าต่าง (2r+1)×(2r+1) — MATLAB ค่าเริ่มต้น 5×5 (r = 2)" },
+      { key: "eps", type: "number", label: "ความเรียบ ε", min: 0.001, max: 1, step: 0.001, default: 0.01, hint: "MATLAB ค่าเริ่มต้น 0.01", desc: "ขอบที่ต่างกันน้อยกว่าราว √ε × 255 ระดับจะถูกเกลี่ย ขอบที่ต่างกว่านั้นถูกรักษาไว้" },
+    ],
+    apply(cv, src, p, ctx) {
+      if (isEmptyMat(src)) { if (ctx) ctx.info = "ภาพว่าง"; return src.clone(); }
+      const r = intIn(p.radius, 2, 1, 20);
+      const eps = numIn(p.eps, 0.01, 0.001, 1);
+      let rgb = null, F = null, q = null, vec = null, qv = null, dst = null;
+      try {
+        rgb = dropAlpha(cv, src);
+        const x = rgb || src;
+        F = new cv.Mat();
+        x.convertTo(F, cv.CV_32F); // ไม่ scale — ค่า 0–255 ตรง ๆ แม่นเป๊ะ
+        const eps255 = eps * 65025;
+        if (x.channels() === 1) {
+          q = guidedFilterF32(cv, F, F, r, eps255);
+        } else {
+          vec = new cv.MatVector();
+          cv.split(F, vec);
+          qv = new cv.MatVector();
+          for (let c = 0; c < 3; c++) {
+            const ch = vec.get(c);
+            let qc = null;
+            try {
+              qc = guidedFilterF32(cv, ch, ch, r, eps255);
+              qv.push_back(qc);
+            } finally {
+              ch.delete();
+              if (qc) qc.delete();
+            }
+          }
+          q = new cv.Mat();
+          cv.merge(qv, q);
+        }
+        dst = new cv.Mat(x.rows, x.cols, x.type());
+        const od = dst.data, qd = q.data32F, len = qd.length;
+        for (let i = 0; i < len; i++) {
+          const v = Math.floor(qd[i] + 0.5);
+          od[i] = v < 0 ? 0 : v > 255 ? 255 : v;
+        }
+        if (ctx) ctx.info = `Guided filter r=${r} (หน้าต่าง ${2 * r + 1}×${2 * r + 1}) · ε=${eps} — ขอบที่ต่างกันเกินราว ${fixed1(Math.sqrt(eps) * 255)} ระดับสีถูกรักษาไว้`;
+        const out = dst; dst = null;
+        return out;
+      } finally {
+        if (dst) dst.delete();
+        if (q) q.delete();
+        if (F) F.delete();
+        if (vec) vec.delete();
+        if (qv) qv.delete();
+        if (rgb) rgb.delete();
+      }
+    },
+  },
+
+  // วัดความคม (variance of Laplacian / Tenengrad) บนกล่องกลางภาพ — ไม่อยู่ใน MATLAB IPT แต่ใช้ทั่วไปในงาน Machine Vision
+  focus_score: {
+    name: "Focus / Sharpness Score (วัดความคมชัด)",
+    needs: "gray",
+    desc: "วัดว่าภาพคมชัดแค่ไหนเป็นตัวเลขเดียว: ภาพที่โฟกัสดีมีขอบคม → Laplacian แกว่งแรง → ความแปรปรวนสูง ภาพเบลอได้ค่าต่ำ · ตัวเลขไม่มีหน่วยและไม่มีค่าตายตัวที่แปลว่า \"คม\" — ขึ้นกับฉาก แสง ขนาดภาพ จึงใช้เทียบภาพของฉากเดียวกัน เช่น หมุนโฟกัสหาค่าสูงสุด (autofocus) หรือคัดภาพเบลอทิ้ง · ภาพสว่าง/คอนทราสต์สูงขึ้น คะแนนก็สูงขึ้นแม้คมเท่าเดิม · noise ทำให้คะแนนสูงเกินจริง — ต่อ Gaussian Blur 3×3 ก่อนถ้า noise เยอะ · ไม่อยู่ใน MATLAB IPT แต่ใช้ทั่วไปในงาน Machine Vision",
+    params: [
+      { key: "method", type: "select", label: "วิธีวัด", options: [
+        { value: "lap_var", label: "ความแปรปรวนของ Laplacian (นิยมใช้)" },
+        { value: "tenengrad", label: "Tenengrad (ค่าเฉลี่ยของ gx² + gy² จาก Sobel)" },
+      ], default: "lap_var" },
+      { key: "roiPct", type: "number", label: "ขนาดบริเวณกลางภาพที่วัด (%)", min: 10, max: 100, step: 5, default: 100, desc: "100 = ทั้งภาพ · 50 = กล่องกลางภาพกว้าง/สูงครึ่งหนึ่ง — ใช้เมื่อสนใจเฉพาะวัตถุกลางเฟรม" },
+      { key: "view", type: "select", label: "แสดงผลเป็น", options: [
+        { value: "lap", label: "ภาพขอบ |Laplacian| (ตรงไหนคมจะสว่าง)" },
+        { value: "pass", label: "ภาพเดิม (ใช้แค่ตัวเลข)" },
+      ], default: "lap" },
+    ],
+    apply(cv, src, p, ctx) {
+      if (isEmptyMat(src)) {
+        if (ctx) { ctx.info = "ภาพว่าง"; ctx.values = scalarValues(FOCUS_FIELDS, []); }
+        return src.clone();
+      }
+      const method = ownKey(FOCUS_METHODS, p.method, "lap_var");
+      const view = ownKey(FOCUS_VIEWS, p.view, "lap");
+      const pct = numIn(p.roiPct, 100, 10, 100);
+      let gray = null, crop = null, L = null, gx = null, gy = null, L2 = null, dst = null;
+      try {
+        gray = grayIfNeeded(cv, src);
+        const g = gray || src;
+        const W = g.cols, H = g.rows;
+        const rw = Math.max(1, Math.floor(W * pct / 100 + 0.5)), rh = Math.max(1, Math.floor(H * pct / 100 + 0.5));
+        const x0 = Math.floor((W - rw) / 2), y0 = Math.floor((H - rh) / 2);
+        const n = rw * rh;
+        // ต้อง clone — Laplacian/Sobel บน roi() อ่านพิกเซลนอกกรอบเป็นขอบ แต่ Python ตัดภาพแล้วใช้ขอบสะท้อนในตัว
+        const roi = g.roi(new cv.Rect(x0, y0, rw, rh));
+        try { crop = roi.clone(); } finally { roi.delete(); }
+        let score;
+        if (method === "tenengrad") {
+          gx = new cv.Mat(); gy = new cv.Mat();
+          cv.Sobel(crop, gx, cv.CV_16S, 1, 0, 3);
+          cv.Sobel(crop, gy, cv.CV_16S, 0, 1, 3);
+          const ax = gx.data16S, ay = gy.data16S;
+          let s = 0;
+          for (let i = 0; i < n; i++) s += ax[i] * ax[i] + ay[i] * ay[i];
+          score = s / n;
+        } else {
+          L = new cv.Mat();
+          cv.Laplacian(crop, L, cv.CV_16S, 1);
+          const a = L.data16S;
+          let s1 = 0, s2 = 0;
+          for (let i = 0; i < n; i++) { const v = a[i]; s1 += v; s2 += v * v; }
+          score = s2 / n - (s1 / n) * (s1 / n);
+        }
+        const cd = crop.data;
+        let sm = 0;
+        for (let i = 0; i < n; i++) sm += cd[i];
+        const mean = sm / n;
+        dst = new cv.Mat();
+        if (view === "pass") {
+          g.copyTo(dst);
+        } else {
+          L2 = new cv.Mat();
+          cv.Laplacian(g, L2, cv.CV_16S, 1);
+          cv.convertScaleAbs(L2, dst);
+        }
+        if (ctx) {
+          ctx.info = `คะแนนความคม (${method === "tenengrad" ? "Tenengrad" : "variance of Laplacian"}) = ${fixed1(score)} · วัดในกล่อง ${rw}×${rh} px กลางภาพ · ใช้เทียบภาพขนาดเดียวกัน ฉากเดียวกันเท่านั้น` + (score === 0 ? " · ภาพเรียบสนิท (ไม่มีขอบเลย)" : "");
+          ctx.values = scalarValues(FOCUS_FIELDS, [score, mean]);
+        }
+        const out = dst; dst = null;
+        return out;
+      } finally {
+        if (dst) dst.delete();
+        for (const m of [gray, crop, L, gx, gy, L2]) if (m) m.delete();
+      }
+    },
+  },
+
+  // ind2rgb / colormap ของ MATLAB — ตารางสร้างเองจากสูตรเส้นตรง (opencv.js build นี้ไม่มี applyColorMap)
+  pseudocolor: {
+    name: "Pseudocolor (ระบายสีตามค่าเทา)",
+    needs: "gray",
+    desc: "ตาคนแยกระดับเทาที่ใกล้กันได้ยาก แต่แยกสีง่าย การระบายสีตามค่าจึงช่วยอ่านภาพอย่าง Distance Transform, ผลต่างภาพ, LoG · สีไม่ได้เพิ่มข้อมูล — ถ้าต่อขั้นที่ต้องการภาพเทา จะได้ความสว่างของสีแทนค่าเดิม · \"ยืดช่วง\" ทำให้เห็นความต่างเล็ก ๆ แต่สีเดียวกันในสองภาพอาจหมายถึงค่าต่างกัน · ใกล้เคียง ind2rgb(I, jet(256)) ของ MATLAB (jet ของแอปเป็นสูตรเส้นตรง ไม่ใช่ตารางของ MATLAB ทุกค่า) · OpenCV.js ชุดนี้ไม่มี applyColorMap จึงสร้างตารางเอง",
+    params: [
+      { key: "map", type: "select", label: "ชุดสี", options: [
+        { value: "jet", label: "Jet (น้ำเงิน → ฟ้า → เหลือง → แดง)" },
+        { value: "hot", label: "Hot (ดำ → แดง → เหลือง → ขาว)" },
+        { value: "cool", label: "Cool (ฟ้า → ชมพู)" },
+      ], default: "jet" },
+      { key: "range", type: "select", label: "ช่วงค่า", options: [
+        { value: "full", label: "ตามค่าจริง 0–255" },
+        { value: "minmax", label: "ยืดค่าต่ำ–สูงของภาพให้เต็มแถบสี" },
+      ], default: "full" },
+    ],
+    apply(cv, src, p, ctx) {
+      if (isEmptyMat(src)) { if (ctx) ctx.info = "ภาพว่าง"; return src.clone(); }
+      const mapId = ownKey(PSEUDOCOLOR_MAPS, p.map, "jet");
+      const minmax = p.range === "minmax";
+      let gray = null, dst = null;
+      try {
+        gray = grayIfNeeded(cv, src);
+        const g = gray || src;
+        const gd = g.data, n = g.rows * g.cols;
+        let lo = 0, hi = 255;
+        if (minmax) {
+          lo = 255; hi = 0;
+          for (let i = 0; i < n; i++) { const v = gd[i]; if (v < lo) lo = v; if (v > hi) hi = v; }
+        }
+        const tab = new Uint8Array(768); // R,G,B ต่อค่า 0–255 (หลังยืดช่วง)
+        for (let i = 0; i < 256; i++) tab.set(PSEUDOCOLOR_MAPS[mapId](i), i * 3);
+        const idxOf = (v) => (minmax ? (hi > lo ? Math.floor(((v - lo) * 510 + (hi - lo)) / (2 * (hi - lo))) : 0) : v);
+        dst = new cv.Mat(g.rows, g.cols, cv.CV_8UC3);
+        const od = dst.data;
+        for (let i = 0; i < n; i++) {
+          const t = idxOf(gd[i]) * 3, o = i * 3;
+          od[o] = tab[t]; od[o + 1] = tab[t + 1]; od[o + 2] = tab[t + 2];
+        }
+        if (ctx) {
+          const ends = PSEUDOCOLOR_ENDS[mapId];
+          let info = `${PSEUDOCOLOR_TH[mapId]}: ค่า 0 = ${ends[0]} → 255 = ${ends[1]} · สีเป็นแค่การแสดงผล ข้อมูลยังเป็นค่าเทาเดิม`;
+          if (minmax) {
+            info += ` · ยืดช่วง ${lo}–${hi} ให้เต็มแถบสี`;
+            if (hi === lo) info += ` · ภาพมีค่าเดียว (${lo}) จึงได้สีต้นแถบทั้งภาพ`;
+          }
+          ctx.info = info;
+        }
+        const out = dst; dst = null;
+        return out;
+      } finally {
+        if (dst) dst.delete();
+        if (gray) gray.delete();
+      }
+    },
+  },
+
+  // imcolordiff ของ MATLAB — ΔE ระหว่างสองภาพ (CIE76 / CIEDE2000) · A = ภาพหลัก, B = ctx.src2 (ของยืม ห้าม delete)
+  delta_e: {
+    name: "Color Difference ΔE (ความต่างสี)",
+    needs: "any",
+    desc: "วัดความต่างของสีสองภาพเป็นตัวเลขเดียวต่อพิกเซล (ΔE) · แปลงเป็น Lab ก่อน เพราะระยะใน Lab ใกล้การรับรู้ของคนกว่า RGB · ตัวเลขช่วยอ่าน: ต่ำกว่า 1 แทบมองไม่ออก · ราว 2–3 เริ่มเห็นเมื่อวางคู่กัน · เกิน 5 เห็นชัด · เกิน 10 คนละสี (ค่าประมาณ ขึ้นกับสีและแสง) · CIEDE2000 แก้ข้อที่ CIE76 ให้ค่าสูงเกินในสีอิ่มจัด ใช้ในงานตรวจสีสินค้าปัจจุบัน · \"สีเฉลี่ยของ B\" ใช้ตรวจว่าชิ้นงานสีตรงกับชิ้นตัวอย่างไหม: ตัดชิ้นตัวอย่างด้วย Crop แล้วต่อเข้า B · กล้องที่ปรับแสง/White Balance อัตโนมัติทำให้ ΔE เปลี่ยนเองแม้ของจริงไม่เปลี่ยน — ล็อกการตั้งค่ากล้องก่อนวัดจริง · เทียบ imcolordiff ของ MATLAB (ค่าเริ่มต้นของ MATLAB คือ CIE76) · ภาพ Lab 8 bit ใน Color Space Convert ใช้วัดแบบนี้ไม่ได้เพราะถูกบีบสเกล",
+    params: [
+      { key: "formula", type: "select", label: "สูตร", options: [
+        { value: "cie76", label: "CIE76 (ระยะตรงใน Lab)" },
+        { value: "ciede2000", label: "CIEDE2000 (ปรับตามการรับรู้ — มาตรฐานปัจจุบัน)", hint: "ช้ากว่า CIE76 ราว 3–4 เท่า — กล้องสดใช้ CIE76 หรือโหมดเทียบสีเฉลี่ย B" },
+      ], default: "cie76" },
+      { key: "compare", type: "select", label: "เทียบแบบ", options: [
+        { value: "pixel", label: "ทีละพิกเซล (A กับ B ตำแหน่งเดียวกัน)" },
+        { value: "mean_b", label: "ทุกพิกเซลของ A กับสีเฉลี่ยของ B (B เป็นชิ้นตัวอย่างขนาดใดก็ได้)" },
+      ], default: "pixel" },
+      { key: "tol", type: "number", label: "เกณฑ์ ΔE ที่ถือว่าต่าง", min: 0, max: 50, step: 0.1, default: 2.3, hint: "≈ 2.3 = เริ่มเห็นความต่างด้วยตา (CIE76)" },
+      { key: "scaleMax", type: "number", label: "ΔE ที่แสดงเป็นสีขาว", min: 1, max: 100, step: 1, default: 20 },
+      { key: "view", type: "select", label: "แสดงผลเป็น", options: [
+        { value: "heatmap", label: "แผนที่ความต่าง (ยิ่งขาวยิ่งต่าง)" },
+        { value: "over", label: "Mask จุดที่ต่างเกินเกณฑ์" },
+      ], default: "heatmap" },
+    ],
+    apply(cv, src, p, ctx) {
+      const pass = passthroughNoSrc2(src, ctx);
+      if (pass) { if (ctx) ctx.values = scalarValues(DELTA_E_FIELDS, []); return pass; }
+      if (isEmptyMat(src)) { ctx.info = "ภาพว่าง"; ctx.values = scalarValues(DELTA_E_FIELDS, []); return src.clone(); }
+      const formula = ownKey(DELTA_E_FORMULAS, p.formula, "cie76");
+      const compare = ownKey(DELTA_E_COMPARES, p.compare, "pixel");
+      const view = ownKey(DELTA_E_VIEWS, p.view, "heatmap");
+      const tol = numIn(p.tol, 2.3, 0, 50), scaleMax = numIn(p.scaleMax, 20, 1, 100);
+      const fn = formula === "ciede2000" ? deltaE2000 : deltaE76;
+      let rgbA = null, rgbB = null, matched = null, labA = null, labB = null, dst = null;
+      try {
+        rgbA = rgbIfNeeded(cv, src);
+        rgbB = rgbIfNeeded(cv, ctx.src2);
+        const a = rgbA || src;
+        const bRaw = rgbB || ctx.src2;
+        let b = bRaw, resized = false;
+        if (compare === "pixel") {
+          const m = matchSize(cv, a, bRaw);
+          b = m.mat; resized = m.resized;
+          matched = resized ? m.mat : null;
+        }
+        labA = toLabF32(cv, a);
+        labB = toLabF32(cv, b);
+        const N = a.rows * a.cols, nb = b.rows * b.cols;
+        const la = labA.data32F, lb = labB.data32F;
+        let sAL = 0, sAa = 0, sAb = 0, sBL = 0, sBa = 0, sBb = 0;
+        for (let i = 0; i < N; i++) { sAL += la[i * 3]; sAa += la[i * 3 + 1]; sAb += la[i * 3 + 2]; }
+        for (let i = 0; i < nb; i++) { sBL += lb[i * 3]; sBa += lb[i * 3 + 1]; sBb += lb[i * 3 + 2]; }
+        const mA = [sAL / N, sAa / N, sAb / N], mB = [sBL / nb, sBa / nb, sBb / nb];
+        dst = new cv.Mat(a.rows, a.cols, cv.CV_8UC1);
+        const od = dst.data;
+        const heat = view === "heatmap";
+        let sum = 0, max = 0, over = 0;
+        for (let i = 0; i < N; i++) {
+          const j = compare === "pixel" ? i * 3 : -1;
+          const dE = j >= 0 ? fn(la[i * 3], la[i * 3 + 1], la[i * 3 + 2], lb[j], lb[j + 1], lb[j + 2]) : fn(la[i * 3], la[i * 3 + 1], la[i * 3 + 2], mB[0], mB[1], mB[2]);
+          sum += dE;
+          if (dE > max) max = dE;
+          if (dE > tol) over++;
+          od[i] = heat ? Math.min(255, Math.floor(dE * 255 / scaleMax + 0.5)) : (dE > tol ? 255 : 0);
+        }
+        const mean = sum / N, pct = (over * 100) / N;
+        if (ctx) {
+          let info = `ΔE (${formula === "ciede2000" ? "CIEDE2000" : "CIE76"}) เฉลี่ย ${fixed2(mean)} · สูงสุด ${fixed2(max)} · เกินเกณฑ์ ${tol} อยู่ ${fixed1(pct)}% ของภาพ`;
+          if (compare === "mean_b") info += ` · เทียบกับสีเฉลี่ยของ B (L* ${fixed1(mB[0])} a* ${fixed1(mB[1])} b* ${fixed1(mB[2])})`;
+          if (resized) info += RESIZED_B_INFO;
+          ctx.info = info;
+          ctx.values = scalarValues(DELTA_E_FIELDS, [mean, max, pct, mA[0], mA[1], mA[2], mB[0], mB[1], mB[2]]);
+        }
+        const out = dst; dst = null;
+        return out;
+      } finally {
+        if (dst) dst.delete();
+        for (const m of [labA, labB, matched, rgbA, rgbB]) if (m) m.delete();
+      }
+    },
+  },
+
+  // roifilt2 ของ MATLAB — ผล B (ภาพที่กรองแล้ว) ในกรอบ, ภาพ A นอกกรอบ · A = ภาพเดิม, B = ภาพที่ผ่านตัวกรอง
+  roi_apply: {
+    name: "Apply in ROI (ใช้ผลเฉพาะในกรอบ)",
+    needs: "any",
+    desc: "ใช้ผลของตัวกรองเฉพาะในกรอบที่กำหนด ส่วนนอกกรอบคงภาพเดิม · วิธีต่อสาย: ภาพเดียวกันแตกสองทาง ทางหนึ่งเข้า A ตรง ๆ อีกทางผ่านตัวกรองที่อยากใช้ (เช่น Gaussian Blur เบลอป้ายทะเบียน) แล้วเข้า B · ต่างจาก Mask ที่ทำให้นอกกรอบดำ — กล่องนี้คงภาพเดิมไว้นอกกรอบ · เทียบ roifilt2 ของ MATLAB (MATLAB รับตัวกรองเป็นพารามิเตอร์ แอปให้เลือกตัวกรองอะไรก็ได้ในสาย B) · กรอบกำหนดเป็น % ของภาพ ยังลากบนภาพไม่ได้ · ถ้าต้องการบริเวณรูปทรงอิสระ ใช้ ROI Polygon หรือ Threshold สร้าง mask แล้วต่อ Mask · ภาพ B ต่างขนาดถูกย่อ/ขยายให้เท่า A",
+    params: [
+      { key: "shape", type: "select", label: "รูปกรอบ", options: [
+        { value: "rect", label: "สี่เหลี่ยม" },
+        { value: "ellipse", label: "วงรี (พอดีกรอบ)" },
+      ], default: "rect" },
+      { key: "x", type: "number", label: "มุมซ้ายบนของกรอบ แนวนอน (%)", min: 0, max: 100, step: 1, default: 25 },
+      { key: "y", type: "number", label: "มุมซ้ายบนของกรอบ แนวตั้ง (%)", min: 0, max: 100, step: 1, default: 25 },
+      { key: "w", type: "number", label: "ความกว้างของกรอบ (%)", min: 1, max: 100, step: 1, default: 50 },
+      { key: "h", type: "number", label: "ความสูงของกรอบ (%)", min: 1, max: 100, step: 1, default: 50 },
+      { key: "invert", type: "boolean", label: "ใช้ผล B นอกกรอบแทน", default: false },
+      { key: "feather", type: "number", label: "ขอบนุ่ม (px)", min: 0, max: 50, step: 1, default: 0, desc: "0 = ขอบคม · มากขึ้น = ค่อย ๆ ผสมตรงรอยต่อ" },
+      { key: "view", type: "select", label: "แสดงผลเป็น", options: [
+        { value: "result", label: "ผลลัพธ์" },
+        { value: "outline", label: "ผลลัพธ์ + เส้นกรอบสีเหลือง" },
+      ], default: "result" },
+    ],
+    apply(cv, src, p, ctx) {
+      const pass = passthroughNoSrc2(src, ctx);
+      if (pass) { if (ctx) ctx.values = scalarValues(ROI_APPLY_FIELDS, []); return pass; }
+      if (isEmptyMat(src)) { ctx.info = "ภาพว่าง"; ctx.values = scalarValues(ROI_APPLY_FIELDS, []); return src.clone(); }
+      const shape = ownKey(ROI_APPLY_SHAPES, p.shape, "rect");
+      const view = ownKey(ROI_APPLY_VIEWS, p.view, "result");
+      const invert = p.invert === true;
+      const feather = intIn(p.feather, 0, 0, 50);
+      const W = src.cols, H = src.rows;
+      // กรอบเป็นพิกเซล (จำนวนเต็ม) — x0/y0 ไม่เกิน W−1/H−1 เพื่อให้กรอบมีอย่างน้อย 1 px เสมอ
+      const x0 = Math.min(W - 1, Math.floor(W * numIn(p.x, 25, 0, 100) / 100));
+      const y0 = Math.min(H - 1, Math.floor(H * numIn(p.y, 25, 0, 100) / 100));
+      const x1 = Math.min(W, x0 + Math.max(1, Math.floor(W * numIn(p.w, 50, 1, 100) / 100 + 0.5)));
+      const y1 = Math.min(H, y0 + Math.max(1, Math.floor(H * numIn(p.h, 50, 1, 100) / 100 + 0.5)));
+      const ww = x1 - x0, hh = y1 - y0;
+      let rgbA = null, rgbB = null, matched = null, maskMat = null, mf = null, mb = null, dst = null, rgbOut = null;
+      try {
+        const colour = src.channels() !== 1 || ctx.src2.channels() !== 1;
+        let a = src, bRaw = ctx.src2;
+        if (colour) {
+          rgbA = rgbIfNeeded(cv, src);
+          rgbB = rgbIfNeeded(cv, ctx.src2);
+          a = rgbA || src; bRaw = rgbB || ctx.src2;
+        }
+        const m = matchSize(cv, a, bRaw);
+        matched = m.resized ? m.mat : null;
+        const b = m.mat;
+        // inside[i] = อยู่ในกรอบ (ก่อน invert) · use[i] = ใช้ผล B (หลัง invert)
+        const N = W * H;
+        const inside = new Uint8Array(N);
+        for (let j = y0; j < y1; j++) {
+          for (let i = x0; i < x1; i++) {
+            let ok = true;
+            if (shape === "ellipse") {
+              const dx = 2 * i + 1 - (x0 + x1), dy = 2 * j + 1 - (y0 + y1);
+              ok = dx * dx * hh * hh + dy * dy * ww * ww <= ww * ww * hh * hh;
+            }
+            if (ok) inside[j * W + i] = 1;
+          }
+        }
+        const maskData = new Uint8Array(N);
+        let raCount = 0;
+        for (let i = 0; i < N; i++) { const u = invert ? !inside[i] : inside[i]; if (u) { maskData[i] = 255; raCount++; } }
+        if (feather === 0) {
+          dst = a.clone();
+          maskMat = cv.matFromArray(H, W, cv.CV_8UC1, maskData);
+          b.copyTo(dst, maskMat);
+        } else {
+          const mfData = new Float32Array(N);
+          for (let i = 0; i < N; i++) mfData[i] = maskData[i] / 255;
+          mf = cv.matFromArray(H, W, cv.CV_32FC1, mfData);
+          mb = new cv.Mat();
+          cv.GaussianBlur(mf, mb, new cv.Size(0, 0), feather / 2, feather / 2, cv.BORDER_REPLICATE);
+          dst = a.clone();
+          const ch = a.channels(), ad = a.data, bd = b.data, od = dst.data, wd = mb.data32F;
+          for (let i = 0; i < N; i++) {
+            const w = wd[i];
+            for (let c = 0; c < ch; c++) {
+              const k = i * ch + c;
+              od[k] = Math.floor(ad[k] + (bd[k] - ad[k]) * w + 0.5);
+            }
+          }
+        }
+        let out = dst;
+        if (view === "outline") {
+          if (dst.channels() === 1) {
+            rgbOut = new cv.Mat();
+            cv.cvtColor(dst, rgbOut, cv.COLOR_GRAY2RGB);
+            out = rgbOut;
+          }
+          const od = out.data;
+          for (let j = y0; j < y1; j++) {
+            for (let i = x0; i < x1; i++) {
+              const k = j * W + i;
+              if (!inside[k]) continue;
+              const edge = i === 0 || j === 0 || i === W - 1 || j === H - 1 || !inside[k - 1] || !inside[k + 1] || !inside[k - W] || !inside[k + W];
+              if (edge) { od[k * 3] = 255; od[k * 3 + 1] = 255; od[k * 3 + 2] = 0; }
+            }
+          }
+        }
+        if (ctx) {
+          const pct = (raCount * 100) / N;
+          let info = `ใช้ภาพ B ${invert ? "นอก" : "ใน"}กรอบ${shape === "rect" ? "สี่เหลี่ยม" : "วงรี"} (${x0}, ${y0})–(${x1 - 1}, ${y1 - 1}) px · ${raCount} px (${fixed1(pct)}%)`;
+          if (feather > 0) info += ` · ขอบนุ่ม ${feather} px`;
+          if (m.resized) info += RESIZED_B_INFO;
+          ctx.info = info;
+          ctx.values = scalarValues(ROI_APPLY_FIELDS, [raCount, pct]);
+        }
+        const result = out;
+        if (out === dst) dst = null; else rgbOut = null;
+        return result;
+      } finally {
+        if (dst) dst.delete();
+        for (const m of [rgbOut, maskMat, mf, mb, matched, rgbA, rgbB]) if (m) m.delete();
+      }
+    },
+  },
 };
 
 // ctx.values ของ farneback_optical_flow (ใช้ทั้งเฟรมแรกและเฟรมปกติ — ค่าเป็น px ของภาพจริง)
@@ -6258,7 +7004,7 @@ export const FILTERS = {
   // IP batch 2 ชิ้น B (2026-10-02) ต่อท้าย imarith/logical_ops/inpaint/hist_match — ห้ามสลับลำดับ 3 ตัวเดิม
   // (ไฟล์โปรเจกต์เก่าที่บันทึก mode ไว้ต้องเปิดได้เหมือนเดิม)
   image_arithmetic: mergeGroup("Image Arithmetic", "Image Arithmetic",
-    ["imabsdiff", "imfuse", "mask", "imarith", "logical_ops", "inpaint", "hist_match"], "imabsdiff", [], { inputs: 2 }),
+    ["imabsdiff", "imfuse", "mask", "imarith", "logical_ops", "inpaint", "hist_match", "roi_apply"], "imabsdiff", [], { inputs: 2 }),
 
   // Template Matching (Tier 2, 18b) — กลุ่มเดี่ยวใหม่ inputs:2 (ตามแนวเดียวกับ morphology/watershed/
   // grabcut ที่มี op เดียวไม่ต้องมี mode select wrapper) primary = ภาพค้นหา, src2 = template
@@ -6282,25 +7028,25 @@ export const FILTERS = {
   // tests/category-merge.test.mjs ล็อกให้ตรงกัน — เพิ่ม op ใหม่ในหมวดแล้วต้องมาเพิ่มที่นี่ด้วย ไม่งั้นเทสต์ล้ม
   // กลุ่มเก่าด้านบน (color_space, colour, image_adjust, ...) คงไว้เป็น legacy ให้เทมเพลต/โปรเจกต์เก่า แต่ palette ไม่ชี้มาแล้ว
   color_tools: mergeGroup("Color", "Color",
-    ["grayscale", "colorspace", "channel_split", "rgb_adjust", "color_inrange", "kmeans_segment", "slic", "white_balance", "invert"], "grayscale"),
+    ["grayscale", "colorspace", "channel_split", "rgb_adjust", "color_inrange", "kmeans_segment", "slic", "white_balance", "invert", "pseudocolor"], "grayscale"),
 
   enhance_tools: mergeGroup("Enhance", "Enhance",
     ["brightness_contrast", "gamma", "hist_equalize", "clahe", "contrast_stretch", "flatfield_correction", "quantize", "unsharp", "laplacian_sharpen", "custom_kernel"], "brightness_contrast"),
 
   filter_denoise: mergeGroup("Filter & Denoise", "Filter & Denoise",
-    ["salt_pepper_noise", "gaussian_noise", "median_blur", "gaussian_blur", "box_blur", "bilateral", "wiener_filter"], "salt_pepper_noise"),
+    ["salt_pepper_noise", "gaussian_noise", "median_blur", "gaussian_blur", "box_blur", "bilateral", "wiener_filter", "guided_filter"], "salt_pepper_noise"),
 
   segment_edge: mergeGroup("Segment & Edge", "Segmentation & Edge",
     ["binary_threshold", "otsu_threshold", "adaptive_threshold", "multi_otsu_threshold", "canny", "sobel", "laplacian_edge", "scharr_edge", "prewitt_edge", "roberts_edge", "log_edge", "watershed", "grabcut", "region_growing"], "binary_threshold"),
 
   analysis_detect: mergeGroup("Analyze / Detect", "Analysis & Detection",
-    ["find_contours", "connected_components", "distance_transform", "local_std_filter", "local_entropy_filter", "regionprops", "feret", "line_profile", "shape_filter", "bounding_boxes", "hough_circles", "hough_lines", "harris_corners", "shi_tomasi_corners", "orb_keypoints", "akaze_keypoints", "fast_keypoints"], "find_contours"),
+    ["find_contours", "connected_components", "distance_transform", "local_std_filter", "local_entropy_filter", "focus_score", "regionprops", "feret", "line_profile", "shape_filter", "bounding_boxes", "hough_circles", "hough_lines", "harris_corners", "shi_tomasi_corners", "orb_keypoints", "akaze_keypoints", "fast_keypoints"], "find_contours"),
 
   // name (ชื่อบนการ์ด node, ถูกตัดที่ ~92px) ของ 2 กลุ่มข้างบนย่อให้พอดี · group (ชิปหมวดใน detail-panel/สี) ยังเป็นชื่อเต็มเหมือนหมวด palette
 
   // PSNR/SSIM รับภาพ 2 ใบ → inputs:2 (ช่อง "เข้า B" ใน editor.js)
   image_quality: mergeGroup("Image Quality", "Image Quality",
-    ["psnr", "ssim"], "psnr", [], { inputs: 2 }),
+    ["psnr", "ssim", "delta_e"], "psnr", [], { inputs: 2 }),
 
   // Motion ทั้งสามจำ state ข้ามเฟรม → stateful:true · เปลี่ยนวิธี = params เปลี่ยน → getNodeState (fingerprint) reset+dispose state เก่าเอง
   motion: mergeGroup("Motion", "Motion",

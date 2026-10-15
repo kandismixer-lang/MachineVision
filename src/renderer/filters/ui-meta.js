@@ -67,13 +67,19 @@ function ownOr(table, key, fallback) {
 // "บรรทัด 2" ของการ์ด node บนกระดาน (Design node-card §1) — สรุปค่าหลักที่กำลังตั้งไว้
 // รับ local params (sub-params ของ op ที่เลือก ตัด prefix opId__ ออกแล้ว)
 // key ตรวจสอบกับ src/renderer/filters/registry.js จริงแล้ว (ไม่ใช่ชื่อที่เดาไว้)
+// IP batch 4A — ต่อท้ายหน่วย mm เมื่อเปิดใช้ (mmPerPx > 0) · 0 = ข้อความเดิมทุกตัวอักษร
+function mmTail(opId, p) {
+  const f = pnum(opId, "mmPerPx", p.mmPerPx);
+  return f > 0 ? ` · ${f} มม./px` : "";
+}
+
 export const OP_PRIMARY = {
   grayscale: () => "BGR → เทา (Gray)",
   colorspace: (p) => "BGR → " + (p.space || "HSV").toUpperCase(),
   channel_split: (p) => "ช่อง: " + (p.channel || "R").toUpperCase(),
   rgb_adjust: (p) => `R ${p.rGain ?? 1} · G ${p.gGain ?? 1} · B ${p.bGain ?? 1}`,
   brightness_contrast: (p) => `คอนทราสต์ ${p.alpha ?? 1.2} · สว่าง ${p.beta ?? 0}`,
-  gamma: (p) => "gamma: " + (p.g ?? 1.5),
+  gamma: (p) => (p.curve === "log" ? "log: c·log(1+r)" : "gamma: " + (p.g ?? 1.5)),
   hist_equalize: () => "ปรับฮิสโตแกรมทั้งภาพ",
   clahe: (p) => "clip: " + (p.clip ?? 2),
   // ใหม่ (2026-10-01, IP batch ENHANCE) — ตัวเลขอ่านผ่าน pnum เพื่อให้การ์ดโชว์ค่าหลัง clamp
@@ -81,10 +87,15 @@ export const OP_PRIMARY = {
   flatfield_correction: (p) => "เบลอพื้นหลัง: " + pnum("flatfield_correction", "blurSize", p.blurSize, { int: true }) + "px",
   unsharp: (p) => "ความเข้ม: " + (p.amount ?? 1),
   laplacian_sharpen: (p) => "ความเข้ม: " + (p.strength ?? 1),
-  custom_kernel: (p) => `${p.preset ?? "sharpen"} · ${p.amount ?? 1}x`,
+  // IP batch 4A — Motion/Disk แสดงขนาด/มุม PSF · preset อื่นข้อความเดิม
+  custom_kernel: (p) => {
+    if (p.preset === "motion") return `motion ${pnum("custom_kernel", "psfSize", p.psfSize, { int: true })}px ${pnum("custom_kernel", "psfAngle", p.psfAngle, { int: true })}° · ${p.amount ?? 1}x`;
+    if (p.preset === "disk") return `disk r${pnum("custom_kernel", "psfSize", p.psfSize, { int: true })} · ${p.amount ?? 1}x`;
+    return `${p.preset ?? "sharpen"} · ${p.amount ?? 1}x`;
+  },
   salt_pepper_noise: (p) => "noise: " + (p.amount ?? 5) + "%",
   // ใหม่ (2026-10-03, IP batch 2 ชิ้น C) — ตัวเลขทุกตัวผ่าน pnum (ค่าหลัง clamp ที่ op ใช้จริง) · int เฉพาะ param ที่ registry ใช้ intIn
-  gaussian_noise: (p) => `σ ${pnum("gaussian_noise", "sigma", p.sigma)} · seed ${pnum("gaussian_noise", "seed", p.seed, { int: true })}`,
+  gaussian_noise: (p) => `${p.kind === "speckle" ? "speckle " : ""}σ ${pnum("gaussian_noise", "sigma", p.sigma)} · seed ${pnum("gaussian_noise", "seed", p.seed, { int: true })}`,
   wiener_filter: (p) => {
     const k0 = pnum("wiener_filter", "ksize", p.ksize, { int: true });
     const k = k0 % 2 === 0 ? k0 + 1 : k0; // เหมือน ensureOdd ใน registry (14 → 15)
@@ -107,7 +118,7 @@ export const OP_PRIMARY = {
     : (p.op || "erode") + " · k=" + (p.ksize ?? 5)
   ),
   binary_threshold: (p) => "thresh: " + (p.thresh ?? 127),
-  otsu_threshold: () => "วิธี: Otsu (อัตโนมัติ)",
+  otsu_threshold: (p) => (p.method === "triangle" ? "วิธี: Triangle (อัตโนมัติ)" : "วิธี: Otsu (อัตโนมัติ)"),
   adaptive_threshold: (p) => "block: " + (p.blockSize ?? 11),
   multi_otsu_threshold: () => "วิธี: Multi-Otsu (3 กลุ่ม, อัตโนมัติ)",
   canny: (p) => `ขอบ ${p.t1 ?? 50}–${p.t2 ?? 150}`,
@@ -125,9 +136,9 @@ export const OP_PRIMARY = {
   distance_transform: (p) => "mask: " + (p.maskSize ?? "5") + "x" + (p.maskSize ?? "5"),
   local_std_filter: (p) => "หน้าต่าง: " + (p.windowSize ?? 9) + "px",
   local_entropy_filter: (p) => (p.windowSize ?? "5") + "x" + (p.windowSize ?? "5") + " · " + (p.bins ?? "16") + " ระดับ",
-  regionprops: (p) => `วัดค่าต่อวัตถุ · พื้นที่ขั้นต่ำ ${p.minArea ?? 50}px · แสดงสูงสุด ${Number(p.maxObjects ?? 500) === 0 ? "ไม่จำกัด" : (p.maxObjects ?? 500)}`,
+  regionprops: (p) => `วัดค่าต่อวัตถุ · พื้นที่ขั้นต่ำ ${p.minArea ?? 50}px · แสดงสูงสุด ${Number(p.maxObjects ?? 500) === 0 ? "ไม่จำกัด" : (p.maxObjects ?? 500)}` + mmTail("regionprops", p),
   // ใหม่ (2026-10-03, IP batch 2 ชิ้น D) — ตัวเลขผ่าน pnum (ค่าที่ op ใช้จริงหลัง clamp) · view เลือกด้วย own-property เหมือน registry
-  feret: (p) => `Feret · พื้นที่ขั้นต่ำ ${pnum("feret", "minArea", p.minArea)}px · สูงสุด ${pnum("feret", "maxObjects", p.maxObjects, { int: true })} ชิ้น`,
+  feret: (p) => `Feret · พื้นที่ขั้นต่ำ ${pnum("feret", "minArea", p.minArea)}px · สูงสุด ${pnum("feret", "maxObjects", p.maxObjects, { int: true })} ชิ้น` + mmTail("feret", p),
   // ใหม่ (2026-10-14, IP batch 3) — ตัวเลขผ่าน pnum (ค่าหลัง clamp ที่ op ใช้จริง) · ช่วง lo–hi / พื้นที่แสดงจากน้อยไปมากเหมือนที่ op สลับให้
   quantize: (p) => {
     const n = pnum("quantize", "levels", p.levels, { int: true });
@@ -147,7 +158,7 @@ export const OP_PRIMARY = {
   line_profile: (p) => {
     const op = "line_profile";
     const base = `เส้น (${pnum(op, "x1", p.x1)}%,${pnum(op, "y1", p.y1)}%) → (${pnum(op, "x2", p.x2)}%,${pnum(op, "y2", p.y2)}%)`;
-    return ownOr({ overlay: base, plot: `${base} · กราฟเต็มภาพ` }, p.view, "overlay");
+    return ownOr({ overlay: base, plot: `${base} · กราฟเต็มภาพ` }, p.view, "overlay") + mmTail(op, p);
   },
   watershed: () => "แยกวัตถุติดกัน",
   bounding_boxes: () => "ล้อมกรอบวัตถุ",
@@ -162,7 +173,11 @@ export const OP_PRIMARY = {
     ? `Lab a*${p.labAMin ?? 150}-${p.labAMax ?? 220} b*${p.labBMin ?? 130}-${p.labBMax ?? 200}`
     : "Hue: " + (p.hMin ?? 35) + "–" + (p.hMax ?? 85)),
   kmeans_segment: (p) => `K=${p.k ?? 4} กลุ่มสี`,
-  white_balance: () => "ปรับสมดุลสีอัตโนมัติ (Gray World)",
+  white_balance: (p) => (
+    p.method === "white_patch" ? "ปรับสมดุลสี (White Patch)"
+    : p.method === "ref_point" ? `ปรับสมดุลสี (จุดอ้างอิง ${pnum("white_balance", "refX", p.refX)}%, ${pnum("white_balance", "refY", p.refY)}%)`
+    : "ปรับสมดุลสีอัตโนมัติ (Gray World)"
+  ),
   invert: () => "กลับสี",
   crop: (p) => `${p.w ?? 80}%×${p.h ?? 80}% @ (${p.x ?? 10}%,${p.y ?? 10}%)`,
   // interp: auto = ข้อความเดิมทุกตัวอักษร · เลือกเอง = ต่อท้ายชื่อวิธี (ไม่รู้จัก → ว่าง)
@@ -192,7 +207,7 @@ export const OP_PRIMARY = {
     return `${kind === "bandreject" ? "Band-reject" : "Band-pass"} ${Math.min(a, b)}–${Math.max(a, b)}% · ${shape}${tail}`;
   },
   fft_magnitude: () => "แสดง spectrum ความถี่",
-  fft_filter: (p) => `${p.type === "high" ? "High" : "Low"}-pass · r=${p.cutoff ?? 30} หน่วยความถี่ (${p.shape ?? "gaussian"})`,
+  fft_filter: (p) => `${p.type === "high" ? "High" : "Low"}-pass · r=${p.cutoff ?? 30} หน่วยความถี่ (${p.shape === "butterworth" ? `butterworth n=${pnum("fft_filter", "order", p.order, { int: true })}` : (p.shape ?? "gaussian")})`,
   imabsdiff: () => "|A − B|",
   imfuse: (p) => (p.mode === "checkerboard" ? `Checkerboard · tile=${p.tileSize ?? 32}px` : `Blend · A ${p.alpha ?? 50}%`),
   mask: (p) => (p.invert ? "Mask B (กลับด้าน)" : "Mask ผ่าน B"),
@@ -205,6 +220,17 @@ export const OP_PRIMARY = {
   template_matching: (p) => `${p.method === "ccorr" ? "Cross-Corr" : "Corr Coeff"} · เกณฑ์ ${p.threshold ?? 70}%`,
   psnr: () => "เทียบคุณภาพ A vs B (dB)",
   ssim: () => "เทียบโครงสร้าง A vs B",
+  // ใหม่ (2026-10-15, IP batch 4A) — ตัวเลขผ่าน pnum (ค่าหลัง clamp ที่ op ใช้จริง) · ตัวเลือกที่ไม่รู้จักแสดงเป็นค่าเริ่มต้นเหมือน registry
+  guided_filter: (p) => `r=${pnum("guided_filter", "radius", p.radius, { int: true })} · ε ${pnum("guided_filter", "eps", p.eps)}`,
+  focus_score: (p) => `${p.method === "tenengrad" ? "Tenengrad" : "Laplacian var"} · กลาง ${pnum("focus_score", "roiPct", p.roiPct)}%`,
+  pseudocolor: (p) => `${ownOr({ jet: "jet", hot: "hot", cool: "cool" }, p.map, "jet")} · ${p.range === "minmax" ? "ยืดช่วง" : "0–255"}`,
+  delta_e: (p) => `${p.formula === "ciede2000" ? "CIEDE2000" : "CIE76"} · ${p.compare === "mean_b" ? "เทียบสีเฉลี่ย B" : "ทีละพิกเซล"} · เกณฑ์ ${pnum("delta_e", "tol", p.tol)}`,
+  roi_apply: (p) => {
+    const op = "roi_apply";
+    return `${p.shape === "ellipse" ? "วงรี" : "สี่เหลี่ยม"} ${pnum(op, "x", p.x)}%,${pnum(op, "y", p.y)}% ${pnum(op, "w", p.w)}×${pnum(op, "h", p.h)}%`
+      + (p.invert === true ? " · กลับด้าน" : "")
+      + (pnum(op, "feather", p.feather, { int: true }) > 0 ? ` · ขอบนุ่ม ${pnum(op, "feather", p.feather, { int: true })}px` : "");
+  },
   // Tier 2, 18d — Motion (ค่าเริ่มต้น/ช่วง อ่านจาก OPS ผ่าน pnum: history 10-2000 def 500, varThreshold 4-100
   // def 16, maxMotion 1-50 def 10, maxPoints 10-300 def 100, trailLength 1-50 def 10 · int = ตัวที่ registry
   // ใช้ intIn (ปัดเป็นจำนวนเต็ม) ตรงตามตารางของเทสต์ tier2d-MN-1)

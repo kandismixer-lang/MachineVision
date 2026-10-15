@@ -131,7 +131,9 @@ const OLD_HOST = {};
     if (m) for (const o of m.options) OLD_HOST[o.value] = fid; else OLD_HOST[fid] = fid;
   }
 }
-const POST_MERGE_OPS = ['quantize', 'shape_filter']; // op ใหม่หลัง 2026-10-07 อยู่เฉพาะกลุ่มระดับหมวด ไม่มี node เดิมให้เทียบ
+// op ใหม่หลัง 2026-10-07 อยู่เฉพาะกลุ่มระดับหมวด ไม่มี node เดิมให้เทียบ · ลำดับ = ลำดับใน CATEGORY_OPS (cm-5 deepEqual ตามลำดับ)
+// IP batch 4A (2026-10-15) เพิ่ม pseudocolor / guided_filter / focus_score / delta_e (roi_apply อยู่ image_arithmetic ซึ่งไม่ใช่หมวดที่ re-group จึงไม่อยู่ในลิสต์นี้)
+const POST_MERGE_OPS = ['pseudocolor', 'quantize', 'guided_filter', 'focus_score', 'shape_filter', 'delta_e'];
 const CATEGORY_OPS = TOOL_SECTIONS.filter((s) => CATEGORY_FILTER_IDS.includes(OP_TO_FILTER[s.ops[0]])).flatMap((s) => s.ops);
 
 function paramsFor(fid, op) {

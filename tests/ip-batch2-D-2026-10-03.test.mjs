@@ -1214,6 +1214,13 @@ test('ipD-22. (static read) every numeric param of the 3 ops is clamped to EXACT
   assert.match(block(gen, 'roi_polygon'), /clampNum\(p\[`p\$\{i\}y`\], paramDefault\("roi_polygon", `p\$\{i\}y`\), 0, 100\)/);
   for (const p of OPS.roi_polygon.params) if (/^p\d[xy]$/.test(p.key)) { assert.deepEqual([p.min, p.max], [0, 100]); covered.add(`roi_polygon.${p.key}`); }
   assert.match(reg, /const ROI_DEFAULTS = \[\[30, 20\], \[70, 20\], \[90, 85\], \[10, 85\], \[5, 55\], \[15, 30\]\];/);
+  // IP batch 4A: mmPerPx ของ feret / line_profile (ตัวคูณ px → mm ช่วง 0–100 ค่าเริ่มต้น 0 = ปิด) — registry ใช้ numIn ใน apply, codegen ใช้ clampNum ช่วงเดียวกัน
+  for (const id of ['feret', 'line_profile']) {
+    assert.deepEqual(spec(id, 'mmPerPx'), [0, 0, 100]);
+    regCheck(id, 'mmPerPx', new RegExp(`numIn\\(p\\.mmPerPx, ${num}, ${num}, ${num}\\)`), [0, 0, 100]);
+    genCheck(id, 'mmPerPx', [0, 0, 100]);
+    covered.add(`${id}.mmPerPx`);
+  }
   for (const id of NEW_OPS) for (const p of OPS[id].params) if (p.type === 'number') assert.ok(covered.has(`${id}.${p.key}`), `${id}.${p.key} not covered`);
 });
 

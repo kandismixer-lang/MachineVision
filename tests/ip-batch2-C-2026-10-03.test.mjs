@@ -777,7 +777,8 @@ test('ipC-8. ui-meta.js OP_PRIMARY: card text uses the clamped values the op rea
 });
 
 test('ipC-9. palette-panel.js: FILTER & DENOISE = salt_pepper_noise, gaussian_noise, median_blur, gaussian_blur, box_blur, bilateral, wiener_filter; GEOMETRY ends with translate_shear; OP_TO_FILTER resolves each new op to its host node; each new op appears in exactly one section; the 3 new OP_ICON glyphs are distinct from every other OP_ICON and every GROUP_ICON glyph', () => {
-  assert.deepEqual(TOOL_SECTIONS.find((s) => s.title === 'FILTER & DENOISE').ops,
+  // op ใหม่ batch 4 ต่อท้าย — ห้ามสลับลำดับเดิม (IP batch 4A เพิ่ม guided_filter)
+  assert.deepEqual(TOOL_SECTIONS.find((s) => s.title === 'FILTER & DENOISE').ops.slice(0, 7),
     ['salt_pepper_noise', 'gaussian_noise', 'median_blur', 'gaussian_blur', 'box_blur', 'bilateral', 'wiener_filter']);
   // ชิ้น D (2026-10-03) แทรก roi_polygon ต่อจาก crop บน palette (สเปก D §4.4) → ปัก 7 ตัวเดิมตามลำดับเดิม + translate_shear ต่อจาก undistort และอยู่ท้ายสุด
   const geo = TOOL_SECTIONS.find((s) => s.title === 'GEOMETRY').ops;

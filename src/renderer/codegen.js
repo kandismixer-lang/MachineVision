@@ -158,6 +158,119 @@ function seededGaussianPy(nExpr, seed) {
   ];
 }
 
+// ---------------------------------------------------------------------------------------------------------------
+// IP batch 4A (2026-10-15) — ตัวช่วยของ Custom Kernel (PSF) / Guided Filter / Pseudocolor / px→mm
+// ---------------------------------------------------------------------------------------------------------------
+// ฝาแฝดของ psfKernel (registry.js) — ลำดับนิพจน์เดียวกับ JS: px * c + py * s, np.clip(..., -hl, hl), dx * dx + dy * dy <= 0.25, disk เป็นเลขจำนวนเต็ม
+// vectorize จุดย่อย 16×16 ด้วย numpy (แกน 4 มิติ: y, x, sy, sx) · ห้ามมี token `img` ในบรรทัดเหล่านี้ (สาย B แทนที่ \bimg\b)
+function psfKernelPyLines() {
+  return [
+    "def psf_kernel(kind, size, angle_deg):",
+    "    # PSF (point spread function) นับจุดย่อย 16x16 ต่อพิกเซลที่อยู่ในรูป แล้วหารด้วยจำนวนรวม → ผลรวม = 1",
+    "    ss = 16",
+    "    sub = 2 * np.arange(ss, dtype=np.int64) + 1 - ss",
+    "    if kind == \"disk\":",
+    "        h = int(np.ceil(size - 0.5))",
+    "        n = 2 * h + 1",
+    "        lim = 4 * ss * ss * size * size  # (2*ss*R)^2 — พิกัดจุดย่อยคูณ 2*ss ให้เป็นจำนวนเต็ม",
+    "        base = (np.arange(n, dtype=np.int64) - h) * 2 * ss",
+    "        gx = base[None, :, None, None] + sub[None, None, None, :]",
+    "        gy = base[:, None, None, None] + sub[None, None, :, None]",
+    "        cnt = ((gx * gx + gy * gy) <= lim).sum(axis=(2, 3))",
+    "    else:",
+    "        th = angle_deg * np.pi / 180",
+    "        c, s = np.cos(th), -np.sin(th)  # มุมทวนเข็มแบบ MATLAB (แกน y ของภาพชี้ลง)",
+    "        hl = (size - 1) / 2",
+    "        h = int(np.ceil(hl * max(abs(c), abs(s)) + 0.5))",
+    "        n = 2 * h + 1",
+    "        frac = sub / (2 * ss)",
+    "        pos = np.arange(n, dtype=np.int64) - h",
+    "        gx = pos[None, :, None, None] + frac[None, None, None, :]",
+    "        gy = pos[:, None, None, None] + frac[None, None, :, None]",
+    "        t = np.clip(gx * c + gy * s, -hl, hl)",
+    "        dx = gx - t * c",
+    "        dy = gy - t * s",
+    "        cnt = ((dx * dx + dy * dy) <= 0.25).sum(axis=(2, 3))",
+    "    k0 = 0  # ตัดวงนอกที่เป็น 0 ทั้งวง (ทั้ง 4 ด้านพร้อมกัน)",
+    "    while n - 2 * k0 > 1:",
+    "        r = k0",
+    "        if cnt[r, r:n - r].any() or cnt[n - 1 - r, r:n - r].any() or cnt[r:n - r, r].any() or cnt[r:n - r, n - 1 - r].any():",
+    "            break",
+    "        k0 += 1",
+    "    m = n - 2 * k0",
+    "    cnt = cnt[k0:k0 + m, k0:k0 + m]",
+    "    return cnt / cnt.sum()",
+  ];
+}
+// ฝาแฝดของ guidedFilterF32 — float32 ทุกขั้นตามลำดับ op ของ JS (a = cov / (v + eps) · b = mP − a·mI · q = box(a)·I + box(b))
+function guidedPyLines() {
+  return [
+    "def guided_f32(I, P, r, eps255):",
+    "    # Guided Filter (He et al. 2010) บน float32 สเกล 0-255 — ขอบภาพสะท้อนค่า (BORDER_REFLECT_101)",
+    "    k = (2 * r + 1, 2 * r + 1)",
+    "    box = lambda m: cv2.boxFilter(m, -1, k, normalize=True, borderType=cv2.BORDER_REFLECT_101)",
+    "    mI, mP = box(I), box(P)",
+    "    cI, cIP = box(I * I), box(I * P)",
+    "    v = cI - mI * mI",
+    "    cov = cIP - mI * mP",
+    "    a = cov / (v + eps255)",
+    "    b = mP - a * mI",
+    "    return box(a) * I + box(b)",
+  ];
+}
+// แผนที่สีของ Pseudocolor — สูตรเดียวกับ PSEUDOCOLOR_MAPS ใน registry.js (เพิ่มแผนที่ใหม่ = เพิ่ม 1 แถวทั้งสองที่)
+const PSEUDOCOLOR_PY = {
+  jet: [
+    "lut_r = np.floor(np.clip(382.5 - np.abs(4 * i - 765), 0, 255) + 0.5).astype(np.uint8)",
+    "lut_g = np.floor(np.clip(382.5 - np.abs(4 * i - 510), 0, 255) + 0.5).astype(np.uint8)",
+    "lut_b = np.floor(np.clip(382.5 - np.abs(4 * i - 255), 0, 255) + 0.5).astype(np.uint8)",
+  ],
+  hot: [
+    "lut_r = np.floor(np.clip(3 * i, 0, 255) + 0.5).astype(np.uint8)",
+    "lut_g = np.floor(np.clip(3 * i - 255, 0, 255) + 0.5).astype(np.uint8)",
+    "lut_b = np.floor(np.clip(3 * i - 510, 0, 255) + 0.5).astype(np.uint8)",
+  ],
+  cool: [
+    "lut_r = i.astype(np.uint8)",
+    "lut_g = (255 - i).astype(np.uint8)",
+    "lut_b = np.full(256, 255, np.uint8)",
+  ],
+};
+// px → mm: คอลัมน์ mm ต่อท้ายหลังบรรทัด print เดิมทั้งหมด (เฉพาะ f > 0) — ทศนิยม 2 ตำแหน่งแบบ np.floor(v * 100 + 0.5) / 100
+// หัวตารางขึ้นต้น `object` (ห้ามขึ้นต้น `index  area` — เทสต์ regionprops-28b ตัดตารางเดิมด้วยหัวนี้)
+const mm2 = (expr) => `{np.floor((${expr}) * 100 + 0.5) / 100:.2f}`;
+function mmPyLines(opId, f) {
+  if (!(f > 0)) return [];
+  const head = [`mm_per_px = ${String(f)}  # มิลลิเมตรต่อ 1 พิกเซล`];
+  if (opId === "regionprops") {
+    return [
+      ...head,
+      "if regions:",
+      "    print('object  area_mm2  perimeter_mm  equiv_diam_mm  major_axis_mm  minor_axis_mm')",
+      "for idx, r in enumerate(regions[:20], start=1):",
+      `    print(f"{idx}  ${mm2("r['area_px'] * (mm_per_px * mm_per_px)")}  ${mm2("r['perimeter'] * mm_per_px")}  ${mm2("r['equiv_diameter'] * mm_per_px")}  ${mm2("r['major_axis'] * mm_per_px")}  ${mm2("r['minor_axis'] * mm_per_px")}")`,
+    ];
+  }
+  if (opId === "feret") {
+    return [
+      ...head,
+      "if feret_rows:",
+      "    print('object  feret_max_mm  feret_min_mm  feret_len_mm')",
+      "for r in feret_rows[:20]:",
+      `    print(f"{r[0]}  ${mm2("r[4] * mm_per_px")}  ${mm2("r[5] * mm_per_px")}  ${mm2("r[6] * mm_per_px")}")`,
+    ];
+  }
+  return [ // line_profile
+    ...head,
+    "line_length_mm = line_length_px * mm_per_px",
+    "edge_pos_mm = None if edge_pos_px is None else edge_pos_px * mm_per_px",
+    "edge_pair_mm = None if edge_pair_px is None else edge_pair_px * mm_per_px",
+    `print(f"line length: ${mm2("line_length_mm")} mm")`,
+    `print("edge position from A: " + ("-" if edge_pos_mm is None else f"${mm2("edge_pos_mm")} mm"))`,
+    `print("edge pair distance: " + ("-" if edge_pair_mm is None else f"${mm2("edge_pair_mm")} mm"))`,
+  ];
+}
+
 const KEYPOINT_SORT_KEY = "key=lambda k: (-k.response, k.pt[1], k.pt[0], -k.size, k.angle, k.octave)";
 
 // แยก opId จริง + ค่าพารามิเตอร์ (ตัด prefix opId__ ของ merged node ออก)
@@ -375,7 +488,7 @@ const GEN = {
     ctx.gray ? ["# ภาพเป็นขาวดำอยู่แล้ว"] : ["img = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)"] },
 
   colorspace: { needs: "any", out: "color", appChannelOrder: true, gen: (p, ctx) => {
-    const code = { hsv: "COLOR_BGR2HSV", hls: "COLOR_BGR2HLS", lab: "COLOR_BGR2Lab", ycrcb: "COLOR_BGR2YCrCb" }[p.space] || "COLOR_BGR2HSV";
+    const code = { hsv: "COLOR_BGR2HSV", hls: "COLOR_BGR2HLS", lab: "COLOR_BGR2Lab", ycrcb: "COLOR_BGR2YCrCb", xyz: "COLOR_BGR2XYZ", luv: "COLOR_BGR2Luv", yuv: "COLOR_BGR2YUV" }[p.space] || "COLOR_BGR2HSV";
     const lines = ctx.gray ? ["img = cv2.cvtColor(img, cv2.COLOR_GRAY2BGR)"] : [];
     lines.push(`img = cv2.cvtColor(img, cv2.${code})  # ดูข้อมูลในปริภูมิสี ${p.space}`);
     return lines;
@@ -409,7 +522,12 @@ const GEN = {
   brightness_contrast: { needs: "any", out: "same", gen: (p) =>
     [`img = cv2.convertScaleAbs(img, alpha=${num(p.alpha)}, beta=${int(p.beta)})`] },
 
-  gamma: { needs: "any", out: "same", gen: (p) => [
+  gamma: { needs: "any", out: "same", gen: (p) => p.curve === "log" ? [
+    // IP batch 4A — Log transform: ปัดครึ่งขึ้นด้วย np.floor(x + 0.5) เหมือน Math.floor(... + 0.5) ของแอป
+    "lut = np.floor(np.log1p(np.arange(256)) * (255 / np.log(256)) + 0.5).astype(np.uint8)",
+    "img = cv2.LUT(img, lut)",
+    "print(\"log transform: s = 255*ln(1+r)/ln(256)\")",
+  ] : [
     `inv_gamma = 1.0 / ${num(p.g) || 1}`,
     "lut = np.array([((i / 255.0) ** inv_gamma) * 255 for i in range(256)]).astype(\"uint8\")",
     "img = cv2.LUT(img, lut)",
@@ -528,12 +646,24 @@ const GEN = {
       box3: [[1 / 9, 1 / 9, 1 / 9], [1 / 9, 1 / 9, 1 / 9], [1 / 9, 1 / 9, 1 / 9]],
       box5: Array.from({ length: 5 }, () => new Array(5).fill(1 / 25)),
     };
-    const k = PRESETS[p.preset] || PRESETS.sharpen;
     const amount = Number.isFinite(Number(p.amount)) ? Number(p.amount) : 1;
-    const lines = [
-      `kernel = np.array(${JSON.stringify(k)}, dtype=np.float32)`,
-      "filtered = cv2.filter2D(img, -1, kernel)",
-    ];
+    const psfKind = p.preset === "motion" || p.preset === "disk" ? p.preset : null;
+    const lines = [];
+    if (psfKind) {
+      // IP batch 4A — Motion/Disk: PSF จาก psf_kernel (ฝาแฝดของ psfKernel ในแอป)
+      const L = Math.round(clampNum(p.psfSize, 9, 1, 50)), ang = Math.round(clampNum(p.psfAngle, 0, 0, 179));
+      lines.push(
+        ...psfKernelPyLines(),
+        `kernel = psf_kernel("${psfKind}", ${L}, ${ang}).astype(np.float32)`,
+        "filtered = cv2.filter2D(img, -1, kernel)",
+      );
+    } else {
+      const k = pickOwn(PRESETS, p.preset, "sharpen");
+      lines.push(
+        `kernel = np.array(${JSON.stringify(k)}, dtype=np.float32)`,
+        "filtered = cv2.filter2D(img, -1, kernel)",
+      );
+    }
     if (amount === 1) lines.push("img = filtered");
     else lines.push(`img = cv2.addWeighted(img, ${1 - amount}, filtered, ${amount}, 0)`);
     return lines;
@@ -554,6 +684,7 @@ const GEN = {
     const sigma = clampNum(p.sigma, 20, 0, 100);
     const seed = Math.round(clampNum(p.seed, 1, 1, 99999));
     if (sigma === 0) return ["# σ = 0 → ไม่เติม noise (ภาพเดิม)", 'print("gaussian noise: sigma = 0, image unchanged")'];
+    const speckle = p.kind === "speckle";
     return [
       `# noise แบบเกาส์ σ=${sigma} seed=${seed} — ลำดับการสุ่มเดียวกับในแอป จึงได้ลายเดิมทุกครั้งที่รัน`,
       ...seededGaussianPy("img.size", seed),
@@ -563,10 +694,14 @@ const GEN = {
         : "    z = z.reshape(img.shape[0], img.shape[1], 3)  # หลัง Color Space ช่องของ cv2 เรียงเหมือนแอปแล้ว จึงไม่กลับลำดับ",
       "else:",
       "    z = z.reshape(img.shape[0], img.shape[1])",
-      `noisy = np.floor(img.astype(np.float64) + ${sigma} * z + 0.5)`,
+      speckle
+        ? `noisy = np.floor(img.astype(np.float64) + img.astype(np.float64) * ${String(sigma / 255)} * z + 0.5)  # speckle: เดิม + เดิม x (sigma/255) x z`
+        : `noisy = np.floor(img.astype(np.float64) + ${sigma} * z + 0.5)`,
       "clipped = int(np.count_nonzero((noisy < 0) | (noisy > 255)))  # ค่าที่เกิน 0..255 แล้วถูกตัดที่ขอบ",
       "img = np.clip(noisy, 0, 255).astype(np.uint8)",
-      `print(f"gaussian noise sigma=${sigma} (seed ${seed}): clipped at 0/255 {np.floor(clipped * 100 / noisy.size * 10 + 0.5) / 10:.1f}% of values")`,
+      speckle
+        ? `print(f"speckle noise sigma=${sigma} (seed ${seed}): clipped at 0/255 {np.floor(clipped * 100 / noisy.size * 10 + 0.5) / 10:.1f}% of values")`
+        : `print(f"gaussian noise sigma=${sigma} (seed ${seed}): clipped at 0/255 {np.floor(clipped * 100 / noisy.size * 10 + 0.5) / 10:.1f}% of values")`,
     ];
   } },
 
@@ -872,6 +1007,7 @@ const GEN = {
 
   otsu_threshold: { needs: "gray", out: "gray", gen: (p) => {
     const t = p.invert ? "cv2.THRESH_BINARY_INV" : "cv2.THRESH_BINARY";
+    if (p.method === "triangle") return [`_, img = cv2.threshold(img, 0, 255, ${t} + cv2.THRESH_TRIANGLE)  # หาเกณฑ์อัตโนมัติแบบ Triangle`];
     return [`_, img = cv2.threshold(img, 0, 255, ${t} + cv2.THRESH_OTSU)  # หาเกณฑ์อัตโนมัติ`];
   } },
 
@@ -1167,6 +1303,7 @@ const GEN = {
       "    print(f\"{idx}  {r['area_px']}  {r['equiv_diameter']:.1f}  {r['extent']:.3f}  {r['solidity']:.3f}  {r['major_axis']:.1f}  {r['minor_axis']:.1f}  {r['eccentricity']:.3f}  {r['mean_intensity']:.1f}\")",
       "if regions and all(r['mean_intensity'] == 255 for r in regions):",
       "    print(\"note: the input is already black/white, so mean_intensity is 255 for every object\")",
+      ...mmPyLines("regionprops", clampNum(p.mmPerPx, 0, 0, 100)),
       "for idx, r in enumerate(regions, start=1):",
       "    cv2.rectangle(img, (r['bx'], r['by']), (r['bx'] + r['bw'], r['by'] + r['bh']), (0, 255, 0), 2)",
       "    cv2.circle(img, (int(r['cx'] + 0.5), int(r['cy'] + 0.5)), 3, (0, 0, 255), -1)",
@@ -1263,6 +1400,7 @@ const GEN = {
       "    print('index  area  cx  cy  feret_max  feret_min  feret_len  feret_aspect  feret_max_deg  feret_min_deg')",
       "for r in feret_rows[:20]:",
       "    print(f\"{r[0]}  {r[1]:.1f}  {r[2]:.1f}  {r[3]:.1f}  {r[4]:.2f}  {r[5]:.2f}  {r[6]:.2f}  {r[7]:.2f}  {r[8]:.1f}  {r[9]:.1f}\")",
+      ...mmPyLines("feret", clampNum(p.mmPerPx, 0, 0, 100)),
     ];
   } },
 
@@ -1423,6 +1561,7 @@ const GEN = {
       "                 (\"edge_pos_px\", edge_pos_px), (\"edge_pair_px\", edge_pair_px)):",
       "    print(f\"{key} = {val!r}\")",
       "print(\"profile =\", profile.tolist())",
+      ...mmPyLines("line_profile", clampNum(p.mmPerPx, 0, 0, 100)),
       "# ดูกราฟแบบละเอียด (ต้องติดตั้ง matplotlib ก่อน: pip install matplotlib) — ลบ # หน้าบรรทัดล่างออก",
       "# import matplotlib.pyplot as plt",
       "# plt.plot(np.arange(n) * (line_length_px / max(n - 1, 1)), profile); plt.xlabel(\"distance from A (px)\"); plt.ylabel(\"brightness\"); plt.show()",
@@ -1536,6 +1675,47 @@ const GEN = {
 
   white_balance: { needs: "any", out: "color", gen: (p, ctx) => {
     const lines = [];
+    // IP batch 4A — White Patch / จุดอ้างอิง (ลำดับช่อง: แอป R,G,B ↔ cv2 B,G,R เมื่อ isMirrored) · Gray World / ค่าแปลก = บรรทัดเดิมทุกตัวอักษร
+    if (p.method === "white_patch" || p.method === "ref_point") {
+      if (ctx.gray) return ["img = cv2.cvtColor(img, cv2.COLOR_GRAY2BGR)", 'print("white balance: gray image, nothing to adjust")'];
+      const ci = isMirrored(ctx) ? "(2, 1, 0)" : "(0, 1, 2)"; // ตำแหน่งช่อง R, G, B ในภาพของ cv2
+      const fx2 = (e) => `{np.floor(${e} * 100 + 0.5) / 100:.2f}`;
+      const gainText = `gain R x${fx2("gains[0]")} G x${fx2("gains[1]")} B x${fx2("gains[2]")}`;
+      const lutLines = [
+        "out = np.empty_like(img)",
+        `for ch, g in zip(${ci}, gains):`,
+        "    lut = np.minimum(255, np.floor(np.arange(256) * g + 0.5)).astype(np.uint8)",
+        "    out[:, :, ch] = lut[img[:, :, ch]]",
+        "img = out",
+      ];
+      if (p.method === "white_patch") {
+        return [
+          "n_px = img.shape[0] * img.shape[1]",
+          "k99 = (n_px * 99 + 99) // 100  # ตำแหน่งที่ 99% (นับจากพิกเซลมืดสุด) ปัดขึ้น",
+          "v99 = []",
+          `for ch in ${ci}:`,
+          "    cum = np.cumsum(np.bincount(img[:, :, ch].ravel(), minlength=256))",
+          "    v99.append(int(np.searchsorted(cum, k99)))  # ค่าแรกที่ cumsum >= k99",
+          "gains = [255 / v if v > 0 else 1 for v in v99]",
+          ...lutLines,
+          `print(f"white patch: p99 R/G/B = {v99[0]}/{v99[1]}/{v99[2]} ${gainText}")`,
+        ];
+      }
+      const rx = clampNum(p.refX, 50, 0, 100), ry = clampNum(p.refY, 50, 0, 100), rr = Math.round(clampNum(p.refSize, 5, 1, 50));
+      const fm = (e) => `{np.floor(${e} * 10 + 0.5) / 10:.1f}`;
+      return [
+        "h_i, w_i = img.shape[:2]",
+        `ref_x, ref_y, ref_r = ${pyPctToPx(rx, "w_i")}, ${pyPctToPx(ry, "h_i")}, ${rr}  # จุดอ้างอิง (% -> px) และรัศมี`,
+        "patch = img[max(0, ref_y - ref_r):min(h_i - 1, ref_y + ref_r) + 1, max(0, ref_x - ref_r):min(w_i - 1, ref_x + ref_r) + 1]",
+        "sums = patch.reshape(-1, 3).sum(axis=0, dtype=np.int64)",
+        "n_ref = patch.shape[0] * patch.shape[1]",
+        `m = [sums[ch] / n_ref for ch in ${ci}]  # สีเฉลี่ย R, G, B ของบริเวณอ้างอิง`,
+        "t = (m[0] + m[1] + m[2]) / 3",
+        "gains = [t / v if v > 1e-3 else 1 for v in m]",
+        ...lutLines,
+        `print(f"reference point ({ref_x}, {ref_y}) px radius {ref_r}: mean R/G/B ${fm("m[0]")}/${fm("m[1]")}/${fm("m[2]")} ${gainText}")`,
+      ];
+    }
     if (ctx.gray) lines.push("img = cv2.cvtColor(img, cv2.COLOR_GRAY2BGR)");
     lines.push(
       "b, g, r = cv2.split(img.astype(np.float32))",
@@ -2363,7 +2543,201 @@ const GEN = {
     "img = cv2.resize(normed.astype(np.uint8), (cols, rows))",
     ];
   } },
+
+  // ---- IP batch 4A (2026-10-15) — 5 op ใหม่ ----
+  // guided_filter: float32 ทุกขั้นเหมือนแอป (guided_f32) · สีทำทีละช่องด้วย cv2.split/merge · ปัดครึ่งขึ้นด้วย np.floor(x + 0.5)
+  guided_filter: { needs: "any", out: "same", gen: (p) => {
+    const r = Math.round(clampNum(p.radius, 2, 1, 20));
+    const eps = clampNum(p.eps, 0.01, 0.001, 1);
+    return [
+      ...guidedPyLines(),
+      `r = ${r}`,
+      `eps255 = np.float32(${String(eps * 65025)})  # ε x 65025 (ทำงานบนสเกล 0-255)`,
+      "f32 = img.astype(np.float32)",
+      "if img.ndim == 2:",
+      "    q = guided_f32(f32, f32, r, eps255)",
+      "else:",
+      "    q = cv2.merge([guided_f32(c, c, r, eps255) for c in cv2.split(f32)])",
+      "img = np.clip(np.floor(q.astype(np.float64) + 0.5), 0, 255).astype(np.uint8)",
+      `print(f"guided filter r=${r} eps=${eps}")`,
+    ];
+  } },
+
+  // focus_score: กล่องกลางภาพ (ตัดด้วย slice) · ผลรวมเป็นจำนวนเต็ม int64 → score เท่าแอปเป๊ะ
+  focus_score: { needs: "gray", out: "gray", gen: (p) => {
+    const tenengrad = p.method === "tenengrad";
+    const pct = clampNum(p.roiPct, 100, 10, 100);
+    const pass = p.view === "pass";
+    return [
+      "rows, cols = img.shape",
+      `rw = max(1, int(np.floor(cols * ${String(pct)} / 100 + 0.5)))  # กล่องกลางภาพกว้าง/สูง ${pct}%`,
+      `rh = max(1, int(np.floor(rows * ${String(pct)} / 100 + 0.5)))`,
+      "x0, y0 = (cols - rw) // 2, (rows - rh) // 2",
+      "crop = img[y0:y0 + rh, x0:x0 + rw]  # วัดเฉพาะในกล่อง (Laplacian/Sobel ใช้ขอบสะท้อนของกล่องเอง)",
+      "n = rw * rh",
+      ...(tenengrad
+        ? [
+          "gx = cv2.Sobel(crop, cv2.CV_16S, 1, 0, ksize=3).astype(np.int64)",
+          "gy = cv2.Sobel(crop, cv2.CV_16S, 0, 1, ksize=3).astype(np.int64)",
+          "score = int((gx * gx + gy * gy).sum()) / n",
+        ]
+        : [
+          "v = cv2.Laplacian(crop, cv2.CV_16S, ksize=1).astype(np.int64)",
+          "s1, s2 = int(v.sum()), int((v * v).sum())",
+          "score = s2 / n - (s1 / n) * (s1 / n)",
+        ]),
+      "mean_gray = int(crop.astype(np.int64).sum()) / n",
+      `print(f"focus score (${tenengrad ? "Tenengrad" : "variance of Laplacian"}) = {np.floor(score * 10 + 0.5) / 10:.1f} in {rw}x{rh} px")`,
+      'print(f"focus mean = {np.floor(mean_gray * 10 + 0.5) / 10:.1f}")',
+      ...(pass ? [] : ["img = cv2.convertScaleAbs(cv2.Laplacian(img, cv2.CV_16S, ksize=1))  # ภาพ |Laplacian| ทั้งภาพ"]),
+    ];
+  } },
+
+  // pseudocolor: ตาราง 3 ช่องจากสูตรเดียวกับ PSEUDOCOLOR_MAPS · ภาพหลัง needs:"gray" เป็น 2 มิติ ผลเป็น BGR (mirrored ตามกฎ codegen)
+  pseudocolor: { needs: "gray", out: "color", gen: (p) => {
+    const mapId = Object.hasOwn(PSEUDOCOLOR_PY, p.map) ? p.map : "jet"; // select อ่านด้วย own-property เท่านั้น
+    return [
+      "i = np.arange(256)",
+      ...PSEUDOCOLOR_PY[mapId],
+      ...(p.range === "minmax"
+        ? [
+          "lo, hi = int(img.min()), int(img.max())  # ยืดค่าต่ำ-สูงของภาพให้เต็มแถบสี",
+          "t = ((img.astype(np.int64) - lo) * 510 + (hi - lo)) // (2 * (hi - lo)) if hi > lo else np.zeros(img.shape, np.int64)",
+        ]
+        : ["t = img  # ตามค่าจริง 0-255"]),
+      "img = cv2.merge([lut_b[t], lut_g[t], lut_r[t]])  # เรียงเป็น B,G,R",
+      `print("pseudocolor: ${mapId}")`,
+    ];
+  } },
+
+  // delta_e: 2 ภาพ (img_b มาจากสาย B) · เช็ค .ndim ตอนรัน · Lab float32 ผ่าน astype(float32) / 255 (ตรงกับ convertTo(1/255) ของแอป) · ผลรวมด้วย cumsum (ลำดับเดียวกับแอป)
+  delta_e: { needs: "any", out: "gray", gen: (p) => {
+    const ciede = p.formula === "ciede2000";
+    const meanB = p.compare === "mean_b";
+    const tol = clampNum(p.tol, 2.3, 0, 50), scaleMax = clampNum(p.scaleMax, 20, 1, 100);
+    const over = p.view === "over";
+    return [
+      ...(ciede
+        ? [
+          "def delta_e2000(L1, a1, b1, L2, a2, b2):",
+          "    # CIEDE2000 (Sharma, Wu, Dalal 2005; kL = kC = kH = 1) — ลำดับนิพจน์เดียวกับ deltaE2000 ของแอป",
+          "    C1, C2 = np.sqrt(a1 * a1 + b1 * b1), np.sqrt(a2 * a2 + b2 * b2)",
+          "    Cb7 = ((C1 + C2) / 2) ** 7",
+          "    G = 0.5 * (1 - np.sqrt(Cb7 / (Cb7 + 6103515625.0)))",
+          "    ap1, ap2 = (1 + G) * a1, (1 + G) * a2",
+          "    Cp1, Cp2 = np.sqrt(ap1 * ap1 + b1 * b1), np.sqrt(ap2 * ap2 + b2 * b2)",
+          "    h1, h2 = np.degrees(np.arctan2(b1, ap1)) % 360, np.degrees(np.arctan2(b2, ap2)) % 360",
+          "    cc = Cp1 * Cp2",
+          "    dh = h2 - h1",
+          "    dh = np.where(dh > 180, dh - 360, np.where(dh < -180, dh + 360, dh))",
+          "    dh = np.where(cc == 0, 0.0, dh)",
+          "    dHp = 2 * np.sqrt(cc) * np.sin(np.radians(dh) / 2)",
+          "    Lb, Cbp = (L1 + L2) / 2, (Cp1 + Cp2) / 2",
+          "    hs = h1 + h2",
+          "    hb = np.where(cc == 0, hs, np.where(np.abs(h1 - h2) <= 180, hs / 2, np.where(hs < 360, (hs + 360) / 2, (hs - 360) / 2)))",
+          "    T = 1 - 0.17 * np.cos(np.radians(hb - 30)) + 0.24 * np.cos(np.radians(2 * hb)) + 0.32 * np.cos(np.radians(3 * hb + 6)) - 0.20 * np.cos(np.radians(4 * hb - 63))",
+          "    dth = 30 * np.exp(-(((hb - 275) / 25) * ((hb - 275) / 25)))",
+          "    Cbp7 = Cbp ** 7",
+          "    RC = 2 * np.sqrt(Cbp7 / (Cbp7 + 6103515625.0))",
+          "    SL = 1 + 0.015 * (Lb - 50) * (Lb - 50) / np.sqrt(20 + (Lb - 50) * (Lb - 50))",
+          "    SC = 1 + 0.045 * Cbp",
+          "    SH = 1 + 0.015 * Cbp * T",
+          "    RT = -np.sin(np.radians(2 * dth)) * RC",
+          "    tL, tC, tH = (L2 - L1) / SL, (Cp2 - Cp1) / SC, dHp / SH",
+          "    return np.sqrt(tL * tL + tC * tC + tH * tH + RT * tC * tH)",
+        ]
+        : []),
+      "a_bgr = img if img.ndim == 3 else cv2.cvtColor(img, cv2.COLOR_GRAY2BGR)",
+      "b_bgr = img_b if img_b.ndim == 3 else cv2.cvtColor(img_b, cv2.COLOR_GRAY2BGR)",
+      ...(meanB
+        ? ["# เทียบกับสีเฉลี่ยของ B — ไม่ปรับขนาด B"]
+        : [
+          "if a_bgr.shape[:2] != b_bgr.shape[:2]:",
+          "    b_bgr = cv2.resize(b_bgr, (a_bgr.shape[1], a_bgr.shape[0]), interpolation=cv2.INTER_LINEAR)",
+        ]),
+      "lab_a = cv2.cvtColor(a_bgr.astype(np.float32) / 255, cv2.COLOR_BGR2Lab).astype(np.float64)  # L 0-100, a/b ประมาณ +-128",
+      "lab_b = cv2.cvtColor(b_bgr.astype(np.float32) / 255, cv2.COLOR_BGR2Lab).astype(np.float64)",
+      "n_a, n_b = lab_a.shape[0] * lab_a.shape[1], lab_b.shape[0] * lab_b.shape[1]",
+      "mean_a = [np.cumsum(lab_a[:, :, c].ravel())[-1] / n_a for c in range(3)]  # บวกตามลำดับเหมือนแอป",
+      "mean_b = [np.cumsum(lab_b[:, :, c].ravel())[-1] / n_b for c in range(3)]",
+      ...(meanB ? ["ref = [np.float64(v) for v in mean_b]  # สีเฉลี่ยของ B"] : ["ref = [lab_b[:, :, 0], lab_b[:, :, 1], lab_b[:, :, 2]]"]),
+      ...(ciede
+        ? ["de = delta_e2000(lab_a[:, :, 0], lab_a[:, :, 1], lab_a[:, :, 2], ref[0], ref[1], ref[2])"]
+        : [
+          "dl, da, db = lab_a[:, :, 0] - ref[0], lab_a[:, :, 1] - ref[1], lab_a[:, :, 2] - ref[2]",
+          "de = np.sqrt(dl * dl + da * da + db * db)",
+        ]),
+      `tol = ${String(tol)}`,
+      "de_mean = np.cumsum(de.ravel())[-1] / n_a",
+      "over_pct = np.count_nonzero(de > tol) * 100 / n_a",
+      over
+        ? "img = np.where(de > tol, 255, 0).astype(np.uint8)  # Mask จุดที่ต่างเกินเกณฑ์"
+        : `img = np.minimum(255, np.floor(de * 255 / ${String(scaleMax)} + 0.5)).astype(np.uint8)  # ยิ่งขาวยิ่งต่าง (ขาว = ΔE ${scaleMax})`,
+      `print(f"delta E (${ciede ? "CIEDE2000" : "CIE76"}): mean {np.floor(de_mean * 100 + 0.5) / 100:.2f} max {np.floor(de.max() * 100 + 0.5) / 100:.2f} over ${String(tol)}: {np.floor(over_pct * 10 + 0.5) / 10:.1f}%")`,
+    ];
+  } },
+
+  // roi_apply: 2 ภาพ · out:"color" ตาม precedent imarith (ภาพเทาทั้งคู่ Python ได้ 3 ช่องค่าเท่ากัน) · กรอบ/วงรีด้วยเลขจำนวนเต็ม (ไม่ใช้ cv2.ellipse)
+  roi_apply: { needs: "any", out: "color", gen: (p, ctx) => {
+    const ellipse = p.shape === "ellipse";
+    const rx = clampNum(p.x, 25, 0, 100), ry = clampNum(p.y, 25, 0, 100), rw = clampNum(p.w, 50, 1, 100), rh = clampNum(p.h, 50, 1, 100);
+    const feather = Math.round(clampNum(p.feather, 0, 0, 50));
+    const invert = p.invert === true;
+    const outline = p.view === "outline";
+    return [
+      "a_c = img if img.ndim == 3 else cv2.cvtColor(img, cv2.COLOR_GRAY2BGR)",
+      "b_c = img_b if img_b.ndim == 3 else cv2.cvtColor(img_b, cv2.COLOR_GRAY2BGR)",
+      "if a_c.shape[:2] != b_c.shape[:2]:",
+      "    b_c = cv2.resize(b_c, (a_c.shape[1], a_c.shape[0]), interpolation=cv2.INTER_LINEAR)",
+      "h_i, w_i = a_c.shape[:2]",
+      `x0 = min(w_i - 1, int(np.floor(w_i * ${String(rx)} / 100)))  # กรอบเป็นพิกเซล (จำนวนเต็ม) อย่างน้อย 1 px`,
+      `y0 = min(h_i - 1, int(np.floor(h_i * ${String(ry)} / 100)))`,
+      `x1 = min(w_i, x0 + max(1, int(np.floor(w_i * ${String(rw)} / 100 + 0.5))))`,
+      `y1 = min(h_i, y0 + max(1, int(np.floor(h_i * ${String(rh)} / 100 + 0.5))))`,
+      "jj = np.arange(h_i, dtype=np.int64)[:, None]",
+      "ii = np.arange(w_i, dtype=np.int64)[None, :]",
+      "inside = (ii >= x0) & (ii < x1) & (jj >= y0) & (jj < y1)",
+      ...(ellipse
+        ? [
+          "ww, hh = x1 - x0, y1 - y0",
+          "dx, dy = 2 * ii + 1 - (x0 + x1), 2 * jj + 1 - (y0 + y1)",
+          "inside &= (dx * dx * hh * hh + dy * dy * ww * ww) <= ww * ww * hh * hh  # วงรีพอดีกรอบ (เลขจำนวนเต็มล้วน)",
+        ]
+        : []),
+      `use_b = ${invert ? "~inside" : "inside"}  # ตำแหน่งที่ใช้ผลจาก B`,
+      ...(feather === 0
+        ? ["img = np.where(use_b[:, :, None], b_c, a_c)"]
+        : [
+          "mf = use_b.astype(np.float32)",
+          `mb = cv2.GaussianBlur(mf, (0, 0), ${String(feather / 2)}, borderType=cv2.BORDER_REPLICATE)  # ขอบนุ่ม`,
+          "w3 = mb[:, :, None].astype(np.float64)",
+          "a64, b64 = a_c.astype(np.float64), b_c.astype(np.float64)",
+          "img = np.floor(a64 + (b64 - a64) * w3 + 0.5).astype(np.uint8)",
+        ]),
+      ...(outline
+        ? [
+          "pad = np.pad(inside, 1, constant_values=False)  # นอกภาพนับเป็นนอกกรอบ",
+          "edge = inside & ~(pad[1:-1, :-2] & pad[1:-1, 2:] & pad[:-2, 1:-1] & pad[2:, 1:-1])",
+          `img[edge] = ${pyColor(ctx, [255, 255, 0])}  # เส้นกรอบสีเหลือง`,
+        ]
+        : []),
+      `print(f"roi apply: {int(use_b.sum())} px use B ({np.floor(use_b.sum() * 100 / (w_i * h_i) * 10 + 0.5) / 10:.1f}%)")`,
+    ];
+  } },
 };
+
+// IP batch 4A — Butterworth ของ fft_filter: บล็อก GEN.fft_filter ด้านบนคงไว้ทุกตัวอักษร (ipE-27 ปัก sha256 ของข้อความบล็อก) จึงห่อ gen แทนการแก้ในบล็อก
+// รูปแบบอื่น/ค่าแปลกคืนบรรทัดเดิมของบล็อกทุกบรรทัด · butterworth เปลี่ยนเฉพาะบรรทัด low = ... บรรทัดเดียว (ฝาแฝดของ 1 / (1 + (D/D0)^2n) ในแอป)
+{
+  const fftFilterBase = GEN.fft_filter.gen;
+  GEN.fft_filter.gen = (p, ctx) => {
+    const lines = fftFilterBase(p, ctx);
+    if (!p || p.shape !== "butterworth") return lines;
+    const cutoff = num(p.cutoff) || 30;
+    const n = Math.round(clampNum(p.order, 2, 1, 10));
+    return lines.map((l) => (l.startsWith("low = np.exp(") ? `low = (1 / (1 + (d / ${cutoff}) ** ${2 * n})).astype(np.float32)  # Butterworth ลำดับ n=${n}` : l));
+  };
+}
 
 // Tier 2, 18d — ผู้ใช้เลือก "ใช้ในแอปอย่างเดียว" (D-8 ข้อ 5): op ที่ต้องใช้หลายเฟรมต่อเนื่อง export เป็น
 // process(path) ภาพเดี่ยวไม่ได้ — ห้ามเพิ่ม GEN ของ 3 ตัวนี้ (ถ้าเพิ่ม ต้องออกแบบ process_video ใหม่ทั้งหมด)
