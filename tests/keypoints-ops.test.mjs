@@ -1030,15 +1030,9 @@ test('keypoints-21. qa delta #17 MAJOR-A fix: Shi-Tomasi JS-vs-Python parity at 
   }
 });
 
-// qa delta #17 MINOR: the previous version of this test asserted `jsCount > pyCount`, i.e. it asserted
-// that the known Harris JS/Python divergence is PRESENT -- so the day someone fixes it (ports the
-// dilate/merge logic into the Python codegen), this test starts failing and nudges them to "keep the
-// bug" instead of celebrating the fix. Converted to node:test's `todo` form: it asserts the DESIRED
-// parity (jsCount === pyCount) so it (a) shows up as `todo` (not a hard failure) in `node --test`
-// output right now, keeping the suite green while the divergence is still visible/documented, and
-// (b) turns into a real, silently-passing test the moment someone actually fixes harris_corners's
-// codegen to match the app's dilate-then-count behavior.
-test('keypoints-22. qa-Q1 scope note (backlog): harris_corners count should match between JS and Python at ANY resolution (including <=480px, i.e. independent of the downscale fix) -- currently does NOT, because JS merges adjacent corner pixels via cv.dilate before counting while the Python codegen counts raw thresholded pixels directly. This is a pre-existing, separate divergence that the qa-Q1 downscale-mirroring round intentionally did not fix (out of scope). Marked todo so the suite stays green and the gap stays visible until someone ports the dilate/merge logic into the Python codegen.', { todo: 'known Harris JS/Python corner-count divergence (JS dilates/merges before counting, Python counts raw pixels) — backlog, not part of qa-Q1' }, () => {
+// B5 (backlog 2026-10-17): เดิมเป็น `todo` เพราะ Python นับพิกเซลดิบ ส่วนแอปรวมพิกเซลติดกันด้วย dilate ก่อนนับ —
+// ตัดสินใจคงพฤติกรรมของแอป แล้วให้ Python ที่ export ทำ dilate-then-count เหมือนกัน → ตอนนี้เป็นเทสต์จริง (ไม่มี todo)
+test('keypoints-22. harris_corners count matches between JS and Python (B5, backlog 2026-10-17: the exported Python now does the same convert -> threshold -> 3x3 ellipse dilate -> count-nonzero as the app, instead of counting raw thresholded pixels)', () => {
   const w = 400, h = 350; // <=480px -- isolates the divergence from the downscale question entirely
   const src = parityTestImage(w, h);
   const c = new cv.Mat(); cv.cvtColor(src, c, cv.COLOR_GRAY2RGB);
@@ -1053,10 +1047,9 @@ test('keypoints-22. qa-Q1 scope note (backlog): harris_corners count should matc
   const jsCount = Number(jsCountMatch[1]);
 
   const pyPts = harrisCornerPositions([{ id: 'harris_corners', params }], raw);
-  // Desired end state (currently fails -- that's the point of `todo`): JS and Python should report the
-  // same corner count. Today JS counts individual pixels of a dilated/merged mask (systematically much
-  // larger); Python counts raw thresholded pixels one-for-one.
-  assert.equal(jsCount, pyPts.length, `expected Harris corner count parity (currently a known gap): JS=${jsCount} Python=${pyPts.length}`);
+  // JS counts the pixels of a dilated/merged mask; the exported Python does the same dilate-then-count (B5).
+  assert.ok(jsCount > 0);
+  assert.equal(jsCount, pyPts.length, `Harris corner count parity: JS=${jsCount} Python=${pyPts.length}`);
 
   jsOut.delete();
   src.delete();

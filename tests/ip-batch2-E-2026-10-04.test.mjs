@@ -1205,7 +1205,8 @@ test('ipE-27. the exported Python of the existing ops is byte-identical to befor
   const f = buildPythonCode([STEP('frequency', 'fft_filter')]);
   assert.ok(f.includes('scale = min(1.0, 640 / max(rows, cols))') && !f.includes('1920'));
 });
-const EXPECT_SHA = { kmeans: 'c3f022d7be8e5c1061069868d7b01fb2b52caaad28ed9da9c40c6508d29b0c22', fft: '724579d8c2f6780c917f59c7526f4e2f298071df7aeb533b8ea8d86d08af87a9' };
+// B12 (2026-10-17): re-pin ของ fft — เอา wrapper GEN.fft_filter.gen (batch 4A) เข้ามาอยู่ในบล็อก · Python ที่ export ไม่เปลี่ยนแม้ตัวอักษรเดียว (พิสูจน์ด้วยเทสต์ bl-B12 ใน tests/backlog-2026-10-17.test.mjs)
+const EXPECT_SHA = { kmeans: 'c3f022d7be8e5c1061069868d7b01fb2b52caaad28ed9da9c40c6508d29b0c22', fft: '08ffc912d2b8d266b1bbf15a611a1c0e950d5c21d84acd3953e10a8eb02184f1' };
 
 // ===================================================================
 // parity กับ Python จริง (cv2 5.0 / numpy 2.x)

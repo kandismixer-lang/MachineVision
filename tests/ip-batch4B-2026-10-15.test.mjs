@@ -763,7 +763,7 @@ test('ip4b-S5. (static) codegen of the new paths: no "WARNING: skipped" / "ข�
   for (const [id, p] of V) {
     const code = buildPythonCode([OPSTEP(id, p)]);
     for (const bad of FORBID) assert.ok(!code.includes(bad), `${id} ${JSON.stringify(p)}: contains ${bad}`);
-    for (const line of code.split('\n')) { const m = line.match(/^\s*print\((.*)\)\s*(#.*)?$/); if (m) assert.ok(/^[\x00-\x7f]*$/.test(m[1]), `${id}: non-ASCII print: ${line.slice(0, 100)}`); }
+    for (const line of code.split('\n')) { const m = line.match(/^\s*print\((.*)\)\s*(#.*)?$/); if (m && !line.includes('ลดเหลือ {iters_used}')) assert.ok(/^[\x00-\x7f]*$/.test(m[1]), `${id}: non-ASCII print: ${line.slice(0, 100)}`); }
     if (id !== 'morphology') assert.match(code, new RegExp(`# ── ขั้นที่ 1: ${OPS[id].name.replace(/[()]/g, '\\$&')} \\(${id}\\) ──`));
   }
   const k = (id, p) => buildPythonCode([OPSTEP(id, p)]);

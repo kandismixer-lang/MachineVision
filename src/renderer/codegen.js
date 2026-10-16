@@ -7,7 +7,7 @@
 //
 // หมายเหตุ: โค้ดที่ gen ใช้ BGR (cv2.imread) ตามธรรมเนียม OpenCV — ต่างจากในแอปที่ทำงานบน RGB
 // ผลลัพธ์เชิงหลักการเหมือนกัน (ค่าเนื้อสี H, threshold ฯลฯ เท่ากัน)
-import { OPS, FILTERS, NLM_MAX_SIDE, LUCY_MAX_ITERS, ECC_DEFAULT_SIDE, HITMISS_PATTERNS } from "./filters/registry.js";
+import { OPS, FILTERS, NLM_MAX_SIDE, LUCY_MAX_ITERS, LUCY_WORK_BUDGET, ECC_DEFAULT_SIDE, finiteOr, boolOr, HITMISS_PATTERNS } from "./filters/registry.js";
 
 // ชื่อไทยของ op (โยงกับที่ผู้เรียนเห็นบนจอ) + teaching note สั้น ๆ ต่อ op คลาสสิก
 const TEACH = {
@@ -34,15 +34,11 @@ function int(n) {
 function num(n) {
   return Number(n) || 0;
 }
-// ต่างจาก num()/int()/odd() ด้านบนที่ตั้งใจให้ 0/falsy กลายเป็น fallback (ใช้กับพารามิเตอร์ที่ 0 ไม่มี
-// ความหมายจริง เช่น ksize) — finiteOr() ใช้กับพารามิเตอร์ที่ 0 เป็นค่าที่ใช้งานได้จริงในช่วงปกติ (เช่น
-// tlX/trX ของ perspective_warp ที่ -50..50, หรือ k1/k2 ของ undistort) จึง fallback เฉพาะตอนค่าไม่ใช่เลข
-// จำกัดจริง ๆ (undefined/NaN/Infinity) เท่านั้น ตรงกับ `Number.isFinite(v) ? v : d` ฝั่ง registry.js เป๊ะ
-// (coerce ด้วย Number() ก่อนเพราะพารามิเตอร์อาจมาเป็น string จาก UI/saved project)
-function finiteOr(v, d) {
-  const n = Number(v);
-  return Number.isFinite(n) ? n : d;
-}
+// ต่างจาก num()/int()/odd() ด้านบนที่ตั้งใจให้ 0/falsy กลายเป็น fallback (ใช้กับพารามิเตอร์ที่ 0 ไม่มีความหมายจริง เช่น ksize) —
+// finiteOr() (ตัวกลางจาก registry.js ที่ import มาด้านล่าง) ใช้กับพารามิเตอร์ที่ 0 เป็นค่าที่ใช้งานได้จริง (เช่น tlX/trX ของ
+// perspective_warp, k1/k2 ของ undistort) · ผลลัพธ์: เลขจำกัด → ตัวนั้น, สตริงตัวเลข ("0", "5") → เลข, อย่างอื่น
+// (undefined/null/""/NaN/Infinity/boolean/สตริงที่ไม่ใช่เลข เช่น "5px") → ค่า default · แอปใช้ฟังก์ชันตัวเดียวกัน จึงตรงกันเสมอ
+// B7: finiteOr / boolOr อยู่ที่ registry.js (แหล่งเดียว — ตัวเดียวกับที่แอปใช้ จึงตรงกันแม้ param เป็น string)
 // clamp ให้ตรงกับ numIn() ของ registry.js เป๊ะ (finiteOr แล้ว clamp เข้าช่วง min/max ของ param นั้น) — ใช้กับ
 // op ที่ registry clamp ค่าไว้ ถ้า codegen ไม่ clamp ด้วย ไฟล์โปรเจกต์ที่แก้มือจะทำให้แอปกับสคริปต์ให้ผลต่างกัน
 function clampNum(v, d, lo, hi) {
@@ -529,7 +525,8 @@ const GEN = {
     "print(\"log transform: s = 255*ln(1+r)/ln(256)\")",
   ] : [
     `inv_gamma = 1.0 / ${num(p.g) || 1}`,
-    "lut = np.array([((i / 255.0) ** inv_gamma) * 255 for i in range(256)]).astype(\"uint8\")",
+    // B2 (backlog 2026-10-17): ปัดครึ่งขึ้นเหมือน Math.round ของแอป (เดิม astype ตัดทิ้ง → ต่าง 1 ระดับ)
+    "lut = np.minimum(255, np.floor(np.array([((i / 255.0) ** inv_gamma) * 255 for i in range(256)]) + 0.5)).astype(np.uint8)",
     "img = cv2.LUT(img, lut)",
   ] },
 
@@ -761,7 +758,7 @@ const GEN = {
     // IP batch 4B — ตัวเลือกใหม่ (ไม่ใช้ shape/ksize/iterations) · path เดิมทุกตัวด้านล่างไม่เปลี่ยน
     if (p.op === "hit_or_miss") {
       const patKey = Object.hasOwn(HITMISS_PATTERNS, p.hmPattern) ? p.hmPattern : "isolated";
-      const rotate = p.hmRotate !== false;
+      const rotate = boolOr(p.hmRotate, true);
       return [
         `# Hit-or-Miss แม่แบบ ${patKey} (1 = ต้องขาว, -1 = ต้องดำ, 0 = ไม่สน) · นอกขอบภาพ OpenCV นับเป็น "ไม่สน"`,
         "_, b = cv2.threshold(img, 127, 255, cv2.THRESH_BINARY)",
@@ -1043,12 +1040,12 @@ const GEN = {
 
   // ---- แบ่งส่วนภาพ ----
   binary_threshold: { needs: "gray", out: "gray", gen: (p) => {
-    const t = p.invert ? "cv2.THRESH_BINARY_INV" : "cv2.THRESH_BINARY";
+    const t = boolOr(p.invert, false) ? "cv2.THRESH_BINARY_INV" : "cv2.THRESH_BINARY";
     return [`_, img = cv2.threshold(img, ${int(p.thresh)}, 255, ${t})`];
   } },
 
   otsu_threshold: { needs: "gray", out: "gray", gen: (p) => {
-    const t = p.invert ? "cv2.THRESH_BINARY_INV" : "cv2.THRESH_BINARY";
+    const t = boolOr(p.invert, false) ? "cv2.THRESH_BINARY_INV" : "cv2.THRESH_BINARY";
     if (p.method === "triangle") return [`_, img = cv2.threshold(img, 0, 255, ${t} + cv2.THRESH_TRIANGLE)  # หาเกณฑ์อัตโนมัติแบบ Triangle`];
     return [`_, img = cv2.threshold(img, 0, 255, ${t} + cv2.THRESH_OTSU)  # หาเกณฑ์อัตโนมัติ`];
   } },
@@ -1057,7 +1054,7 @@ const GEN = {
     [`img = cv2.adaptiveThreshold(img, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY, ${Math.max(3, odd(p.blockSize))}, ${int(p.C)})`] },
 
   multi_otsu_threshold: { needs: "gray", out: "gray", gen: () => [
-    "hist = cv2.calcHist([img], [0], None, [256], [0, 256]).flatten()",
+    "hist = cv2.calcHist([img], [0], None, [256], [0, 256]).flatten().astype(np.float64)  # float64 เหมือน JS — float32 แม่นแค่ 16.7 ล้านพิกเซล (NumPy 2)",
     "P = np.concatenate(([0], np.cumsum(hist)))",
     "S = np.concatenate(([0], np.cumsum(np.arange(256) * hist)))",
     "total = P[256]",
@@ -1760,15 +1757,16 @@ const GEN = {
     }
     if (ctx.gray) lines.push("img = cv2.cvtColor(img, cv2.COLOR_GRAY2BGR)");
     lines.push(
-      "b, g, r = cv2.split(img.astype(np.float32))",
+      // B3 (backlog 2026-10-17): ค่าเฉลี่ยคำนวณจาก uint8 ตรง ๆ (float64 เหมือน cv.mean) + convertScaleAbs ปัดเศษเหมือน convertTo ของแอป (เดิม astype ตัดทิ้ง)
+      "b, g, r = cv2.split(img)",
       "gray_mean = (r.mean() + g.mean() + b.mean()) / 3",
       "gain_r = gray_mean / r.mean() if r.mean() > 1e-3 else 1",
       "gain_g = gray_mean / g.mean() if g.mean() > 1e-3 else 1",
       "gain_b = gray_mean / b.mean() if b.mean() > 1e-3 else 1",
-      "r = np.clip(r * gain_r, 0, 255)",
-      "g = np.clip(g * gain_g, 0, 255)",
-      "b = np.clip(b * gain_b, 0, 255)",
-      "img = cv2.merge([b, g, r]).astype(np.uint8)",
+      "r = cv2.convertScaleAbs(r, alpha=gain_r)",
+      "g = cv2.convertScaleAbs(g, alpha=gain_g)",
+      "b = cv2.convertScaleAbs(b, alpha=gain_b)",
+      "img = cv2.merge([b, g, r])",
     );
     return lines;
   } },
@@ -1812,7 +1810,7 @@ const GEN = {
       "center = (w / 2, h / 2)",
       `M = cv2.getRotationMatrix2D(center, ${num(p.angle)}, 1.0)`,
     ];
-    if (p.expand) {
+    if (boolOr(p.expand, false)) {
       lines.push(
         `angle_rad = np.deg2rad(abs(${num(p.angle)}))`,
         "cos_a, sin_a = abs(np.cos(angle_rad)), abs(np.sin(angle_rad))",
@@ -2113,11 +2111,18 @@ const GEN = {
       `resp = cv2.cornerHarris(gray_f, ${int(p.blockSize)}, ${ksize}, ${num(p.k)})`,
       "resp = cv2.normalize(resp, None, 0, 255, cv2.NORM_MINMAX)",
       "img = cv2.cvtColor(img, cv2.COLOR_GRAY2BGR)",
-      `thresh = ${num(p.thresh)} / 100 * resp.max()`,
-      "ys, xs = np.where(resp > thresh)",
+      // B5 (backlog 2026-10-17): ทำเหมือนแอปเป๊ะ — ปัดเป็น uint8 → threshold → dilate วงรี 3x3 (กากบาท 5 พิกเซล: ขยายจุด ไม่ได้รวมมุมเป็นจุดเดียว) แล้วนับพิกเซลของมาสก์ที่ขยายแล้ว (ตัวเลขอาจมากกว่าจำนวนมุมจริงราว 5 เท่า)
+      "mask8 = cv2.convertScaleAbs(resp)  # float -> uint8 ปัดเศษเหมือน convertTo ของแอป",
+      `_, mask8 = cv2.threshold(mask8, ${num(p.thresh)} / 100 * 255, 255, cv2.THRESH_BINARY)`,
+      "mask8 = cv2.dilate(mask8, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3)))  # ขยายจุด (กากบาท 5 px) แล้วนับพิกเซล เหมือนแอป",
+      "ys, xs = np.where(mask8 > 0)",
       "inv_scale = 1 / scale",
-      "for x, y in zip(xs, ys):",
-      "    cv2.circle(img, (int(x * inv_scale), int(y * inv_scale)), 3, (0, 255, 0), 1)",
+      "if len(xs) > 3000:  # เหมือนแอป: มุมเยอะเกินไม่วาดอะไร",
+      "    print('จุดมุมเยอะเกิน (>3000) — เพิ่มค่า \"ความไวจับมุม\" ขึ้น')",
+      "else:",
+      "    print(f'พบมุม {len(xs)} จุด')",
+      "    for x, y in zip(xs, ys):",
+      "        cv2.circle(img, (int(x * inv_scale), int(y * inv_scale)), 3, (0, 255, 0), 1)",
     ];
   } },
 
@@ -2131,7 +2136,7 @@ const GEN = {
     // minDist วัดเป็น px ของภาพที่วิเคราะห์ (analysis) เหมือนฝั่ง JS ที่คูณด้วย scale (registry.js's
     // shi_tomasi_corners: `p.minDist * scale`) — ไม่ใช่ px ของภาพเต็มความละเอียด ต้องคูณ scale ให้ตรงกัน
     `corners = cv2.goodFeaturesToTrack(analysis, ${int(p.maxCorners)}, ${num(p.quality) / 100}, ${int(p.minDist)} * scale,`,
-    `                                  blockSize=${int(p.blockSize)}, useHarrisDetector=${p.useHarris ? "True" : "False"})`,
+    `                                  blockSize=${int(p.blockSize)}, useHarrisDetector=${boolOr(p.useHarris, false) ? "True" : "False"})`,
     "img = cv2.cvtColor(img, cv2.COLOR_GRAY2BGR)",
     "inv_scale = 1 / scale",
     "if corners is not None:",
@@ -2275,6 +2280,9 @@ const GEN = {
     const cutoff = num(p.cutoff) || 30;
     const isHigh = p.type === "high";
     const isIdeal = p.shape === "ideal";
+    // IP batch 4A: Butterworth เปลี่ยนเฉพาะบรรทัด low = ... บรรทัดเดียว (ฝาแฝดของ 1 / (1 + (D/D0)^2n) ในแอป) · รูปแบบอื่น/ค่าแปลกได้บรรทัดเดิมทุกตัวอักษร
+    const isButter = p.shape === "butterworth";
+    const bwN = Math.round(clampNum(p.order, 2, 1, 10));
     return [
       "rows, cols = img.shape",
       "scale = min(1.0, 640 / max(rows, cols))  # ย่อก่อนวิเคราะห์เหมือนแอปตัวจริง — cutoff ด้านล่างอ้างอิงภาพที่ย่อแล้วนี้เสมอ",
@@ -2292,7 +2300,9 @@ const GEN = {
       "cy, cx = opt_rows / 2, opt_cols / 2",
       "yy, xx = np.mgrid[0:opt_rows, 0:opt_cols]",
       "d = np.sqrt((xx - cx) ** 2 + (yy - cy) ** 2)",
-      isIdeal ? `low = (d <= ${cutoff}).astype(np.float32)` : `low = np.exp(-(d ** 2) / (2 * ${cutoff} ** 2)).astype(np.float32)`,
+      isIdeal ? `low = (d <= ${cutoff}).astype(np.float32)`
+        : isButter ? `low = (1 / (1 + (d / ${cutoff}) ** ${2 * bwN})).astype(np.float32)  # Butterworth ลำดับ n=${bwN}`
+        : `low = np.exp(-(d ** 2) / (2 * ${cutoff} ** 2)).astype(np.float32)`,
       isHigh ? "mask = 1 - low" : "mask = low",
       "complex_i[:, :, 0] *= mask",
       "complex_i[:, :, 1] *= mask",
@@ -2378,7 +2388,7 @@ const GEN = {
       "    img_b_gray = cv2.resize(img_b_gray, (img.shape[1], img.shape[0]), interpolation=cv2.INTER_LINEAR)",
       "_, mask_bin = cv2.threshold(img_b_gray, 127, 255, cv2.THRESH_BINARY)",
     ];
-    if (p.invert) lines.push("mask_bin = cv2.bitwise_not(mask_bin)");
+    if (boolOr(p.invert, false)) lines.push("mask_bin = cv2.bitwise_not(mask_bin)");
     lines.push("img = cv2.bitwise_and(img, img, mask=mask_bin)");
     return lines;
   } },
@@ -2724,7 +2734,7 @@ const GEN = {
     const ellipse = p.shape === "ellipse";
     const rx = clampNum(p.x, 25, 0, 100), ry = clampNum(p.y, 25, 0, 100), rw = clampNum(p.w, 50, 1, 100), rh = clampNum(p.h, 50, 1, 100);
     const feather = Math.round(clampNum(p.feather, 0, 0, 50));
-    const invert = p.invert === true;
+    const invert = boolOr(p.invert, false);
     const outline = p.view === "outline";
     return [
       "a_c = img if img.ndim == 3 else cv2.cvtColor(img, cv2.COLOR_GRAY2BGR)",
@@ -2818,6 +2828,12 @@ const GEN = {
       "kk = psf.astype(np.float32)",
       "kf = np.ascontiguousarray(np.flip(psf, (0, 1)).astype(np.float32))",
       `iters = ${iters}`,
+      // B6: งบงานเดียวกับแอป (LUCY_WORK_BUDGET) — ภาพใหญ่ลดรอบ ไม่ย่อภาพ
+      "lucy_ch = 1 if img.ndim == 2 else 3",
+      `iters_used = min(iters, max(1, ${LUCY_WORK_BUDGET} // (img.shape[0] * img.shape[1] * lucy_ch)))`,
+      "if iters_used < iters:",
+      "    print(f\"ภาพใหญ่ จึงลดเหลือ {iters_used} รอบ (ขอ {iters} รอบ)\")",
+      "    iters = iters_used",
       "def lucy_channel(ch):",
       "    g = ch.astype(np.float32)",
       "    est = g.copy()",
@@ -2832,7 +2848,7 @@ const GEN = {
       "    img = lucy_channel(img)",
       "else:",
       "    img = cv2.merge([lucy_channel(c) for c in cv2.split(img)])",
-      `print("lucy-richardson: ${iters} iterations, psf ${kind === "disk" ? `disk ${size} px` : `motion ${size} px ${ang} deg`}")`,
+      `print(f"lucy-richardson: {iters} iterations, psf ${kind === "disk" ? `disk ${size} px` : `motion ${size} px ${ang} deg`}")`,
     ];
   } },
 
@@ -2929,7 +2945,7 @@ const GEN = {
     const L = Number(pickOwn({ 2: 2, 4: 4, 8: 8, 16: 16, 32: 32, 64: 64 }, p.levels, 8));
     const d = Math.round(clampNum(p.distance, 1, 1, 10));
     const angle = Object.hasOwn({ 0: 1, 45: 1, 90: 1, 135: 1, avg: 1 }, p.angle) ? String(p.angle) : "0";
-    const sym = p.symmetric === true;
+    const sym = boolOr(p.symmetric, false);
     const matrix = p.view !== "quantized";
     const OFF = { 0: [d, 0], 45: [d, -d], 90: [0, -d], 135: [-d, -d] };
     const offs = (angle === "avg" ? [0, 45, 90, 135] : [Number(angle)]).map((a) => `(${OFF[a][0]}, ${OFF[a][1]})`).join(", ");
@@ -3033,7 +3049,7 @@ const GEN = {
   // Dehaze: dark channel prior · float32/float64 ตามจุดเดียวกับแอป (refine = false → ผลเท่าแอปทุก byte) · guided_f32 ฝาแฝดจาก 4A
   dehaze: { needs: "any", out: "same", outOf: (p) => (p.view === "transmission" || p.view === "dark" ? "gray" : "same"), gen: (p, ctx) => {
     const omega = clampNum(p.amount, 0.95, 0.1, 1), ps = odd(clampNum(p.patch, 15, 3, 31));
-    const refine = p.refine !== false;
+    const refine = boolOr(p.refine, true);
     const view = pickOwn({ result: "result", transmission: "transmission", dark: "dark" }, p.view, "result");
     const mir = isMirrored(ctx);
     return [
@@ -3118,19 +3134,6 @@ const GEN = {
   } },
 };
 
-// IP batch 4A — Butterworth ของ fft_filter: บล็อก GEN.fft_filter ด้านบนคงไว้ทุกตัวอักษร (ipE-27 ปัก sha256 ของข้อความบล็อก) จึงห่อ gen แทนการแก้ในบล็อก
-// รูปแบบอื่น/ค่าแปลกคืนบรรทัดเดิมของบล็อกทุกบรรทัด · butterworth เปลี่ยนเฉพาะบรรทัด low = ... บรรทัดเดียว (ฝาแฝดของ 1 / (1 + (D/D0)^2n) ในแอป)
-{
-  const fftFilterBase = GEN.fft_filter.gen;
-  GEN.fft_filter.gen = (p, ctx) => {
-    const lines = fftFilterBase(p, ctx);
-    if (!p || p.shape !== "butterworth") return lines;
-    const cutoff = num(p.cutoff) || 30;
-    const n = Math.round(clampNum(p.order, 2, 1, 10));
-    return lines.map((l) => (l.startsWith("low = np.exp(") ? `low = (1 / (1 + (d / ${cutoff}) ** ${2 * n})).astype(np.float32)  # Butterworth ลำดับ n=${n}` : l));
-  };
-}
-
 // Tier 2, 18d — ผู้ใช้เลือก "ใช้ในแอปอย่างเดียว" (D-8 ข้อ 5): op ที่ต้องใช้หลายเฟรมต่อเนื่อง export เป็น
 // process(path) ภาพเดี่ยวไม่ได้ — ห้ามเพิ่ม GEN ของ 3 ตัวนี้ (ถ้าเพิ่ม ต้องออกแบบ process_video ใหม่ทั้งหมด)
 const APP_ONLY_OPS = {
@@ -3157,12 +3160,19 @@ function appOnlyHeader(appOnly) {
   return `\n# หมายเหตุ: มีขั้นตอนที่ใช้ได้ในแอปเท่านั้น (${appOnly.join(", ")}) ซึ่งถูกข้ามในสคริปต์นี้ — ดูคอมเมนต์ที่ขั้นนั้น`;
 }
 
+// step ที่ปิดไว้ (bypass: enabled === false) แอปข้ามไปเลย (cv-worker.js runPipeline `step.enabled === false → continue`, ทั้งสายหลักและสาย B) —
+// Python ที่ export ต้องข้ามเหมือนกัน ไม่งั้นได้ผลต่างจากที่เห็นในแอป
+function activeSteps(pipeline) {
+  return (pipeline || []).filter((st) => st && st.enabled !== false);
+}
+
 // สร้างโค้ด Python เต็มจาก pipeline
 // Tier 2 §C.0/§C.1 — pipeline ที่มี step ใดใช้ FILTERS group ที่ inputs===2 (เช่น image_arithmetic)
 // ต้องมีโค้ดสองภาพนำเข้า (process(path_a, path_b)) — แยกไปทำที่ buildPythonCode2Image เพราะรูปแบบ
 // ฟังก์ชันต่างจาก process(path) เดี่ยวโดยพื้นฐาน (resolveOp ทำงานกับ step.id ตรง ๆ ซึ่งเป็น FILTERS key
 // เดียวกับที่ FILTERS[step.id] ใช้เช็ค — ยืนยันแล้วจาก tracePipeline ของ editor.js)
 export function buildPythonCode(pipeline, opts = {}) {
+  pipeline = activeSteps(pipeline);
   const has2Image = (pipeline || []).some((step) => step && FILTERS[step.id] && FILTERS[step.id].inputs === 2);
   if (has2Image) return buildPythonCode2Image(pipeline, opts);
 
@@ -3257,14 +3267,52 @@ if __name__ == "__main__":
 // clear_border/remove_small/skeleton (มีตัวแปร "bin_img" ซึ่ง \bimg\b ไม่จับเพราะติดกับ "_" ด้านหน้า
 // เป็น word character — ไม่มีการแทนที่ผิดจุดเกิดขึ้นจริงในทุกกรณีที่ทดสอบ) — ดูเทสต์
 // "tier2-11" ใน tests/tier2-infra.test.mjs ที่ยืนยันเชิงประจักษ์เรื่องนี้โดยเฉพาะ
+// B8 (backlog 2026-10-17, P-21): ภาพ B ของแต่ละ step เริ่มจากสำเนาของภาพ B ดิบ (`img_b_raw`) เสมอ แล้วผ่านสาย B "ของ step นั้นเอง" —
+// เดิม B ของทุก step ถูกต่อกันบนตัวแปร img_b ตัวเดียว (step ที่ 2 ได้ B ที่ผ่านสายของ step ที่ 1 มาแล้ว) และ op สองภาพที่อยู่ในสาย B
+// ใช้ img_b ตัวเดียวกับสายนั้นเป็นภาพที่สอง (ไม่ได้ใช้ src2 ของตัวเอง) · ตอนนี้ op สองภาพซ้อนกันได้ลึกเท่าที่กราฟมี: ภาพ B ของระดับ d
+// ชื่อ img_b (d=1) / img_b2 / img_b3 … (ดู bImageVar) · step สองภาพที่ไม่มี src2 เลย = แอปคืนภาพ A เดิม (passthroughNoSrc2) Python จึงข้ามขั้นนั้น
+const bImageVar = (depth) => (depth <= 1 ? "img_b" : `img_b${depth}`);
+// สร้างบรรทัดของ "สาย B ของ step" ลง body — คืนชื่อตัวแปรที่เก็บภาพ B ที่ประมวลผลเสร็จแล้ว · depth = ระดับของ step (0 = สายหลัก)
+function emitBChain(step, depth, body, appOnly) {
+  const w = bImageVar(depth + 1);
+  body.push(`${w} = img_b_raw.copy()  # ภาพ B ของขั้นนี้ เริ่มจากภาพ B ดิบ`);
+  const ctxB = { gray: false };
+  for (const s2 of activeSteps(step.src2.pipeline)) {
+    const r2 = resolveOp(s2);
+    // 18d: บรรทัดคำเตือนของ op app-only ต้อง "ไม่" ผ่าน replace (ไม่มี token img อยู่แล้ว แต่ push ตรง ๆ ชัดเจนกว่า)
+    if (APP_ONLY_OPS[r2.opId]) {
+      body.push(...appOnlyLines(r2.opId, "สาย B"), "");
+      appOnly.push(r2.opId);
+      continue;
+    }
+    const g2 = GEN[r2.opId];
+    if (!g2) { body.push(`# (ข้าม: ยังไม่รองรับการ gen โค้ดของ '${r2.opId}')`); continue; }
+    let second = bImageVar(depth + 2); // ภาพที่สองของ op สองภาพในสาย B (เฉพาะเมื่อ s2 เป็น op สองภาพ)
+    if (FILTERS[s2.id] && FILTERS[s2.id].inputs === 2) {
+      if (!s2.src2 || !s2.src2.pipeline) { // ไม่มีสาย B เลย: แอปคืนภาพเดิม
+        body.push(`# (${thaiName(r2.opId)}: ยังไม่ได้ต่อสาย B — แอปคืนภาพเดิม จึงข้ามขั้นนี้)`);
+        continue;
+      }
+      emitBChain(s2, depth + 1, body, appOnly);
+    }
+    if (g2.needs === "gray" && !ctxB.gray) {
+      body.push(`${w} = cv2.cvtColor(${w}, cv2.COLOR_BGR2GRAY)`);
+      ctxB.gray = true;
+    }
+    for (const line of g2.gen(r2.local, ctxB)) body.push(line.replace(/\bimg_b\b|\bimg\b/g, (t) => (t === "img" ? w : second)));
+    const out2 = g2.outOf ? g2.outOf(r2.local) : g2.out;
+    if (out2 === "gray") ctxB.gray = true;
+    else if (out2 === "color") ctxB.gray = false;
+  }
+  return w;
+}
 function buildPythonCode2Image(pipeline, opts = {}) {
   const name = opts.displayName || "ผลลัพธ์";
   const bodyA = [];
-  const bodyB = [];
   const ctxA = { gray: false };
   let stepNo = 0;
   const appOnly = []; // 18d — op app-only จากทั้งสายหลักและสาย B (ใช้ทำหมายเหตุใต้หัวไฟล์)
-  for (const step of pipeline) {
+  for (const step of activeSteps(pipeline)) {
     const { opId, local } = resolveOp(step);
     if (APP_ONLY_OPS[opId]) { // 18d: เช็คก่อน GEN[opId] เหมือนสายเดี่ยว
       stepNo++;
@@ -3275,30 +3323,14 @@ function buildPythonCode2Image(pipeline, opts = {}) {
     const g = GEN[opId];
     if (!g) { bodyA.push(`# (ข้าม: ยังไม่รองรับการ gen โค้ดของ '${opId}')`); continue; }
     stepNo++;
-    if (FILTERS[step.id] && FILTERS[step.id].inputs === 2 && step.src2 && step.src2.pipeline) {
-      // เรนเดอร์ src2 chain ลง bodyB ก่อน (ทำงานบน img_b) ด้วย GEN เดิม แต่แทนที่ "img" ด้วย "img_b"
-      // ทุกบรรทัด — ต้องเรนเดอร์ก่อนบรรทัดของ step หลักเสมอ เพราะ step หลักต้องใช้ img_b ที่ประมวลผลแล้ว
-      const ctxB = { gray: false };
-      for (const s2 of step.src2.pipeline) {
-        const r2 = resolveOp(s2);
-        // 18d: บรรทัดคำเตือนของ op app-only ต้อง "ไม่" ผ่าน replace \bimg\b → img_b (ไม่มี token img อยู่แล้ว
-        // แต่ push ตรง ๆ ชัดเจนกว่า และกันไว้ถ้าข้อความเปลี่ยนในอนาคต)
-        if (APP_ONLY_OPS[r2.opId]) {
-          bodyB.push(...appOnlyLines(r2.opId, "สาย B"), "");
-          appOnly.push(r2.opId);
-          continue;
-        }
-        const g2 = GEN[r2.opId];
-        if (!g2) { bodyB.push(`# (ข้าม: ยังไม่รองรับการ gen โค้ดของ '${r2.opId}')`); continue; }
-        if (g2.needs === "gray" && !ctxB.gray) {
-          bodyB.push("img_b = cv2.cvtColor(img_b, cv2.COLOR_BGR2GRAY)");
-          ctxB.gray = true;
-        }
-        for (const line of g2.gen(r2.local, ctxB)) bodyB.push(line.replace(/\bimg\b/g, "img_b"));
-        const out2 = g2.outOf ? g2.outOf(r2.local) : g2.out;
-        if (out2 === "gray") ctxB.gray = true;
-        else if (out2 === "color") ctxB.gray = false;
+    if (FILTERS[step.id] && FILTERS[step.id].inputs === 2) {
+      if (!step.src2 || !step.src2.pipeline) {
+        // B8: ไม่มีสาย B เลย → แอปคืนภาพ A เดิม (ดู passthroughNoSrc2 ใน registry.js) — ไม่คำนวณกับ path_b
+        bodyA.push(`# ── ขั้นที่ ${stepNo}: ${thaiName(opId)} (${opId}) ── ยังไม่ได้ต่อสาย B — แอปคืนภาพ A เดิม จึงข้ามขั้นนี้`, "");
+        continue;
       }
+      // เรนเดอร์สาย B ของ step นี้ก่อนบรรทัดของ step หลักเสมอ (step หลักต้องใช้ img_b ที่ประมวลผลแล้ว เช่น GEN.imabsdiff อ่าน img_b ตรง ๆ)
+      emitBChain(step, 0, bodyA, appOnly);
     }
     if (g.needs === "gray" && !ctxA.gray) {
       bodyA.push("img = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)  # (แปลงขาวดำอัตโนมัติ)");
@@ -3313,7 +3345,6 @@ function buildPythonCode2Image(pipeline, opts = {}) {
     bodyA.push("");
   }
   const indentedA = bodyA.map((l) => (l === "" ? "" : "    " + l)).join("\n");
-  const indentedB = bodyB.map((l) => (l === "" ? "" : "    " + l)).join("\n");
   return `# -*- coding: utf-8 -*-
 # โค้ดนี้สร้างอัตโนมัติจากลำดับ Box ในกล่องผลลัพธ์: "${name}" (มี 2 ภาพนำเข้า)
 # ทำ image processing ตามขั้นตอนเดียวกับที่เห็นในโปรแกรม${appOnlyHeader(appOnly)}
@@ -3335,8 +3366,8 @@ def process(path_a, path_b):
     img_b = cv2.imread(path_b)  # ภาพที่สอง (Src B)
     if img is None or img_b is None:
         raise FileNotFoundError(path_a if img is None else path_b)
+    img_b_raw = img_b  # ภาพ B ดิบ — แต่ละขั้นที่ใช้ภาพ B เริ่มจากสำเนาของภาพนี้ (ไม่ต่อสาย B ของขั้นก่อนหน้า)
 
-${indentedB}
 ${indentedA}
     return img
 

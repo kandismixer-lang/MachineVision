@@ -1,5 +1,5 @@
 // UI metadata — เพิ่มความสวย/สื่อความ โดยไม่แตะ backend algorithm
-import { OPS, fixed2, signedText, quantizeBits, SHAPE_FILTER_PROP_TH, HITMISS_PATTERNS } from "./registry.js";
+import { OPS, boolOr, fixed2, signedText, quantizeBits, SHAPE_FILTER_PROP_TH, HITMISS_PATTERNS } from "./registry.js";
 
 // ไอคอนประจำการ์ดเครื่องมือ (Design §7.1 — ภาพ mockup มี icon chip หน้าแต่ละเครื่องมือ)
 export const GROUP_ICON = {
@@ -194,7 +194,7 @@ export const OP_PRIMARY = {
   crop: (p) => `${p.w ?? 80}%×${p.h ?? 80}% @ (${p.x ?? 10}%,${p.y ?? 10}%)`,
   // interp: auto = ข้อความเดิมทุกตัวอักษร · เลือกเอง = ต่อท้ายชื่อวิธี (ไม่รู้จัก → ว่าง)
   resize: (p) => "สเกล: " + (p.scale ?? 50) + "%" + ownOr({ auto: "", nearest: " · Nearest", bilinear: " · Bilinear", bicubic: " · Bicubic" }, p.interp, "auto"),
-  rotate: (p) => `มุม ${p.angle ?? 15}° · ${p.expand ? "ขยายผืนภาพ" : "คงขนาดเดิม"}` + ownOr({ auto: "", nearest: " · Nearest", bilinear: " · Bilinear", bicubic: " · Bicubic" }, p.interp, "auto"),
+  rotate: (p) => `มุม ${p.angle ?? 15}° · ${boolOr(p.expand, false) ? "ขยายผืนภาพ" : "คงขนาดเดิม"}` + ownOr({ auto: "", nearest: " · Nearest", bilinear: " · Bilinear", bicubic: " · Bicubic" }, p.interp, "auto"),
   flip: (p) => "แนว: " + (p.mode === "v" ? "แนวตั้ง" : p.mode === "both" ? "ทั้งสองแนว" : "แนวนอน"),
   perspective_warp: () => "บิด perspective ตาม 4 มุม",
   undistort: (p) => `k1=${p.k1 ?? -0.3} k2=${p.k2 ?? 0}`,
@@ -222,7 +222,7 @@ export const OP_PRIMARY = {
   fft_filter: (p) => `${p.type === "high" ? "High" : "Low"}-pass · r=${p.cutoff ?? 30} หน่วยความถี่ (${p.shape === "butterworth" ? `butterworth n=${pnum("fft_filter", "order", p.order, { int: true })}` : (p.shape ?? "gaussian")})`,
   imabsdiff: () => "|A − B|",
   imfuse: (p) => (p.mode === "checkerboard" ? `Checkerboard · tile=${p.tileSize ?? 32}px` : `Blend · A ${p.alpha ?? 50}%`),
-  mask: (p) => (p.invert ? "Mask B (กลับด้าน)" : "Mask ผ่าน B"),
+  mask: (p) => (boolOr(p.invert, false) ? "Mask B (กลับด้าน)" : "Mask ผ่าน B"),
   // ใหม่ (2026-10-02, IP batch 2 ชิ้น B) — ค่า operation ที่ไม่รู้จัก (รวม "constructor" ฯลฯ) แสดงเป็นค่าเริ่มต้น
   // ตรงกับที่ op ใช้จริง (registry เลือกด้วย Object.hasOwn เหมือนกัน)
   imarith: (p) => ownOr(IMARITH_LABEL, p.operation, "add"),
@@ -240,7 +240,7 @@ export const OP_PRIMARY = {
   roi_apply: (p) => {
     const op = "roi_apply";
     return `${p.shape === "ellipse" ? "วงรี" : "สี่เหลี่ยม"} ${pnum(op, "x", p.x)}%,${pnum(op, "y", p.y)}% ${pnum(op, "w", p.w)}×${pnum(op, "h", p.h)}%`
-      + (p.invert === true ? " · กลับด้าน" : "")
+      + (boolOr(p.invert, false) ? " · กลับด้าน" : "")
       + (pnum(op, "feather", p.feather, { int: true }) > 0 ? ` · ขอบนุ่ม ${pnum(op, "feather", p.feather, { int: true })}px` : "");
   },
   // ใหม่ (2026-10-15, IP batch 4B) — ตัวเลขผ่าน pnum (ค่าหลัง clamp ที่ op ใช้จริง) · ตัวเลือกที่ไม่รู้จักแสดงเป็นค่าเริ่มต้นเหมือน registry
@@ -252,7 +252,7 @@ export const OP_PRIMARY = {
   nlm_denoise: (p) => `h ${pnum("nlm_denoise", "h", p.h, { int: true })} · แผ่น ${ownOr({ 3: "3", 5: "5", 7: "7" }, p.patch, "5")} · ค้นหา ${ownOr({ 7: "7", 11: "11", 15: "15" }, p.search, "11")}`,
   dehaze: (p) => {
     const ps0 = pnum("dehaze", "patch", p.patch, { int: true });
-    return `ω ${pnum("dehaze", "amount", p.amount)} · หน้าต่าง ${ps0 % 2 === 0 ? ps0 + 1 : ps0}` + (p.refine === false ? " · ไม่เกลี่ย" : "");
+    return `ω ${pnum("dehaze", "amount", p.amount)} · หน้าต่าง ${ps0 % 2 === 0 ? ps0 + 1 : ps0}` + (!boolOr(p.refine, true) ? " · ไม่เกลี่ย" : "");
   },
   dct_jpeg: (p) => (p.method === "zonal" ? `ความถี่ต่ำ ${pnum("dct_jpeg", "keep", p.keep, { int: true })}×${pnum("dct_jpeg", "keep", p.keep, { int: true })}` : `JPEG q${pnum("dct_jpeg", "quality", p.quality, { int: true })}`),
   // Tier 2, 18d — Motion (ค่าเริ่มต้น/ช่วง อ่านจาก OPS ผ่าน pnum: history 10-2000 def 500, varThreshold 4-100

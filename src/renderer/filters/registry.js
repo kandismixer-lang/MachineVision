@@ -309,6 +309,20 @@ function fixed1(x) { return (Math.floor(x * 10 + 0.5) / 10).toFixed(1); }
 // ui-meta.js ใช้ตัวนี้ปัดตัวเลขบนการ์ดด้วย จึงเป็นกติกาเดียวทั้งแอป · ไม่มีวันได้ "-0.00" (floor ของค่า ≥ 0 ไม่ใช่ −0)
 export function fixed2(x) { return (Math.floor(x * 100 + 0.5) / 100).toFixed(2); }
 
+// B7 (backlog 2026-10-17, P-13 + P-17) — ตัวอ่าน param กลาง (แอปและ codegen ใช้ตัวเดียวกัน จึงให้ผลตรงกันแม้ param เป็น string จากไฟล์ที่แก้มือ)
+// finiteOr: เลขจำกัด → ตัวนั้น · สตริงตัวเลข ("0", " 2.5 ") → เป็นเลข · อื่น ๆ (undefined/null/""/NaN/Infinity/boolean/object) → ค่า default d
+export function finiteOr(v, d) {
+  if (typeof v === "number") return Number.isFinite(v) ? v : d;
+  if (typeof v === "string" && v.trim() !== "") { const x = Number(v); return Number.isFinite(x) ? x : d; }
+  return d;
+}
+// boolOr: true/false · "true"/"false" · 1/0 → boolean · อื่น ๆ → d (เดิมใช้ truthiness ทำให้ "false" กลายเป็น true เงียบ ๆ)
+export function boolOr(v, d) {
+  if (v === true || v === 1 || v === "true") return true;
+  if (v === false || v === 0 || v === "false") return false;
+  return d;
+}
+
 // ใช้ร่วมกันโดย op ที่ต้องย่อภาพวิเคราะห์ก่อนประมวลผลหนัก (Tier 2, 18b) — เหมือน harris_corners/
 // fft_magnitude ที่มีอยู่เดิมแต่เขียน inline ซ้ำ ๆ ทุกจุด — คืน {scale, invScale, w, h} ของภาพย่อ ไม่ resize
 // ให้เองตรงนี้ (ผู้เรียกยังต้องเรียก cv.resize เอง เพราะบาง op เช่น template_matching ต้องย่อภาพ 2 ใบ
@@ -377,7 +391,7 @@ function grayIfNeeded(cv, src) {
 // ตัวช่วยของกลุ่ม Motion (Tier 2, 18d — mog2 / farneback_optical_flow / pyrlk_optical_flow)
 // ===================================================================
 // ตัวเลขจาก param (อาจเป็น string จาก saved project — บทเรียน P-13/18c) — 0 เป็นค่าที่ใช้ได้
-function numOr(v, d) { const x = Number(v); return Number.isFinite(x) ? x : d; }
+function numOr(v, d) { return finiteOr(v, d); }
 // clamp ให้อยู่ใน "ช่วงเดียวกับ min/max ของ param นั้นใน UI" เสมอ (ไฟล์โปรเจกต์ที่แก้มือแล้วใส่ค่าเกินช่วง
 // ต้องไม่หลุดเข้า OpenCV) — ตัวเลข lo/hi ทุกจุดถูกล็อกไว้กับ params ด้วยเทสต์ tier2d-MN-1 (static read)
 function numIn(v, d, lo, hi) { return Math.min(hi, Math.max(lo, numOr(v, d))); }
@@ -1157,6 +1171,12 @@ function whiteBalanceByGain(cv, src, p, ctx, method) {
 // นโยบาย op ช้า (แหล่งความจริงเดียว — codegen import ค่าเหล่านี้ ไม่ hardcode ซ้ำ): ภาพใหญ่กว่า NLM_MAX_SIDE ถูกย่อก่อน · Lucy จำกัดรอบ · ECC ย่อภาพก่อนจับคู่
 export const NLM_MAX_SIDE = 640;
 export const LUCY_MAX_ITERS = 50;
+// B6 (backlog 2026-10-17): งบงาน Lucy = พิกเซล × ช่อง × รอบ — ภาพ 640×480 สี 20 รอบ (ค่าที่ใช้ได้สบายใน UI) เป็นเพดาน · เกินงบ → ลดรอบ (ไม่ย่อภาพ เพราะ PSF จะผิดสเกล)
+export const LUCY_WORK_BUDGET = 640 * 480 * 3 * 20;
+// รอบที่ใช้จริง: เท่าที่ขอ ถ้าไม่เกินงบ · เกินงบ → max(1, floor(งบ ÷ (กว้าง×สูง×ช่อง))) (ไม่เกินที่ขอ)
+export function lucyBudgetIters(w, h, ch, requested) {
+  return Math.min(requested, Math.max(1, Math.floor(LUCY_WORK_BUDGET / Math.max(1, w * h * ch))));
+}
 export const ECC_DEFAULT_SIDE = 320;
 const SLOW_MODE_HINT = "ช้า — เหมาะกับภาพนิ่ง (กล้องสดจะกระตุก)";
 // ทศนิยม 3 ตำแหน่งแบบปัดครึ่งขึ้น (คู่กับ fixed2) — Python ใช้ np.floor(x*1000+0.5)/1000 แล้ว :.3f
@@ -1980,7 +2000,7 @@ export const OPS = {
       try {
         filtered = new cv.Mat();
         cv.filter2D(src, filtered, -1, kernel, new cv.Point(-1, -1), 0, cv.BORDER_DEFAULT);
-        const amount = Number.isFinite(p.amount) ? p.amount : 1;
+        const amount = finiteOr(p.amount, 1);
         dst = new cv.Mat();
         if (amount === 1) {
           filtered.copyTo(dst);
@@ -2225,7 +2245,7 @@ export const OPS = {
         try {
           cv.threshold(src, bin, 127, 255, cv.THRESH_BINARY);
           const n = cv.connectedComponentsWithStats(bin, labels, stats, centroids, 8, cv.CV_32S);
-          const minArea = Number.isFinite(p.minArea) ? p.minArea : 150;
+          const minArea = finiteOr(p.minArea, 150);
           const removeLabel = new Uint8Array(n);
           let removedCount = 0;
           for (let i = 1; i < n; i++) {
@@ -2547,7 +2567,7 @@ export const OPS = {
     ],
     apply(cv, src, p) {
       const dst = new cv.Mat();
-      cv.threshold(src, dst, p.thresh, 255, p.invert ? cv.THRESH_BINARY_INV : cv.THRESH_BINARY);
+      cv.threshold(src, dst, p.thresh, 255, boolOr(p.invert, false) ? cv.THRESH_BINARY_INV : cv.THRESH_BINARY);
       return dst;
     },
   },
@@ -2568,7 +2588,7 @@ export const OPS = {
       const triangle = p.method === "triangle";
       if (triangle && isEmptyMat(src)) { if (ctx) ctx.info = "ภาพว่าง"; return src.clone(); }
       const dst = new cv.Mat();
-      const type = (p.invert ? cv.THRESH_BINARY_INV : cv.THRESH_BINARY) + (triangle ? cv.THRESH_TRIANGLE : cv.THRESH_OTSU);
+      const type = (boolOr(p.invert, false) ? cv.THRESH_BINARY_INV : cv.THRESH_BINARY) + (triangle ? cv.THRESH_TRIANGLE : cv.THRESH_OTSU);
       try {
         const val = cv.threshold(src, dst, 0, 255, type);
         if (ctx) ctx.info = `ค่าเกณฑ์ที่ ${triangle ? "Triangle" : "Otsu"} คำนวณได้ = ${Math.round(val)}`;
@@ -2738,7 +2758,7 @@ export const OPS = {
       { key: "ksize", type: "number", label: "ขนาด kernel", min: 1, max: 7, step: 2, default: 3, hint: "เลขคี่", desc: "ขนาดตัวกรองหาอนุพันธ์อันดับสอง — ใหญ่ = จับขอบหยาบ/กว้างกว่า" },
     ],
     apply(cv, src, p, ctx) {
-      const k = ensureOdd(Number.isFinite(p.ksize) ? p.ksize : 3);
+      const k = ensureOdd(finiteOr(p.ksize, 3));
       let lap = null;
       let dst = null;
       try {
@@ -3125,7 +3145,7 @@ export const OPS = {
       { key: "windowSize", type: "number", label: "ขนาดบริเวณ (px)", min: 3, max: 21, step: 2, default: 9, hint: "เลขคี่", desc: "ขนาดหน้าต่างที่ใช้คำนวณค่าเบี่ยงเบนมาตรฐาน — ใหญ่ = จับ texture หยาบ/กว้างขึ้น" },
     ],
     apply(cv, src, p, ctx) {
-      const k = ensureOdd(Number.isFinite(p.windowSize) ? p.windowSize : 9);
+      const k = ensureOdd(finiteOr(p.windowSize, 9));
       let f32 = null, mean = null, sq = null, meanSq = null, meanSquared = null, variance = null, stdF = null, norm = null, dst = null;
       try {
         f32 = new cv.Mat();
@@ -3293,7 +3313,6 @@ export const OPS = {
         // coerce ด้วย Number() ก่อนเช็ค finite — ตรงกับ finiteOr() ของ codegen.js เป๊ะ (debugger 18c fix-round พบว่า
         // ถ้า param มาเป็น string เช่น "0" จาก saved project เดิม Number.isFinite("0") เป็น false ทำให้ JS ตกไปใช้
         // ค่าเริ่มต้น แต่ Python แปลงเป็น 0 — ผลตรงข้ามกันระหว่างแอปกับโค้ด export)
-        const finiteOr = (v, d) => { const x = Number(v); return Number.isFinite(x) ? x : d; };
         const minAreaVal = finiteOr(p.minArea, 50); // minArea:0 เป็นค่าที่ใช้งานได้จริง (ไม่กรองอะไรเลย) ต้องไม่ตกเป็น falsy fallback
         // maxObjects: 0 = ไม่จำกัด (ค่าที่ใช้งานได้จริง ต้องไม่ตกเป็น falsy fallback) — โปรเจกต์ที่ไม่มี key นี้
         // (undefined) ได้ค่าเริ่มต้น 500
@@ -3534,7 +3553,9 @@ export const OPS = {
       try {
         const analysis = scale < 1 ? resized : src;
         if (scale < 1) {
-          cv.resize(src, resized, new cv.Size(Math.round(src.cols * scale), Math.round(src.rows * scale)), 0, 0, cv.INTER_AREA);
+          // B4/review: สัดส่วนสุดโต่งทำให้ Math.round ได้ 0 → ใช้ analysisScale (อย่างน้อย 1 px)
+          const sz = analysisScale(src.cols, src.rows, maxAnalysisSide);
+          cv.resize(src, resized, new cv.Size(sz.w, sz.h), 0, 0, cv.INTER_AREA);
         }
         cv.medianBlur(analysis, blur, 5); // ลด noise ก่อน กันตรวจเจอวงปลอม
 
@@ -3612,7 +3633,9 @@ export const OPS = {
       let dst = null;
       try {
         if (scale < 1) {
-          cv.resize(src, analysis, new cv.Size(Math.round(src.cols * scale), Math.round(src.rows * scale)), 0, 0, cv.INTER_AREA);
+          // B4/review: สัดส่วนสุดโต่งทำให้ Math.round ได้ 0 → ใช้ analysisScale (อย่างน้อย 1 px)
+          const sz = analysisScale(src.cols, src.rows, maxAnalysisSide);
+          cv.resize(src, analysis, new cv.Size(sz.w, sz.h), 0, 0, cv.INTER_AREA);
         } else {
           src.copyTo(analysis);
         }
@@ -3671,7 +3694,9 @@ export const OPS = {
       let out = null;
       try {
         if (scale < 1) {
-          cv.resize(src, analysis, new cv.Size(Math.round(src.cols * scale), Math.round(src.rows * scale)), 0, 0, cv.INTER_AREA);
+          // B4: สัดส่วนสุดโต่ง (~1000:1) ทำให้ Math.round ได้ 0 → ต้องมีอย่างน้อย 1 px (เหมือน orb/Python)
+          const sz = analysisScale(src.cols, src.rows, maxAnalysisSide);
+          cv.resize(src, analysis, new cv.Size(sz.w, sz.h), 0, 0, cv.INTER_AREA);
         } else {
           src.copyTo(analysis);
         }
@@ -3680,7 +3705,7 @@ export const OPS = {
         cv.normalize(resp, norm, 0, 255, cv.NORM_MINMAX, cv.CV_32FC1);
         norm.convertTo(mask8, cv.CV_8UC1);
         cv.threshold(mask8, mask8, (p.thresh / 100) * 255, 255, cv.THRESH_BINARY);
-        // รวมจุดมุมที่อยู่ติดกันให้เป็นก้อนเดียว ก่อนนับ — กันนับจุดเดียวกันซ้ำหลายพิกเซล
+        // ขยายจุด (dilate วงรี 3x3 = กากบาท 5 พิกเซล) แล้วนับ "พิกเซลของมาสก์ที่ขยายแล้ว" — ไม่ได้รวมมุมเป็นจุดเดียว: ตัวเลขจึงอาจมากกว่าจำนวนมุมจริงราว 5 เท่า (คงพฤติกรรมเดิม — ผู้ใช้เป็นคนตัดสินใจว่าจะเปลี่ยนวิธีนับหรือไม่)
         cv.dilate(mask8, mask8, kern);
 
         // build นี้ไม่ผูก cv.findNonZero มาให้ (มีแค่ใน type declaration) — อ่าน mask8.data (Uint8Array)
@@ -3745,13 +3770,15 @@ export const OPS = {
       let out = null;
       try {
         if (scale < 1) {
-          cv.resize(src, analysis, new cv.Size(Math.round(src.cols * scale), Math.round(src.rows * scale)), 0, 0, cv.INTER_AREA);
+          // B4: สัดส่วนสุดโต่ง (~1000:1) ทำให้ Math.round ได้ 0 → ต้องมีอย่างน้อย 1 px (เหมือน orb/Python)
+          const sz = analysisScale(src.cols, src.rows, maxAnalysisSide);
+          cv.resize(src, analysis, new cv.Size(sz.w, sz.h), 0, 0, cv.INTER_AREA);
         } else {
           src.copyTo(analysis);
         }
         cv.goodFeaturesToTrack(
           analysis, corners, p.maxCorners, Math.max(0.001, p.quality / 100), p.minDist * scale,
-          mask, p.blockSize, !!p.useHarris, 0.04
+          mask, p.blockSize, boolOr(p.useHarris, false), 0.04
         );
         out = new cv.Mat();
         cv.cvtColor(src, out, cv.COLOR_GRAY2RGB);
@@ -3788,7 +3815,7 @@ export const OPS = {
       const scale = Math.min(1, maxAnalysisSide / Math.max(src.cols, src.rows));
       // clamp ทั้งขอบล่าง (0/ค่าติดลบไม่มีความหมาย) และขอบบน (native cv.ORB(nfeatures) ที่ใหญ่ผิดปกติ เช่น
       // >=1e9 จาก project ที่แก้ไฟล์ตรง ๆ ทำให้ constructor throw allocation error — UI ปกติ max แค่ 1000 อยู่แล้ว)
-      const maxFeatures = Math.min(1000, Math.max(1, Math.round(Number.isFinite(p.maxFeatures) ? p.maxFeatures : 300)));
+      const maxFeatures = Math.min(1000, Math.max(1, Math.round(finiteOr(p.maxFeatures, 300))));
       let analysis = null, orb = null, kpv = null, mask = null, out = null;
       try {
         analysis = new cv.Mat();
@@ -3860,7 +3887,7 @@ export const OPS = {
     apply(cv, src, p, ctx) {
       const maxAnalysisSide = 480;
       const scale = Math.min(1, maxAnalysisSide / Math.max(src.cols, src.rows));
-      const maxPoints = Math.max(1, Math.round(Number.isFinite(p.maxPoints) ? p.maxPoints : 300));
+      const maxPoints = Math.max(1, Math.round(finiteOr(p.maxPoints, 300)));
       let analysis = null, akaze = null, kpv = null, mask = null, out = null;
       try {
         analysis = new cv.Mat();
@@ -3929,8 +3956,8 @@ export const OPS = {
     apply(cv, src, p, ctx) {
       const maxAnalysisSide = 480;
       const scale = Math.min(1, maxAnalysisSide / Math.max(src.cols, src.rows));
-      const threshold = Math.max(1, Math.round(Number.isFinite(p.threshold) ? p.threshold : 10));
-      const maxPoints = Math.max(1, Math.round(Number.isFinite(p.maxPoints) ? p.maxPoints : 300));
+      const threshold = Math.max(1, Math.round(finiteOr(p.threshold, 10)));
+      const maxPoints = Math.max(1, Math.round(finiteOr(p.maxPoints, 300)));
       let analysis = null, fast = null, kpv = null, mask = null, out = null;
       try {
         analysis = new cv.Mat();
@@ -4486,7 +4513,7 @@ export const OPS = {
       try {
         M = cv.getRotationMatrix2D(center, angle, 1.0);
         let outW = w, outH = h;
-        if (p.expand) {
+        if (boolOr(p.expand, false)) {
           const rad = (Math.abs(angle) * Math.PI) / 180;
           const cosA = Math.abs(Math.cos(rad));
           const sinA = Math.abs(Math.sin(rad));
@@ -4589,8 +4616,8 @@ export const OPS = {
     apply(cv, src, p, ctx) {
       const w = src.cols, h = src.rows;
       const f = Math.max(w, h);
-      const k1 = Number.isFinite(p.k1) ? p.k1 : -0.3;
-      const k2 = Number.isFinite(p.k2) ? p.k2 : 0;
+      const k1 = finiteOr(p.k1, -0.3);
+      const k2 = finiteOr(p.k2, 0);
       let cameraMatrix = null, distCoeffs = null, dst = null;
       try {
         cameraMatrix = cv.matFromArray(3, 3, cv.CV_64FC1, [f, 0, w / 2, 0, f, h / 2, 0, 0, 1]);
@@ -4767,7 +4794,7 @@ export const OPS = {
         fftQuadrantSwap(cv, dftOut);
 
         // สร้าง mask 1 channel เป็น float ด้วยลูป JS ตรง ๆ (เร็วพอ — ทดสอบแล้ว ~640x480 ใช้ <10ms)
-        const cutoff = Number.isFinite(p.cutoff) ? p.cutoff : 30;
+        const cutoff = finiteOr(p.cutoff, 30);
         const bwN = intIn(p.order, 2, 1, 10); // ลำดับของ Butterworth (ไม่ใช้กับรูปแบบอื่น)
         // รัศมีความถี่ (รอบต่อภาพ) ไม่เปลี่ยนตามความละเอียด ห้ามคูณ scale ซ้ำ — ไม่เช่นนั้นภาพ >640px จะถูกกรองแรงเกินจริง
         const cx = dftOut.cols / 2, cy = dftOut.rows / 2;
@@ -4960,7 +4987,7 @@ export const OPS = {
         const infoSuffix = resized ? " (ปรับขนาด B ให้เท่า A ก่อนคำนวณ เพราะสองภาพขนาดไม่ตรงกัน)" : "";
 
         if (p.mode === "checkerboard") {
-          const tile = Math.max(1, Math.round(Number.isFinite(p.tileSize) ? p.tileSize : 32));
+          const tile = Math.max(1, Math.round(finiteOr(p.tileSize, 32)));
           // ไม่มี cv call เดียวที่ทำ "checkerboard compose" ตรง ๆ — สร้าง mask เอง แล้ว bitwise_and 2 ครั้ง
           // + add (ตามที่ยืนยันไว้แล้วว่าเป็นวิธีมาตรฐานสำหรับ opencv.js — ดู buildCheckerboardMask ด้านบน)
           mask = buildCheckerboardMask(cv, a.cols, a.rows, tile);
@@ -4974,7 +5001,7 @@ export const OPS = {
           cv.add(tmpA, tmpB, dst);
           if (ctx) ctx.info = `ซ้อนแบบตารางหมากรุก (ขนาดตาราง ${tile}px)` + infoSuffix;
         } else {
-          const alphaPct = Math.max(0, Math.min(100, Number.isFinite(p.alpha) ? p.alpha : 50));
+          const alphaPct = Math.max(0, Math.min(100, finiteOr(p.alpha, 50)));
           const alpha = alphaPct / 100;
           dst = new cv.Mat();
           cv.addWeighted(a, alpha, b, 1 - alpha, 0, dst);
@@ -5032,7 +5059,7 @@ export const OPS = {
         bin = new cv.Mat();
         cv.threshold(bSrc, bin, 127, 255, cv.THRESH_BINARY);
         let finalMask = bin;
-        if (p.invert) {
+        if (boolOr(p.invert, false)) {
           inv = new cv.Mat();
           cv.bitwise_not(bin, inv);
           finalMask = inv;
@@ -5040,7 +5067,7 @@ export const OPS = {
         dst = new cv.Mat();
         cv.bitwise_and(src, src, dst, finalMask);
         const kept = cv.countNonZero(finalMask);
-        if (ctx) ctx.info = `กรอง A ผ่านหน้ากาก B${p.invert ? " (กลับด้าน)" : ""} — เปิด ${kept} px` +
+        if (ctx) ctx.info = `กรอง A ผ่านหน้ากาก B${boolOr(p.invert, false) ? " (กลับด้าน)" : ""} — เปิด ${kept} px` +
           (resized ? " (ปรับขนาด B ให้เท่า A ก่อนคำนวณ เพราะสองภาพขนาดไม่ตรงกัน)" : "");
         return dst;
       } catch (err) {
@@ -5397,7 +5424,7 @@ export const OPS = {
           }
         }
 
-        const thresholdPct = Number.isFinite(p.threshold) ? p.threshold : 70;
+        const thresholdPct = finiteOr(p.threshold, 70);
         const scorePct = bestVal * 100;
 
         dst = new cv.Mat();
@@ -5697,7 +5724,7 @@ export const OPS = {
         if (!st.__dispose) st.__dispose = () => { if (st.mog) { st.mog.delete(); st.mog = null; } };
         if (!st.mog) {
           // เปลี่ยน param ไม่ต้องเช็คเอง — getNodeState คืน state เปล่าให้ (fingerprint ต้นน้ำรวม param ของกล่องนี้)
-          st.mog = new cv.BackgroundSubtractorMOG2(intIn(p.history, 500, 10, 2000), numIn(p.varThreshold, 16, 4, 100), p.detectShadows !== false);
+          st.mog = new cv.BackgroundSubtractorMOG2(intIn(p.history, 500, 10, 2000), numIn(p.varThreshold, 16, 4, 100), boolOr(p.detectShadows, true));
           st.frameCount = 0;
         }
         // ย่อภาพวิเคราะห์ ≤480px (MOG2 ที่ 1080p ภาพ noise ใช้ ~139ms) แล้วขยาย mask กลับแบบ NEAREST (ภาพ label ห้าม linear)
@@ -7113,7 +7140,7 @@ export const OPS = {
       if (isEmptyMat(src)) { ctx.info = "ภาพว่าง"; ctx.values = scalarValues(ROI_APPLY_FIELDS, []); return src.clone(); }
       const shape = ownKey(ROI_APPLY_SHAPES, p.shape, "rect");
       const view = ownKey(ROI_APPLY_VIEWS, p.view, "result");
-      const invert = p.invert === true;
+      const invert = boolOr(p.invert, false);
       const feather = intIn(p.feather, 0, 0, 50);
       const W = src.cols, H = src.rows;
       // กรอบเป็นพิกเซล (จำนวนเต็ม) — x0/y0 ไม่เกิน W−1/H−1 เพื่อให้กรอบมีอย่างน้อย 1 px เสมอ
@@ -7248,13 +7275,14 @@ export const OPS = {
     apply(cv, src, p, ctx) {
       if (isEmptyMat(src)) { if (ctx) ctx.info = "ภาพว่าง"; return src.clone(); }
       const { kind, size, angle, psf } = psfFromParams(p);
-      const iters = intIn(p.iterations, 10, 1, LUCY_MAX_ITERS);
+      const asked = intIn(p.iterations, 10, 1, LUCY_MAX_ITERS);
       let rgb = null, dst = null;
       try {
         rgb = dropAlpha(cv, src);
         const x = rgb || src;
+        const iters = lucyBudgetIters(x.cols, x.rows, x.channels(), asked); // B6: ภาพใหญ่ลดรอบ ไม่ย่อภาพ
         dst = lucyDeconvolve(cv, x, psf, iters);
-        if (ctx) ctx.info = `Lucy-Richardson ${iters} รอบ · PSF ${psfInfo(kind, size, angle, psf.n)}` + (x.channels() === 3 ? " · ภาพสีใช้เวลาราว 3 เท่าของภาพเทา" : "") + bigImageNote(src, iters);
+        if (ctx) ctx.info = `Lucy-Richardson ${iters} รอบ · PSF ${psfInfo(kind, size, angle, psf.n)}` + (x.channels() === 3 ? " · ภาพสีใช้เวลาราว 3 เท่าของภาพเทา" : "") + (iters < asked ? ` · ภาพใหญ่ จึงลดเหลือ ${iters} รอบ (ขอ ${asked} รอบ)` : "") + bigImageNote(src, iters);
         const out = dst; dst = null;
         return out;
       } finally {
@@ -7450,7 +7478,7 @@ export const OPS = {
       const L = Number(ownKey(GLCM_LEVELS, p.levels, "8"));
       const d = intIn(p.distance, 1, 1, 10);
       const angle = ownKey(GLCM_ANGLES, p.angle, "0");
-      const sym = p.symmetric === true;
+      const sym = boolOr(p.symmetric, false);
       const view = ownKey(GLCM_VIEWS, p.view, "matrix");
       let g = null, dst = null;
       try {
@@ -7572,7 +7600,7 @@ export const OPS = {
     apply(cv, src, p, ctx) {
       if (isEmptyMat(src)) { if (ctx) { ctx.info = "ภาพว่าง"; ctx.values = scalarValues(DEHAZE_FIELDS, []); } return src.clone(); }
       const omega = numIn(p.amount, 0.95, 0.1, 1), ps = ensureOdd(intIn(p.patch, 15, 3, 31));
-      const refine = p.refine !== false, view = ownKey(DEHAZE_VIEWS, p.view, "result");
+      const refine = boolOr(p.refine, true), view = ownKey(DEHAZE_VIEWS, p.view, "result");
       let rgb = null, ker = null, d8m = null, dark = null, mnM = null, dnM = null, gm = null, G = null, Pm = null, qM = null, dst = null;
       try {
         rgb = dropAlpha(cv, src);
@@ -7889,7 +7917,7 @@ function lucyChannel(cv, m, K, Kf, iters, res, c, ch) {
 function hitMissOp(cv, src, p, ctx) {
   if (isEmptyMat(src)) { if (ctx) ctx.info = "ภาพว่าง"; return src.clone(); }
   const pat = ownKey(HITMISS_PATTERNS, p.hmPattern, "isolated");
-  const rotate = p.hmRotate !== false;
+  const rotate = boolOr(p.hmRotate, true);
   let g = null, bin = null, acc = null;
   try {
     g = grayIfNeeded(cv, src); // worker ส่งภาพเทามาให้อยู่แล้ว (needs: gray) — กัน MORPH_HITMISS throw C++ ถ้าถูกเรียกตรงด้วยภาพสี
