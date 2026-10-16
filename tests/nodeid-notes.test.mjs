@@ -229,7 +229,8 @@ function clickMode(rig, value) {
   const want = SHAPE_SEL.options.find((o) => o.value === value).label;
   const sel = rig.container.one('field-select');
   assert.ok(sel, 'ไม่พบ select "วิธี" ในแผง');
-  sel.selectedIndex = sel.children.findIndex((o) => o.textContent === want);
+  // <option value> = index ใน param.options (detail-panel อ่านจาก sel.value) — shape_analysis ไม่มี optgroup จึงเป็นลูกตรง
+  sel.value = sel.children.find((o) => o.textContent === want).value;
   for (const fn of sel._listeners.change || []) fn({});
 }
 const stepFor = (s) => ({ id: s.id, params: { ...s.params }, enabled: true, nodeId: s.nodeId });

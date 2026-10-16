@@ -272,16 +272,17 @@ test('p2-c5 "วิธี" (mode) เป็น <select> · เลือกแล
   assert.equal(rig.container.all('choice').length, 0, 'ไม่มีรายการปุ่ม choice แล้ว');
   const modeParam = FILTERS.shape_analysis.params.find((p) => p.key === 'mode');
   assert.equal(sel.children.length, modeParam.options.length);
-  assert.equal(sel.selectedIndex, Math.max(0, modeParam.options.findIndex((o) => o.value === rig.step.params.mode)));
-  const next = (sel.selectedIndex + 1) % modeParam.options.length;
+  const curIdx = Math.max(0, modeParam.options.findIndex((o) => o.value === rig.step.params.mode));
+  assert.equal(sel.children[curIdx].selected, true, 'ตัวเลือกปัจจุบันต้องถูกเลือก');
+  const next = (curIdx + 1) % modeParam.options.length;
   sel.focus(); // ผู้ใช้โฟกัส select อยู่ (activeElement)
-  sel.selectedIndex = next;
+  sel.value = sel.children[next].value;
   sel.fire('change');
   assert.deepEqual(rig.changes.at(-1), ['mode', modeParam.options[next].value]);
   const sel2 = rig.container.one('field-select');
   assert.notEqual(sel2, sel, 'แผงต้องถูกสร้างใหม่');
   assert.equal(env.focused, sel2, 'โฟกัสต้องกลับมาที่ select ตัวใหม่');
-  assert.equal(sel2.selectedIndex, next);
+  assert.equal(sel2.children[next].selected, true);
 }));
 
 test('p2-c6 segmented control (ทิศ Sobel): 3 ปุ่ม · aria-pressed ตามค่า · คลิกแล้วแจ้ง onParamChange', () => withDom(() => {
@@ -595,7 +596,8 @@ test('p2-g4 โฟกัสไม่หลุดเมื่อแผงถู�
   const modeParam = FILTERS.shape_analysis.params.find((p) => p.key === 'mode');
   const sel = rig.container.one('field-select');
   sel.focus();
-  sel.selectedIndex = (sel.selectedIndex + 1) % modeParam.options.length;
+  const cur = modeParam.options.findIndex((o) => o.value === rig.step.params.mode);
+  sel.value = sel.children[(cur + 1) % modeParam.options.length].value;
   sel.fire('change');
   const sel2 = rig.container.one('field-select');
   assert.equal(env.focused, sel2);
@@ -652,8 +654,9 @@ test('p2-g7 select ที่ค่าไม่อยู่ในตัวเล�
   const sel = rig.container.one('field-select');
   assert.equal(sel.children.length, modeParam.options.length + 1);
   assert.equal(sel.children[0].hidden, true);
-  assert.equal(sel.selectedIndex, 0, 'โชว์ตัวเลือกว่าง ไม่ใช่ตัวเลือกแรกของจริง');
-  sel.selectedIndex = 1; // ตัวเลือกจริงตัวแรก
+  assert.equal(sel.children[0].selected, true, 'โชว์ตัวเลือกว่าง ไม่ใช่ตัวเลือกแรกของจริง');
+  assert.equal(sel.children[0].value, '', 'placeholder value ว่าง (แยกจาก index 0)');
+  sel.value = sel.children[1].value; // ตัวเลือกจริงตัวแรก
   sel.fire('change');
   assert.deepEqual(rig.changes.at(-1), ['mode', modeParam.options[0].value]);
 }));

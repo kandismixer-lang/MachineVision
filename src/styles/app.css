@@ -5282,6 +5282,8 @@ body.stage-fullscreen-open .lr-handle { display: none !important; }
   cursor: pointer;
 }
 .detail-content .field-select option { background: var(--surface-2); color: var(--text-primary); }
+.detail-content .field-select optgroup { background: var(--surface-2); color: var(--text-secondary); font-style: normal; font-weight: 600; }
+.detail-content .field-select optgroup option { color: var(--text-primary); font-weight: 400; }
 .detail-content .field-select:hover { border-color: var(--border-active); }
 .detail-content .seg-control { display: flex; padding: 2px; gap: 2px; background: var(--surface-sunken); border-radius: var(--radius-sm); }
 .detail-content .seg-btn {

@@ -287,7 +287,7 @@ function clickMode(rig, value) {
   assert.ok(sel, 'ไม่พบ select "วิธี" ในแผง');
   const idx = sel.children.findIndex((o) => o.textContent === want);
   assert.ok(idx >= 0, `ไม่พบตัวเลือกวิธี "${want}" ใน select`);
-  sel.selectedIndex = idx;
+  sel.value = sel.children[idx].value; // detail-panel อ่านตัวเลือกจาก sel.value (index ใน param.options)
   for (const fn of sel._listeners.change || []) fn({});
 }
 

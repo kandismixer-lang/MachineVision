@@ -1,5 +1,6 @@
 // Panel ขวา: รายละเอียดของ filter ที่เลือก + คำอธิบายการทำงาน + สไลเดอร์ปรับค่า
-import { FILTERS, defaultParams } from "../filters/registry.js";
+import { FILTERS, defaultParams, isParamVisible, orderParamsControllersFirst } from "../filters/registry.js";
+import { optionGroupsFor } from "../filters/ui-meta.js";
 
 // ---------- helper แสดงผลล้วน (Phase 2.2) — ไม่ยุ่งกับ state ของบล็อกค่า ----------
 
@@ -468,17 +469,15 @@ export function createDetailPanel(container, cb) {
       restoreFocus(focusRec);
     };
 
-    // กรอง param ที่มี showIf ให้โชว์เฉพาะเมื่อ "วิธี" ตรงกับที่เลือก
-    const visible = f.params.filter(
-      (p) => !p.showIf || step.params[p.showIf.key] === p.showIf.value
-    );
+    // กรอง param ที่มี showIf ("วิธี" ชั้นนอก) / visibleWhen (select ภายใน op) ให้โชว์เฉพาะที่ยังมีผลกับค่าปัจจุบัน
+    const visible = f.params.filter((p) => isParamVisible(p, step.params, f.params));
 
     let defaults = {};
     try { defaults = defaultParams(step.id); } catch { /* ไม่มี default → ไม่โชว์ปุ่มรีเซ็ต */ }
     // ลำดับ: หัว → วิธี (mode) → "พารามิเตอร์" + ตัวที่เหลือ (หรือ "วิธีนี้ไม่มีค่าให้ปรับ") → ค่าที่วัดได้
     const modeParam = visible.find((q) => q.key === "mode");
-    if (modeParam) container.appendChild(buildParam(modeParam, step.params[modeParam.key], defaults[modeParam.key]));
-    const rest = visible.filter((q) => q !== modeParam);
+    if (modeParam) container.appendChild(buildParam(modeParam, step.params[modeParam.key], defaults[modeParam.key], step.id));
+    const rest = orderParamsControllersFirst(visible.filter((q) => q !== modeParam));
     if (rest.length === 0) {
       const none = document.createElement("div");
       none.className = "param-hint";
@@ -491,7 +490,7 @@ export function createDetailPanel(container, cb) {
       phead.textContent = "พารามิเตอร์";
       container.appendChild(phead);
       for (const param of rest) {
-        container.appendChild(buildParam(param, step.params[param.key], defaults[param.key]));
+        container.appendChild(buildParam(param, step.params[param.key], defaults[param.key], step.id));
       }
     }
     finishRender();
@@ -594,8 +593,8 @@ export function createDetailPanel(container, cb) {
       row.appendChild(idx);
       row.appendChild(name);
       if (f) {
-        for (const p of f.params) {
-          if (p.showIf && s.params[p.showIf.key] !== p.showIf.value) continue;
+        for (const p of orderParamsControllersFirst(f.params)) {
+          if (!isParamVisible(p, s.params, f.params)) continue;
           if (p.key === "mode") continue;
           const chip = document.createElement("span");
           chip.className = "step-param";
@@ -658,7 +657,7 @@ export function createDetailPanel(container, cb) {
     container.appendChild(hint);
   }
 
-  function buildParam(param, value, defVal) {
+  function buildParam(param, value, defVal, filterId) {
     const wrap = document.createElement("div");
     wrap.className = "param";
 
@@ -730,24 +729,43 @@ export function createDetailPanel(container, cb) {
       tagParam(sel, param.key, "main");
       // ค่าที่เก็บไว้ไม่อยู่ในตัวเลือก → ใส่ตัวเลือกว่าง (ซ่อน) ไว้หน้าสุดและเลือกมันไว้ ไม่งั้นจะโชว์ตัวเลือกแรกทั้งที่ค่าจริงเป็นอย่างอื่น
       // แล้วเลือกตัวแรกไม่ commit (change ไม่ยิงเมื่อเลือกตัวเดิม)
-      const offset = foundIdx < 0 ? 1 : 0;
-      if (offset) {
-        const ph = document.createElement("option");
+      // <option value> = index ใน param.options (สตริง) — ตัวเลือกอาจถูกจัดเป็น <optgroup> ทำให้ลำดับบนจอ ≠ ลำดับ options
+      // จึงอ่านกลับด้วย param.options[Number(sel.value)] (ไม่ใช้ selectedIndex) · placeholder ใช้ value="" แยกจาก index 0
+      const optionEls = [];
+      const mkOption = (opt) => {
+        const i = param.options.indexOf(opt);
+        const o = document.createElement("option");
+        o.value = String(i);
+        o.textContent = opt.label;
+        if (opt.hint) o.title = opt.hint;
+        optionEls[i] = o;
+        return o;
+      };
+      let ph = null;
+      if (foundIdx < 0) {
+        ph = document.createElement("option");
+        ph.value = "";
         ph.textContent = "— เลือก —";
         ph.hidden = true;
         ph.disabled = true;
         sel.appendChild(ph);
       }
-      param.options.forEach((opt) => {
-        const o = document.createElement("option");
-        o.textContent = opt.label;
-        if (opt.hint) o.title = opt.hint;
-        sel.appendChild(o);
-      });
-      sel.selectedIndex = foundIdx + offset;
-      // อ่านตัวเลือกจาก index ไม่ใช่ value ของ <option> — value ใน registry เป็นชนิดอะไรก็ได้ (ไม่ถูกแปลงเป็นสตริง)
+      const groups = optionGroupsFor(filterId, param);
+      if (groups) {
+        // <optgroup> จริง (ไม่ใช้ option disabled ปลอม) → ลูกศร/พิมพ์ตัวอักษรข้ามหัวข้อได้ตามปกติ
+        for (const [title, opts] of groups) {
+          const og = document.createElement("optgroup");
+          og.label = title;
+          for (const opt of opts) og.appendChild(mkOption(opt));
+          sel.appendChild(og);
+        }
+      } else {
+        for (const opt of param.options) sel.appendChild(mkOption(opt));
+      }
+      (foundIdx < 0 ? ph : optionEls[foundIdx]).selected = true;
       sel.addEventListener("change", () => {
-        const opt = param.options[sel.selectedIndex - offset];
+        if (sel.value === "") return; // placeholder
+        const opt = param.options[Number(sel.value)];
         if (!opt || opt.value === value) return;
         changeChoice(param, opt.value);
       });

@@ -1191,7 +1191,7 @@ export function psfParamDefs() {
       { value: "disk", label: "Disk (เบลอจากโฟกัสหลุด)" },
     ], default: "motion" },
     { key: "psfSize", type: "number", label: "ขนาด PSF (px) — ต้องตรงกับที่ภาพเบลอจริง", min: 1, max: 50, step: 1, default: 9, desc: "Motion = ความยาวของรอยขยับ · Disk = รัศมีวงกลม — ตั้งให้เท่ากับตอนที่ทำให้ภาพเบลอ (เช่นค่าใน Custom Kernel)" },
-    { key: "psfAngle", type: "number", label: "มุม PSF (องศา) — ใช้กับ Motion เท่านั้น", min: 0, max: 179, step: 1, default: 0, desc: "0° = ขยับแนวนอน · 90° = แนวตั้ง · มุมเพิ่มทวนเข็มนาฬิกา" },
+    { key: "psfAngle", visibleWhen: [{key:"psf",in:["motion"]}], type: "number", label: "มุม PSF (องศา) — ใช้กับ Motion เท่านั้น", min: 0, max: 179, step: 1, default: 0, desc: "0° = ขยับแนวนอน · 90° = แนวตั้ง · มุมเพิ่มทวนเข็มนาฬิกา" },
   ];
 }
 export function psfInfo(kind, size, angle, n) {
@@ -1641,7 +1641,7 @@ export const OPS = {
     needs: "any",
     desc: "ปรับความสว่างแบบไม่เชิงเส้นด้วยเส้นโค้ง power-law: ใหม่ = (เดิม/255)^(1/γ)·255 — γ>1 ดึงส่วนมืดให้สว่างขึ้นโดยไม่ทำให้ส่วนสว่างแตก (ต่างจากการเพิ่ม brightness ตรง ๆ) ใช้แก้ภาพย้อนแสง/มืดเกิน · Log: ใหม่ = 255·ln(1+เดิม)/ln(256) เป็นการแปลงความเข้มแบบที่ 3 ในตำรา (negative, log, power-law) ใช้ดูภาพที่ช่วงค่ากว้างมาก เช่น สเปกตรัม FFT · ช่วงมืดถูกดึงขึ้นแรงกว่า γ ทั่วไป",
     params: [
-      { key: "g", type: "number", label: "ค่า Gamma (γ)", min: 0.2, max: 3, step: 0.1, default: 1.5, desc: "โค้งความสว่าง — γ>1 ดึงส่วนมืดให้สว่างขึ้น, γ<1 กดส่วนสว่างให้มืดลง" },
+      { key: "g", visibleWhen: [{key:"curve",in:["power"]}], type: "number", label: "ค่า Gamma (γ)", min: 0.2, max: 3, step: 0.1, default: 1.5, desc: "โค้งความสว่าง — γ>1 ดึงส่วนมืดให้สว่างขึ้น, γ<1 กดส่วนสว่างให้มืดลง" },
       { key: "curve", type: "select", label: "รูปโค้ง", options: [
         { value: "power", label: "Power-law / Gamma (ใช้ค่า γ)" },
         { value: "log", label: "Log: c·log(1+r) (ไม่ใช้ค่า γ)", hint: "ขยายช่วงมืดให้เห็นรายละเอียด บีบช่วงสว่าง · c = 255/log(256) ให้ 255 → 255" },
@@ -1965,8 +1965,8 @@ export const OPS = {
         { value: "disk", label: "Disk (เบลอจากโฟกัสหลุด)", hint: "เฉลี่ยในวงกลมรัศมี 'ขนาด PSF' px — เทียบ fspecial('disk')" },
       ], default: "sharpen" },
       { key: "amount", type: "number", label: "ความแรง (ผสมกับภาพเดิม)", min: 0, max: 2, step: 0.1, default: 1, desc: "0 = ภาพเดิมล้วน, 1 = ผลจาก kernel เต็มที่, มากกว่า 1 = เน้นผลต่างจากภาพเดิมให้แรงขึ้นอีก (เหมือน unsharp mask)" },
-      { key: "psfSize", type: "number", label: "ขนาด PSF (px) — ใช้กับ Motion/Disk เท่านั้น", min: 1, max: 50, step: 1, default: 9, desc: "Motion = ความยาวของรอยขยับ · Disk = รัศมีวงกลม" },
-      { key: "psfAngle", type: "number", label: "มุม PSF (องศา) — ใช้กับ Motion เท่านั้น", min: 0, max: 179, step: 1, default: 0, desc: "0° = ขยับแนวนอน · 90° = แนวตั้ง · มุมเพิ่มทวนเข็มนาฬิกาแบบ MATLAB" },
+      { key: "psfSize", visibleWhen: [{key:"preset",in:["motion","disk"]}], type: "number", label: "ขนาด PSF (px) — ใช้กับ Motion/Disk เท่านั้น", min: 1, max: 50, step: 1, default: 9, desc: "Motion = ความยาวของรอยขยับ · Disk = รัศมีวงกลม" },
+      { key: "psfAngle", visibleWhen: [{key:"preset",in:["motion"]}], type: "number", label: "มุม PSF (องศา) — ใช้กับ Motion เท่านั้น", min: 0, max: 179, step: 1, default: 0, desc: "0° = ขยับแนวนอน · 90° = แนวตั้ง · มุมเพิ่มทวนเข็มนาฬิกาแบบ MATLAB" },
     ],
     apply(cv, src, p, ctx) {
       // fspecial-style presets: ระบุ kernel + ค่า scale (ผลรวม, ใช้ normalize เพื่อไม่ให้ภาพสว่าง/มืดขึ้นเวลาเบลอ)
@@ -2130,7 +2130,7 @@ export const OPS = {
         { value: "h_maxima", label: "H-maxima transform (ตัดยอดที่เตี้ยกว่า h)", hint: "ผลเป็นภาพเทา: ยอดทุกยอดถูกกดลง h ระดับ ยอดที่สูงไม่ถึง h หายไป — ใช้ค่า 'ความสูง h' ด้านล่าง" },
         { value: "extended_max", label: "Extended Maxima (ยอดที่สูงกว่ารอบข้างอย่างน้อย h)", hint: "= Regional Maxima ของ H-maxima · ใช้ทำ marker ให้ Watershed — ใช้ค่า 'ความสูง h' ด้านล่าง" },
       ], default: "erode" },
-      { key: "shape", type: "select", label: "รูปร่าง kernel (ไม่มีผลกับ Skeleton และ Opening by Reconstruction)", options: [
+      { key: "shape", visibleWhen: [{key:"op",in:["erode","dilate","open","close","gradient","tophat","blackhat"]}], type: "select", label: "รูปร่าง kernel (ไม่มีผลกับ Skeleton และ Opening by Reconstruction)", options: [
         { value: "rect", label: "สี่เหลี่ยม (Rect)" },
         { value: "ellipse", label: "วงรี (Ellipse, ksize เป็นสี่เหลี่ยมจัตุรัส = เท่ากับรูปทรงจาน/disk)" },
         { value: "cross", label: "กากบาท (Cross)" },
@@ -2138,13 +2138,13 @@ export const OPS = {
         { value: "octagon", label: "แปดเหลี่ยม (Octagon)", hint: "สี่เหลี่ยมตัดมุม — ใกล้เคียงวงกลมกว่า Diamond แต่ไม่กลมเท่า Ellipse" },
         { value: "line", label: "เส้นตรง (Line, ปรับมุมได้)", hint: "kernel มิติเดียว ใช้ปรับ Operation ตามแนวเส้นที่ต้องการ (เช่นลบ/เน้นเส้นแนวนอน-แนวตั้ง) — ที่มุมเฉียง (เช่น 45°) จำนวนพิกเซลจริงในเส้นอาจน้อยกว่าขนาดที่ตั้งไว้ เพราะต้องปัดพิกัดให้ลงตารางพิกเซล (เกิดกับ strel('line') ของ MATLAB เช่นกัน ไม่ใช่บั๊ก)" },
       ], default: "rect" },
-      { key: "ksize", type: "number", label: "ขนาด kernel", min: 1, max: 21, step: 2, default: 5, desc: "ขนาดตัวแปรงที่ไล่ทาบภาพ — ใหญ่ = ผลกัด/พอกแรงขึ้น" },
-      { key: "iterations", type: "number", label: "จำนวนรอบ", min: 1, max: 5, step: 1, default: 1, desc: "ทำ operation ซ้ำกี่รอบ — มาก = ผลยิ่งเข้มขึ้น (สำหรับ Opening by Reconstruction คือจำนวนรอบกัดตอนสร้าง marker)" },
-      { key: "minArea", type: "number", label: "พื้นที่ขั้นต่ำ (px) — ใช้กับ Remove Small Objects เท่านั้น", min: 10, max: 5000, step: 10, default: 150, desc: "วัตถุที่มีพื้นที่น้อยกว่านี้ (พิกเซล) จะถูกลบทิ้ง — พารามิเตอร์นี้ไม่มีผลกับ Operation อื่นนอกจาก Remove Small Objects" },
-      { key: "lineAngle", type: "number", label: "มุมของเส้น (องศา) — ใช้กับรูปร่าง Line เท่านั้น", min: 0, max: 179, step: 1, default: 0, desc: "0° = แนวนอน, 90° = แนวตั้ง — ไม่มีผลถ้าเลือกรูปร่างอื่น" },
-      { key: "hmPattern", type: "select", label: "แม่แบบ Hit-or-Miss — ใช้กับ Hit-or-Miss เท่านั้น", options: Object.entries(HITMISS_PATTERNS).map(([value, v]) => ({ value, label: v.label })), default: "isolated" },
-      { key: "hmRotate", type: "boolean", label: "รวมทั้ง 4 ทิศ (หมุนทีละ 90°) — ใช้กับ Hit-or-Miss เท่านั้น", default: true },
-      { key: "hHeight", type: "number", label: "ความสูง h — ใช้กับ H-maxima / Extended Maxima เท่านั้น", min: 1, max: 255, step: 1, default: 10, desc: "ยอดที่สูงกว่ารอบข้างไม่ถึง h ระดับ (0–255) จะถูกตัดทิ้ง — เพิ่ม h เมื่อภาพมี noise มาก" },
+      { key: "ksize", visibleWhen: [{key:"op",in:["erode","dilate","open","close","gradient","tophat","blackhat","reconstruct_open"]}], type: "number", label: "ขนาด kernel", min: 1, max: 21, step: 2, default: 5, desc: "ขนาดตัวแปรงที่ไล่ทาบภาพ — ใหญ่ = ผลกัด/พอกแรงขึ้น" },
+      { key: "iterations", visibleWhen: [{key:"op",in:["erode","dilate","open","close","gradient","tophat","blackhat","reconstruct_open"]}], type: "number", label: "จำนวนรอบ", min: 1, max: 5, step: 1, default: 1, desc: "ทำ operation ซ้ำกี่รอบ — มาก = ผลยิ่งเข้มขึ้น (สำหรับ Opening by Reconstruction คือจำนวนรอบกัดตอนสร้าง marker)" },
+      { key: "minArea", visibleWhen: [{key:"op",in:["remove_small"]}], type: "number", label: "พื้นที่ขั้นต่ำ (px) — ใช้กับ Remove Small Objects เท่านั้น", min: 10, max: 5000, step: 10, default: 150, desc: "วัตถุที่มีพื้นที่น้อยกว่านี้ (พิกเซล) จะถูกลบทิ้ง — พารามิเตอร์นี้ไม่มีผลกับ Operation อื่นนอกจาก Remove Small Objects" },
+      { key: "lineAngle", visibleWhen: [{key:"op",in:["erode","dilate","open","close","gradient","tophat","blackhat"]},{key:"shape",in:["line"]}], type: "number", label: "มุมของเส้น (องศา) — ใช้กับรูปร่าง Line เท่านั้น", min: 0, max: 179, step: 1, default: 0, desc: "0° = แนวนอน, 90° = แนวตั้ง — ไม่มีผลถ้าเลือกรูปร่างอื่น" },
+      { key: "hmPattern", visibleWhen: [{key:"op",in:["hit_or_miss"]}], type: "select", label: "แม่แบบ Hit-or-Miss — ใช้กับ Hit-or-Miss เท่านั้น", options: Object.entries(HITMISS_PATTERNS).map(([value, v]) => ({ value, label: v.label })), default: "isolated" },
+      { key: "hmRotate", visibleWhen: [{key:"op",in:["hit_or_miss"]}], type: "boolean", label: "รวมทั้ง 4 ทิศ (หมุนทีละ 90°) — ใช้กับ Hit-or-Miss เท่านั้น", default: true },
+      { key: "hHeight", visibleWhen: [{key:"op",in:["h_maxima","extended_max"]}], type: "number", label: "ความสูง h — ใช้กับ H-maxima / Extended Maxima เท่านั้น", min: 1, max: 255, step: 1, default: 10, desc: "ยอดที่สูงกว่ารอบข้างไม่ถึง h ระดับ (0–255) จะถูกตัดทิ้ง — เพิ่ม h เมื่อภาพมี noise มาก" },
     ],
     apply(cv, src, p, ctx) {
       // IP batch 4B — ตัวเลือกใหม่ (ไม่ใช้ shape/ksize/iterations) · path เดิมทุกตัวด้านล่างไม่เปลี่ยน
@@ -4141,19 +4141,17 @@ export const OPS = {
         { value: "hsv", label: "HSV (เนื้อสี H)", hint: "แยกเนื้อสีออกจากความสว่าง — ใช้บ่อยสุด" },
         { value: "lab", label: "Lab (a*/b*)", hint: "ทนแสงเปลี่ยนได้ดีกว่า HSV ในบางกรณี ใกล้เคียงการรับรู้สีของมนุษย์" },
       ], default: "hsv" },
-      { key: "hMin", type: "number", label: "H ต่ำสุด", min: 0, max: 179, step: 1, default: 35, desc: "ขอบล่างของช่วงเนื้อสีที่จะคัดเลือก (0–179) — ใช้เมื่อเลือกปริภูมิสี HSV" },
-      { key: "hMax", type: "number", label: "H สูงสุด", min: 0, max: 179, step: 1, default: 85, desc: "ขอบบนของช่วงเนื้อสีที่จะคัดเลือก (0–179) — ใช้เมื่อเลือกปริภูมิสี HSV" },
-      { key: "sMin", type: "number", label: "S ขั้นต่ำ (กันสีซีด)", min: 0, max: 255, step: 1, default: 60, desc: "ตัดสีที่จางเกินไป (ใกล้เทา) ทิ้ง — ยิ่งสูง ยิ่งต้องเป็นสีสดจึงจะติด (HSV เท่านั้น)" },
-      { key: "vMin", type: "number", label: "V ขั้นต่ำ (กันส่วนมืด)", min: 0, max: 255, step: 1, default: 60, desc: "ตัดส่วนที่มืดเกินไปทิ้ง — ยิ่งสูง ยิ่งต้องสว่างจึงจะติด (HSV เท่านั้น)" },
-      // พารามิเตอร์ Lab — คงแสดงตลอด (renderer นี้ไม่รองรับ showIf ซ้อนภายใน op เดียวกัน แค่ต่อ mode
-      // ของ mergeGroup ชั้นนอกเท่านั้น) แต่จะไม่มีผลใด ๆ เมื่อ colorSpace = "hsv" เหมือนที่ shape/ksize
-      // ของ morphology ก็แสดงตลอดโดยไม่มีผลตอน op = erode/dilate
-      { key: "labLMin", type: "number", label: "Lab L ต่ำสุด (ความสว่าง)", min: 0, max: 255, step: 1, default: 0, desc: "ขอบล่างของความสว่าง (L) ที่จะคัดเลือก — ใช้เมื่อเลือกปริภูมิสี Lab" },
-      { key: "labLMax", type: "number", label: "Lab L สูงสุด (ความสว่าง)", min: 0, max: 255, step: 1, default: 255, desc: "ขอบบนของความสว่าง (L) — ใช้เมื่อเลือกปริภูมิสี Lab" },
-      { key: "labAMin", type: "number", label: "Lab a* ต่ำสุด (เขียว↔แดง)", min: 0, max: 255, step: 1, default: 150, hint: "128 = กลาง, <128 ออกเขียว, >128 ออกแดง (8-bit Lab: a*,b* ถูกบวก offset 128)", desc: "ขอบล่างของแกนสีเขียว-แดง — ใช้เมื่อเลือกปริภูมิสี Lab" },
-      { key: "labAMax", type: "number", label: "Lab a* สูงสุด (เขียว↔แดง)", min: 0, max: 255, step: 1, default: 220, desc: "ขอบบนของแกนสีเขียว-แดง — ใช้เมื่อเลือกปริภูมิสี Lab" },
-      { key: "labBMin", type: "number", label: "Lab b* ต่ำสุด (น้ำเงิน↔เหลือง)", min: 0, max: 255, step: 1, default: 130, hint: "128 = กลาง, <128 ออกน้ำเงิน, >128 ออกเหลือง", desc: "ขอบล่างของแกนสีน้ำเงิน-เหลือง — ใช้เมื่อเลือกปริภูมิสี Lab" },
-      { key: "labBMax", type: "number", label: "Lab b* สูงสุด (น้ำเงิน↔เหลือง)", min: 0, max: 255, step: 1, default: 200, desc: "ขอบบนของแกนสีน้ำเงิน-เหลือง — ใช้เมื่อเลือกปริภูมิสี Lab" },
+      { key: "hMin", visibleWhen: [{key:"colorSpace",in:["hsv"]}], type: "number", label: "H ต่ำสุด", min: 0, max: 179, step: 1, default: 35, desc: "ขอบล่างของช่วงเนื้อสีที่จะคัดเลือก (0–179) — ใช้เมื่อเลือกปริภูมิสี HSV" },
+      { key: "hMax", visibleWhen: [{key:"colorSpace",in:["hsv"]}], type: "number", label: "H สูงสุด", min: 0, max: 179, step: 1, default: 85, desc: "ขอบบนของช่วงเนื้อสีที่จะคัดเลือก (0–179) — ใช้เมื่อเลือกปริภูมิสี HSV" },
+      { key: "sMin", visibleWhen: [{key:"colorSpace",in:["hsv"]}], type: "number", label: "S ขั้นต่ำ (กันสีซีด)", min: 0, max: 255, step: 1, default: 60, desc: "ตัดสีที่จางเกินไป (ใกล้เทา) ทิ้ง — ยิ่งสูง ยิ่งต้องเป็นสีสดจึงจะติด (HSV เท่านั้น)" },
+      { key: "vMin", visibleWhen: [{key:"colorSpace",in:["hsv"]}], type: "number", label: "V ขั้นต่ำ (กันส่วนมืด)", min: 0, max: 255, step: 1, default: 60, desc: "ตัดส่วนที่มืดเกินไปทิ้ง — ยิ่งสูง ยิ่งต้องสว่างจึงจะติด (HSV เท่านั้น)" },
+      // พารามิเตอร์ Lab — แสดงเฉพาะเมื่อ colorSpace = "lab" (visibleWhen) · H/S/V ด้านบนแสดงเฉพาะ "hsv"
+      { key: "labLMin", visibleWhen: [{key:"colorSpace",in:["lab"]}], type: "number", label: "Lab L ต่ำสุด (ความสว่าง)", min: 0, max: 255, step: 1, default: 0, desc: "ขอบล่างของความสว่าง (L) ที่จะคัดเลือก — ใช้เมื่อเลือกปริภูมิสี Lab" },
+      { key: "labLMax", visibleWhen: [{key:"colorSpace",in:["lab"]}], type: "number", label: "Lab L สูงสุด (ความสว่าง)", min: 0, max: 255, step: 1, default: 255, desc: "ขอบบนของความสว่าง (L) — ใช้เมื่อเลือกปริภูมิสี Lab" },
+      { key: "labAMin", visibleWhen: [{key:"colorSpace",in:["lab"]}], type: "number", label: "Lab a* ต่ำสุด (เขียว↔แดง)", min: 0, max: 255, step: 1, default: 150, hint: "128 = กลาง, <128 ออกเขียว, >128 ออกแดง (8-bit Lab: a*,b* ถูกบวก offset 128)", desc: "ขอบล่างของแกนสีเขียว-แดง — ใช้เมื่อเลือกปริภูมิสี Lab" },
+      { key: "labAMax", visibleWhen: [{key:"colorSpace",in:["lab"]}], type: "number", label: "Lab a* สูงสุด (เขียว↔แดง)", min: 0, max: 255, step: 1, default: 220, desc: "ขอบบนของแกนสีเขียว-แดง — ใช้เมื่อเลือกปริภูมิสี Lab" },
+      { key: "labBMin", visibleWhen: [{key:"colorSpace",in:["lab"]}], type: "number", label: "Lab b* ต่ำสุด (น้ำเงิน↔เหลือง)", min: 0, max: 255, step: 1, default: 130, hint: "128 = กลาง, <128 ออกน้ำเงิน, >128 ออกเหลือง", desc: "ขอบล่างของแกนสีน้ำเงิน-เหลือง — ใช้เมื่อเลือกปริภูมิสี Lab" },
+      { key: "labBMax", visibleWhen: [{key:"colorSpace",in:["lab"]}], type: "number", label: "Lab b* สูงสุด (น้ำเงิน↔เหลือง)", min: 0, max: 255, step: 1, default: 200, desc: "ขอบบนของแกนสีน้ำเงิน-เหลือง — ใช้เมื่อเลือกปริภูมิสี Lab" },
       { key: "output", type: "select", label: "แสดงผลเป็น", options: [
         { value: "mask", label: "Mask ขาวดำ" },
         { value: "extract", label: "เฉพาะส่วนที่เป็นสีนั้น" },
@@ -4242,9 +4240,9 @@ export const OPS = {
         { value: "white_patch", label: "White Patch (ส่วนสว่างควรเป็นขาว)", hint: "ใช้ค่าที่ตำแหน่ง 99% ของแต่ละช่องเป็น 'ขาว' — เหมาะกับภาพที่มีของขาวจริงในฉาก" },
         { value: "ref_point", label: "จุดอ้างอิงสีเทา/ขาว", hint: "บอกตำแหน่งของที่รู้ว่าเป็นเทาหรือขาว (กระดาษ/การ์ดเทา) — ใช้ได้แม้สีเดียวครอบภาพ" },
       ], default: "gray_world" },
-      { key: "refX", type: "number", label: "จุดอ้างอิง แนวนอน (%) — ใช้กับจุดอ้างอิงเท่านั้น", min: 0, max: 100, step: 1, default: 50 },
-      { key: "refY", type: "number", label: "จุดอ้างอิง แนวตั้ง (%) — ใช้กับจุดอ้างอิงเท่านั้น", min: 0, max: 100, step: 1, default: 50 },
-      { key: "refSize", type: "number", label: "รัศมีบริเวณอ้างอิง (px) — ใช้กับจุดอ้างอิงเท่านั้น", min: 1, max: 50, step: 1, default: 5 },
+      { key: "refX", visibleWhen: [{key:"method",in:["ref_point"]}], type: "number", label: "จุดอ้างอิง แนวนอน (%) — ใช้กับจุดอ้างอิงเท่านั้น", min: 0, max: 100, step: 1, default: 50 },
+      { key: "refY", visibleWhen: [{key:"method",in:["ref_point"]}], type: "number", label: "จุดอ้างอิง แนวตั้ง (%) — ใช้กับจุดอ้างอิงเท่านั้น", min: 0, max: 100, step: 1, default: 50 },
+      { key: "refSize", visibleWhen: [{key:"method",in:["ref_point"]}], type: "number", label: "รัศมีบริเวณอ้างอิง (px) — ใช้กับจุดอ้างอิงเท่านั้น", min: 1, max: 50, step: 1, default: 5 },
     ],
     apply(cv, src, p, ctx) {
       const wbMethod = p.method === "white_patch" || p.method === "ref_point" ? p.method : null;
@@ -4743,7 +4741,7 @@ export const OPS = {
         { value: "butterworth", label: "Butterworth (นุ่ม ปรับความชันด้วยลำดับ n)" },
       ], default: "gaussian" },
       { key: "cutoff", type: "number", label: "รัศมีตัด (ความถี่ นับจากกลางสเปกตรัม)", min: 2, max: 200, step: 2, default: 30, desc: "รัศมีวงกลมความถี่ที่เป็นเส้นแบ่งเก็บ/ตัด — Gaussian ใช้ค่านี้เป็น σ โดยประมาณ" },
-      { key: "order", type: "number", label: "ลำดับ n — ใช้กับ Butterworth เท่านั้น", min: 1, max: 10, step: 1, default: 2, desc: "n น้อย = ลาดนุ่มคล้าย Gaussian · n มาก = ชันเข้าใกล้ Ideal (เริ่มเห็น ringing)" },
+      { key: "order", visibleWhen: [{key:"shape",in:["butterworth"]}], type: "number", label: "ลำดับ n — ใช้กับ Butterworth เท่านั้น", min: 1, max: 10, step: 1, default: 2, desc: "n น้อย = ลาดนุ่มคล้าย Gaussian · n มาก = ชันเข้าใกล้ Ideal (เริ่มเห็น ringing)" },
     ],
     apply(cv, src, p, ctx) {
       // IP batch 4A: Butterworth เท่านั้นที่มี guard ภาพว่าง (รูปแบบเดิมคงพฤติกรรมเดิม — throw บน 0×0)
@@ -4951,8 +4949,8 @@ export const OPS = {
         { value: "blend", label: "โปร่งแสง (Blend)" },
         { value: "checkerboard", label: "ตารางหมากรุก (Checkerboard)" },
       ], default: "blend" },
-      { key: "alpha", type: "number", label: "น้ำหนักภาพ A (%) — ใช้กับโหมดโปร่งแสงเท่านั้น", min: 0, max: 100, step: 5, default: 50, desc: "100%=เห็นแค่ A, 0%=เห็นแค่ B, 50%=ผสมเท่ากัน" },
-      { key: "tileSize", type: "number", label: "ขนาดตาราง (px) — ใช้กับโหมด Checkerboard เท่านั้น", min: 8, max: 128, step: 8, default: 32 },
+      { key: "alpha", visibleWhen: [{key:"mode",in:["blend"]}], type: "number", label: "น้ำหนักภาพ A (%) — ใช้กับโหมดโปร่งแสงเท่านั้น", min: 0, max: 100, step: 5, default: 50, desc: "100%=เห็นแค่ A, 0%=เห็นแค่ B, 50%=ผสมเท่ากัน" },
+      { key: "tileSize", visibleWhen: [{key:"mode",in:["checkerboard"]}], type: "number", label: "ขนาดตาราง (px) — ใช้กับโหมด Checkerboard เท่านั้น", min: 8, max: 128, step: 8, default: 32 },
     ],
     apply(cv, src, p, ctx) {
       if (!ctx || !ctx.src2) {
@@ -6401,8 +6399,8 @@ export const OPS = {
         { value: "extent", label: "เต็มกรอบ (extent)", hint: "สี่เหลี่ยมตรง = 1 · วงกลม ≈ 0.77 · วัตถุเอียงหรือบางยาว = ต่ำ" },
         { value: "none", label: "ไม่ใช้ (คัดตามพื้นที่อย่างเดียว)" },
       ], default: "circularity" },
-      { key: "lo", type: "number", label: "ค่าต่ำสุดที่เก็บ", min: 0, max: 1, step: 0.01, default: 0.8, desc: "เก็บวัตถุที่ค่าที่เลือกไม่ต่ำกว่านี้ (รวมค่านี้)" },
-      { key: "hi", type: "number", label: "ค่าสูงสุดที่เก็บ", min: 0, max: 1, step: 0.01, default: 1, desc: "เก็บวัตถุที่ค่าที่เลือกไม่สูงกว่านี้ (รวมค่านี้)" },
+      { key: "lo", visibleWhen: [{key:"prop",notIn:["none"]}], type: "number", label: "ค่าต่ำสุดที่เก็บ", min: 0, max: 1, step: 0.01, default: 0.8, desc: "เก็บวัตถุที่ค่าที่เลือกไม่ต่ำกว่านี้ (รวมค่านี้)" },
+      { key: "hi", visibleWhen: [{key:"prop",notIn:["none"]}], type: "number", label: "ค่าสูงสุดที่เก็บ", min: 0, max: 1, step: 0.01, default: 1, desc: "เก็บวัตถุที่ค่าที่เลือกไม่สูงกว่านี้ (รวมค่านี้)" },
       { key: "minArea", type: "number", label: "พื้นที่ขั้นต่ำ (นับพิกเซล)", min: 0, max: 100000, step: 10, default: 50, desc: "วัตถุที่มีพิกเซลขาวน้อยกว่านี้ถูกทิ้ง (กันจุด noise)" },
       { key: "maxArea", type: "number", label: "พื้นที่สูงสุด (นับพิกเซล)", min: 0, max: 5000000, step: 100, default: 0, hint: "0 = ไม่จำกัด", desc: "วัตถุที่มีพิกเซลขาวมากกว่านี้ถูกทิ้ง" },
       { key: "view", type: "select", label: "แสดงผลเป็น", options: [
@@ -6716,11 +6714,11 @@ export const OPS = {
         { value: "gaussian", label: "Gaussian (นุ่ม)" },
         { value: "ideal", label: "Ideal (ตัดเฉียบขาด อาจมี ringing)" },
       ], default: "gaussian" },
-      { key: "rIn", type: "number", label: "ขอบในของวงแหวน (% ของ Nyquist)", min: 0, max: 100, step: 1, default: 5, desc: "ใช้กับ Band-pass / Band-reject — 0 = เริ่มจากจุดกลางสเปกตรัม · ถ้ามากกว่าขอบนอก ระบบสลับให้เอง" },
-      { key: "rOut", type: "number", label: "ขอบนอกของวงแหวน (% ของ Nyquist)", min: 1, max: 100, step: 1, default: 30, desc: "ใช้กับ Band-pass / Band-reject — ลายที่ซ้ำทุก T px อยู่ที่ประมาณ 200/T %" },
-      { key: "nx", type: "number", label: "Notch ห่างจากกลางแนวนอน (%)", min: -100, max: 100, step: 0.5, default: 25, desc: "ใช้กับ Notch — ตำแหน่งจุดแรกของคู่ เทียบกับจุดกลางสเปกตรัม (จุดที่สองอยู่ฝั่งตรงข้ามเอง)" },
-      { key: "ny", type: "number", label: "Notch ห่างจากกลางแนวตั้ง (%)", min: -100, max: 100, step: 0.5, default: 0, desc: "ใช้กับ Notch — แกนชี้ลงเหมือนภาพ: ค่าบวก = อยู่ต่ำกว่าจุดกลาง" },
-      { key: "nr", type: "number", label: "รัศมีวง Notch (%)", min: 1, max: 30, step: 0.5, default: 5, desc: "ใช้กับ Notch — ขนาดของวงที่ตัด เป็น % ของ Nyquist" },
+      { key: "rIn", visibleWhen: [{key:"kind",in:["bandpass","bandreject"]}], type: "number", label: "ขอบในของวงแหวน (% ของ Nyquist)", min: 0, max: 100, step: 1, default: 5, desc: "ใช้กับ Band-pass / Band-reject — 0 = เริ่มจากจุดกลางสเปกตรัม · ถ้ามากกว่าขอบนอก ระบบสลับให้เอง" },
+      { key: "rOut", visibleWhen: [{key:"kind",in:["bandpass","bandreject"]}], type: "number", label: "ขอบนอกของวงแหวน (% ของ Nyquist)", min: 1, max: 100, step: 1, default: 30, desc: "ใช้กับ Band-pass / Band-reject — ลายที่ซ้ำทุก T px อยู่ที่ประมาณ 200/T %" },
+      { key: "nx", visibleWhen: [{key:"kind",in:["notch"]}], type: "number", label: "Notch ห่างจากกลางแนวนอน (%)", min: -100, max: 100, step: 0.5, default: 25, desc: "ใช้กับ Notch — ตำแหน่งจุดแรกของคู่ เทียบกับจุดกลางสเปกตรัม (จุดที่สองอยู่ฝั่งตรงข้ามเอง)" },
+      { key: "ny", visibleWhen: [{key:"kind",in:["notch"]}], type: "number", label: "Notch ห่างจากกลางแนวตั้ง (%)", min: -100, max: 100, step: 0.5, default: 0, desc: "ใช้กับ Notch — แกนชี้ลงเหมือนภาพ: ค่าบวก = อยู่ต่ำกว่าจุดกลาง" },
+      { key: "nr", visibleWhen: [{key:"kind",in:["notch"]}], type: "number", label: "รัศมีวง Notch (%)", min: 1, max: 30, step: 0.5, default: 5, desc: "ใช้กับ Notch — ขนาดของวงที่ตัด เป็น % ของ Nyquist" },
       { key: "view", type: "select", label: "แสดงผลเป็น", options: [
         { value: "result", label: "ภาพหลังกรอง" },
         { value: "spectrum", label: "สเปกตรัมหลังกรอง (log)", hint: "ส่วนที่มืดคือส่วนที่ถูกตัด ใช้เล็งตำแหน่ง Notch" },
@@ -7686,8 +7684,8 @@ export const OPS = {
         { value: "jpeg", label: "บีบอัดแบบ JPEG (quality)" },
         { value: "zonal", label: "เก็บเฉพาะความถี่ต่ำ K×K ต่อบล็อก" },
       ], default: "jpeg" },
-      { key: "quality", type: "number", label: "คุณภาพ — ใช้กับแบบ JPEG เท่านั้น", min: 1, max: 100, step: 1, default: 50, desc: "100 = เกือบเหมือนเดิม · 10 = เห็นเป็นบล็อก 8×8" },
-      { key: "keep", type: "number", label: "จำนวนความถี่ที่เก็บต่อด้าน K — ใช้กับแบบเก็บความถี่ต่ำเท่านั้น", min: 1, max: 8, step: 1, default: 4 },
+      { key: "quality", visibleWhen: [{key:"method",in:["jpeg"]}], type: "number", label: "คุณภาพ — ใช้กับแบบ JPEG เท่านั้น", min: 1, max: 100, step: 1, default: 50, desc: "100 = เกือบเหมือนเดิม · 10 = เห็นเป็นบล็อก 8×8" },
+      { key: "keep", visibleWhen: [{key:"method",in:["zonal"]}], type: "number", label: "จำนวนความถี่ที่เก็บต่อด้าน K — ใช้กับแบบเก็บความถี่ต่ำเท่านั้น", min: 1, max: 8, step: 1, default: 4 },
       { key: "view", type: "select", label: "แสดงผลเป็น", options: [
         { value: "result", label: "ภาพหลังบีบอัด" },
         { value: "coeffs", label: "สัมประสิทธิ์ DCT ต่อบล็อก (log)" },
@@ -8006,6 +8004,41 @@ function farnebackValues(mean, max, pct, dx, dy, frame) {
 // ===================================================================
 const MODE_KEY = "mode"; // key ของ select ที่ใช้เลือก op
 
+// param นี้ "แสดงอยู่ไหม" ตามค่าปัจจุบัน — ที่เดียวที่ detail-panel (render/renderSteps) และ app.js (stepRawParams) เรียกใช้
+// 1) showIf = เงื่อนไข "วิธี" ชั้นนอกของ mergeGroup (เดิม ไม่แก้)  2) visibleWhen = array (AND) เงื่อนไขจาก select/boolean ภายใน op
+//    รูปแบบ { key, in:[...] } | { key, notIn:[...] } · ตัวคุมต้องเป็น select/boolean (re-render เมื่อเปลี่ยน) ห้ามเป็นสไลเดอร์ตัวเลข
+// ค่าตัวคุมที่แปลก/ไม่มี → ใช้ default ของตัวคุม (ให้ตรงกับที่ apply() ตกไปใช้) · ซ่อนแค่การแสดงผล ไม่แตะค่าที่เก็บไว้
+export function isParamVisible(param, params, allParams) {
+  if (param.showIf && params[param.showIf.key] !== param.showIf.value) return false;
+  for (const c of param.visibleWhen || []) {
+    const ctrl = allParams.find((q) => q.key === c.key);
+    let v = params[c.key];
+    if (ctrl && ctrl.type === "select" && !ctrl.options.some((o) => o.value === v)) v = ctrl.default;
+    if (ctrl && ctrl.type === "boolean" && typeof v !== "boolean") v = ctrl.default;
+    if (c.in && !c.in.includes(v)) return false;
+    if (c.notIn && c.notIn.includes(v)) return false;
+  }
+  return true;
+}
+
+// จัดลำดับ param ที่แสดง: ตัวคุม (ถูกอ้างเป็น visibleWhen.key) ต้องมาก่อน param ที่มันคุม — ไม่งั้นพอ param ที่คุมหายไป
+// select จะเลื่อนขึ้นมาอยู่ใต้เมาส์ (เช่น gamma: g มาก่อน curve) · ลำดับอื่นคงเดิม (ดึงเฉพาะตัวคุมที่ตามหลังขึ้นมา)
+export function orderParamsControllersFirst(list) {
+  const out = [];
+  const placed = new Set();
+  const place = (q) => {
+    if (placed.has(q)) return;
+    placed.add(q); // เพิ่มก่อน recurse — กันวนถ้ามีอ้างกันเป็นวง
+    for (const c of q.visibleWhen || []) {
+      const ctrl = list.find((x) => x.key === c.key);
+      if (ctrl) place(ctrl);
+    }
+    out.push(q);
+  };
+  for (const q of list) place(q);
+  return out;
+}
+
 // สร้าง merged filter จากรายชื่อ op
 // opts (ใหม่, Tier 2 §A.1) — เช่น { inputs: 2 } — spread ทับผลลัพธ์สุดท้าย เพิ่ม field แบบ additive
 // ล้วน ๆ (ไม่แตะ field เดิมใด ๆ ถ้าไม่ได้ส่ง opts มา) — ทุก FILTERS entry เดิมไม่ได้รับผลกระทบ
@@ -8025,7 +8058,14 @@ function mergeGroup(name, group, opIds, defaultMode, legacyOpIds = [], opts = {}
   // legacyOpIds เก็บพารามิเตอร์ของโปรเจกต์เก่าไว้ แต่ไม่แสดงเป็นตัวเลือกใหม่ใน UI
   for (const id of [...opIds, ...legacyOpIds]) {
     for (const p of OPS[id].params) {
-      params.push({ ...p, key: id + "__" + p.key, showIf: { key: MODE_KEY, value: id } });
+      // visibleWhen (ซ่อน param ตาม select ภายใน op) — เติม prefix ให้ key ของเงื่อนไขด้วย ไม่งั้นอ้างตัวคุมผิด key
+      // (ทำกับทุก op เหมือนกันหมด: imfuse/flip มี param ภายในชื่อ "mode" ซึ่งไม่ชนกับ MODE_KEY ตัวนอกเพราะมี prefix)
+      params.push({
+        ...p,
+        key: id + "__" + p.key,
+        showIf: { key: MODE_KEY, value: id },
+        ...(p.visibleWhen ? { visibleWhen: p.visibleWhen.map((c) => ({ ...c, key: id + "__" + c.key })) } : {}),
+      });
     }
   }
 

@@ -12,7 +12,7 @@ import { createExportDialog } from "./ui/export-dialog.js";
 import { startCamera, listCameras } from "./camera.js";
 import { startPose, stopPose, pausePose, resumePose, renderStillErgonomics } from "./mediapipe-pose.js";
 import { loadModel as dlLoadModel, isLoaded as dlLoaded, detect as dlDetect, drawDetections as dlDraw, COCO } from "./dl-yolo.js";
-import { FILTERS } from "./filters/registry.js";
+import { FILTERS, isParamVisible, orderParamsControllersFirst } from "./filters/registry.js";
 
 // ปิดโหมด Pose / Ergonomics ไว้ชั่วคราว (กล้องสดกระตุกหนัก) — ซ่อนทุกทางเข้า: ปุ่ม Pose, คีย์ลัด, ปุ่มดู Ergonomics ในคลัง
 // เปลี่ยนเป็น true เพื่อเปิดกลับ — โค้ดใน mediapipe-pose.js ยังอยู่ครบ
@@ -2637,8 +2637,8 @@ function stepRawParams(s) {
   const f = FILTERS[s.id];
   if (!f) return [];
   const out = [];
-  for (const p of f.params) {
-    if (p.showIf && s.params[p.showIf.key] !== p.showIf.value) continue;
+  for (const p of orderParamsControllersFirst(f.params)) {
+    if (!isParamVisible(p, s.params, f.params)) continue;
     if (p.key === "mode") continue;
     const k = p.key.includes("__") ? p.key.split("__").pop() : p.key;
     out.push({ k, v: s.params[p.key], label: p.label || k });

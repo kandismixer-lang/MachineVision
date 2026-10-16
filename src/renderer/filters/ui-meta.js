@@ -291,3 +291,90 @@ export function hexA(hex, a) {
   const b = parseInt(full.slice(4, 6), 16);
   return `rgba(${r}, ${g}, ${b}, ${a})`;
 }
+
+// ---------------------------------------------------------------------------
+// OPTION_GROUPS — จัด dropdown ยาว ๆ เป็นหัวข้อ <optgroup> ตาม "เป้าหมายงาน" (ภาษาไทย) ช่วยมือใหม่เลือกวิธีถูก
+// key: "<filterId>.mode" (select "เลือกวิธี" ของ node หมวด) | "<opId>.<localKey>" (select ภายใน op เช่น morphology.op)
+// value: [[หัวข้อ, [value, ...]], ...] — ลำดับ value ในกลุ่ม = ลำดับที่แสดง · ตารางนี้ "ไม่แก้" options ใน registry (ค่า/ลำดับเดิมทุกตัว)
+// value ที่ไม่อยู่ในตาราง (เช่น op ใหม่ที่ลืมใส่) → ไปกลุ่ม "อื่น ๆ" ท้ายสุด (และเทสต์ param-visibility ล้ม ให้รู้ว่าต้องเพิ่ม)
+// ---------------------------------------------------------------------------
+export const OPTION_GROUPS_OTHER = "อื่น ๆ";
+export const OPTION_GROUPS = {
+  "morphology.op": [
+    ["พื้นฐาน — กัด / พอก", ["erode", "dilate", "open", "close"]],
+    ["ดึงขอบ / ส่วนสว่าง-มืดเฉพาะที่", ["gradient", "tophat", "blackhat"]],
+    ["เก็บกวาดวัตถุขาว-ดำ", ["remove_small", "fill_holes", "clear_border", "reconstruct_open", "convex_hull"]],
+    ["เส้นแกนกลางและลายเฉพาะ", ["skeleton", "endpoints_branchpoints", "hit_or_miss"]],
+    ["หายอด / หุบ (ทำ marker ให้ Watershed)", ["regional_max", "regional_min", "h_maxima", "extended_max"]],
+  ],
+  "analysis_detect.mode": [
+    ["วัตถุ — หา / นับ / วัด", ["find_contours", "connected_components", "bounding_boxes", "regionprops", "shape_filter", "feret", "distance_transform", "line_profile"]],
+    ["หาเส้นตรง / วงกลม", ["hough_lines", "hough_circles"]],
+    ["หาจุดมุม / จุดเด่น", ["harris_corners", "shi_tomasi_corners", "fast_keypoints", "orb_keypoints", "akaze_keypoints"]],
+    ["ลายพื้นผิวและความคม", ["local_std_filter", "local_entropy_filter", "gabor_filter", "glcm", "focus_score"]],
+  ],
+  "segment_edge.mode": [
+    ["แยกขาว-ดำ (Threshold)", ["binary_threshold", "otsu_threshold", "adaptive_threshold", "multi_otsu_threshold"]],
+    ["หาขอบ (Edge)", ["canny", "sobel", "scharr_edge", "prewitt_edge", "roberts_edge", "laplacian_edge", "log_edge"]],
+    ["แยกวัตถุเป็นชิ้น", ["watershed", "grabcut", "region_growing"]],
+  ],
+  "enhance_tools.mode": [
+    ["ความสว่าง / คอนทราสต์", ["brightness_contrast", "gamma", "contrast_stretch", "hist_equalize", "clahe", "flatfield_correction"]],
+    ["ความคม", ["unsharp", "laplacian_sharpen", "custom_kernel"]],
+    ["งานเฉพาะทาง", ["dehaze", "quantize"]],
+  ],
+  "filter_denoise.mode": [
+    ["ทำภาพเสียเพื่อทดลอง (ใส่ noise)", ["salt_pepper_noise", "gaussian_noise"]],
+    ["ลด noise / เบลอ", ["median_blur", "gaussian_blur", "box_blur", "bilateral", "guided_filter", "nlm_denoise", "wiener_filter"]],
+    ["แก้ภาพเบลอ (รู้ PSF)", ["deconv_wiener", "deconv_lucy"]],
+  ],
+  "color_tools.mode": [
+    ["แปลง / ดูช่องสี", ["grayscale", "invert", "colorspace", "channel_split", "pseudocolor"]],
+    ["ปรับสี", ["rgb_adjust", "white_balance"]],
+    ["เลือก / แบ่งตามสี", ["color_inrange", "kmeans_segment", "slic"]],
+  ],
+  "image_arithmetic.mode": [
+    ["เทียบ / รวมสองภาพ", ["imabsdiff", "imfuse", "imarith", "logical_ops"]],
+    ["ใช้ B เป็นหน้ากาก / บริเวณ", ["mask", "roi_apply", "inpaint"]],
+    ["ปรับ A ให้ตรงกับ B", ["hist_match", "ecc_register"]],
+  ],
+  "custom_kernel.preset": [
+    ["ไม่เปลี่ยนภาพ (เทียบ)", ["identity"]],
+    ["คมขึ้น / หาขอบ", ["sharpen", "edge", "outline", "emboss"]],
+    ["เบลอเฉลี่ย", ["box3", "box5"]],
+    ["จำลองภาพเบลอ (PSF)", ["motion", "disk"]],
+  ],
+  "colorspace.space": [
+    ["ใช้บ่อยในงานตรวจจับ", ["hsv", "lab", "ycrcb", "hls"]],
+    ["มาตรฐาน / ทฤษฎี (ค่า 8 bit ถูกบีบ)", ["xyz", "luv", "yuv"]],
+  ],
+  "channel_split.channel": [
+    ["RGB", ["r", "g", "b"]],
+    ["HSV", ["h", "s", "v"]],
+  ],
+};
+
+// คืน [[หัวข้อ, [option object, ...]], ...] สำหรับ select ตัวนี้ (option object = ตัวเดียวกับใน param.options)
+// ไม่มีตารางของ select นี้ → null (วาดแบบเรียงเรียบเหมือนเดิม) · value ที่ตารางไม่รู้จัก → กลุ่ม "อื่น ๆ" ท้ายสุด
+// filterId = id ของ node (FILTERS key) · param.key = "mode" | "<opId>__<localKey>" (merged) | "<localKey>" (node เดี่ยว เช่น morphology)
+export function optionGroupsFor(filterId, param) {
+  let tableKey;
+  if (param.key === "mode") tableKey = filterId + ".mode";
+  else if (param.key.includes("__")) tableKey = param.key.replace("__", ".");
+  else tableKey = filterId + "." + param.key;
+  const table = Object.hasOwn(OPTION_GROUPS, tableKey) ? OPTION_GROUPS[tableKey] : null;
+  if (!table) return null;
+  const byValue = new Map(param.options.map((o) => [o.value, o]));
+  const used = new Set();
+  const out = [];
+  for (const [title, values] of table) {
+    const opts = [];
+    for (const v of values) {
+      if (byValue.has(v) && !used.has(v)) { opts.push(byValue.get(v)); used.add(v); }
+    }
+    if (opts.length) out.push([title, opts]);
+  }
+  const rest = param.options.filter((o) => !used.has(o.value));
+  if (rest.length) out.push([OPTION_GROUPS_OTHER, rest]);
+  return out;
+}
