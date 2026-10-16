@@ -848,7 +848,8 @@ test('ipA-13. (static structure) OPS contains contrast_stretch/flatfield_correct
   const opParam = OPS.morphology.params.find((p) => p.key === 'op');
   const opValues = opParam.options.map((o) => o.value);
   for (const op of NEW_MORPH_MODES) assert.ok(opValues.includes(op), `morphology "op" select must offer "${op}"`);
-  assert.equal(opValues.length, 14, 'morphology must now have exactly 14 op choices (12 + 2 new)');
+  // batch 4B ต่อท้าย 5 ตัว (hit_or_miss, regional_max, regional_min, h_maxima, extended_max) — ห้ามสลับลำดับเดิม
+  assert.deepEqual(opValues.slice(0, 14), ['erode', 'dilate', 'open', 'close', 'gradient', 'tophat', 'blackhat', 'fill_holes', 'clear_border', 'remove_small', 'skeleton', 'reconstruct_open', 'convex_hull', 'endpoints_branchpoints']);
 
   const dp = defaultParams('image_adjust');
   assert.equal(dp.contrast_stretch__lowPct, 1);

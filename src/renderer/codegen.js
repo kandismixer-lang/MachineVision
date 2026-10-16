@@ -7,7 +7,7 @@
 //
 // หมายเหตุ: โค้ดที่ gen ใช้ BGR (cv2.imread) ตามธรรมเนียม OpenCV — ต่างจากในแอปที่ทำงานบน RGB
 // ผลลัพธ์เชิงหลักการเหมือนกัน (ค่าเนื้อสี H, threshold ฯลฯ เท่ากัน)
-import { OPS, FILTERS } from "./filters/registry.js";
+import { OPS, FILTERS, NLM_MAX_SIDE, LUCY_MAX_ITERS, ECC_DEFAULT_SIDE, HITMISS_PATTERNS } from "./filters/registry.js";
 
 // ชื่อไทยของ op (โยงกับที่ผู้เรียนเห็นบนจอ) + teaching note สั้น ๆ ต่อ op คลาสสิก
 const TEACH = {
@@ -758,6 +758,48 @@ const GEN = {
   // outOf แทน out คงที่ เพราะ endpoints_branchpoints (ใหม่ 2026-10-01) คืนภาพสี (BGR) เสมอ ส่วน op อื่น
   // ทั้งหมดในกลุ่มนี้คืนภาพขาวดำ — ตามแนวเดียวกับ region_growing ที่ out ขึ้นกับ view
   morphology: { needs: "gray", outOf: (p) => (p.op === "endpoints_branchpoints" ? "color" : "gray"), gen: (p) => {
+    // IP batch 4B — ตัวเลือกใหม่ (ไม่ใช้ shape/ksize/iterations) · path เดิมทุกตัวด้านล่างไม่เปลี่ยน
+    if (p.op === "hit_or_miss") {
+      const patKey = Object.hasOwn(HITMISS_PATTERNS, p.hmPattern) ? p.hmPattern : "isolated";
+      const rotate = p.hmRotate !== false;
+      return [
+        `# Hit-or-Miss แม่แบบ ${patKey} (1 = ต้องขาว, -1 = ต้องดำ, 0 = ไม่สน) · นอกขอบภาพ OpenCV นับเป็น "ไม่สน"`,
+        "_, b = cv2.threshold(img, 127, 255, cv2.THRESH_BINARY)",
+        `k = np.array(${JSON.stringify(HITMISS_PATTERNS[patKey].k)}, np.int32)`,
+        "ks = [k]",
+        ...(rotate ? ["for _ in range(3):", "    ks.append(np.rot90(ks[-1], -1))  # หมุนตามเข็มนาฬิกาทีละ 90 องศา"] : []),
+        "out = np.zeros_like(b)",
+        "for kk in ks:",
+        "    out = np.bitwise_or(out, cv2.morphologyEx(b, cv2.MORPH_HITMISS, np.ascontiguousarray(kk)))",
+        `print(f"hit-or-miss ${patKey}: {int(np.count_nonzero(out))} matches")`,
+        "img = out",
+      ];
+    }
+    if (p.op === "regional_max" || p.op === "regional_min" || p.op === "h_maxima" || p.op === "extended_max") {
+      const h = Math.round(clampNum(p.hHeight, 10, 1, 255));
+      return [
+        "# reconstruction by dilation ตามนิยาม (ช้ากว่าของแอปที่เป็น O(N) แต่ได้ผลเท่ากันเป๊ะ เพราะคำตอบมีหนึ่งเดียว) · ใช้ภาพเทา ไม่ตัด 127",
+        "def recon(marker, mask):",
+        "    m = marker.astype(np.int16)",
+        "    k3 = np.ones((3, 3), np.uint8)",
+        "    while True:",
+        "        nxt = np.minimum(cv2.dilate(m, k3), mask)",
+        "        if np.array_equal(nxt, m):",
+        "            return m",
+        "        m = nxt",
+        "def regional_max(a):",
+        "    return np.where(a - recon(a - 1, a) >= 1, 255, 0).astype(np.uint8)",
+        "i16 = img.astype(np.int16)",
+        ...(p.op === "regional_max"
+          ? ["out = regional_max(i16)", "n_cc, _ = cv2.connectedComponents(out, connectivity=8)", 'print(f"regional maxima: {n_cc - 1} regions ({int(np.count_nonzero(out))} px)")']
+          : p.op === "regional_min"
+            ? ["out = regional_max(255 - i16)", "n_cc, _ = cv2.connectedComponents(out, connectivity=8)", 'print(f"regional minima: {n_cc - 1} regions ({int(np.count_nonzero(out))} px)")']
+            : p.op === "h_maxima"
+              ? [`hm = recon(np.maximum(i16 - ${h}, 0), i16)`, "out = hm.astype(np.uint8)", "n_cc, _ = cv2.connectedComponents(regional_max(hm), connectivity=8)", `print(f"h-maxima h=${h}: {n_cc - 1} regions left")`]
+              : [`hm = recon(np.maximum(i16 - ${h}, 0), i16)`, "out = regional_max(hm)", "n_cc, _ = cv2.connectedComponents(out, connectivity=8)", `print(f"extended maxima h=${h}: {n_cc - 1} regions ({int(np.count_nonzero(out))} px)")`]),
+        "img = out",
+      ];
+    }
     if (p.op === "fill_holes") {
       // imfill: เติมเฉพาะรูที่ปิดสนิท (ไม่ต่อกับขอบภาพ) — เติมขอบ 0 หนา 1px รอบภาพก่อน flood จาก (0,0)
       // เพื่อให้พื้นหลังทุกจุดที่ชนขอบเดิม (แม้วัตถุจะชนขอบภาพ) ต่อกันเป็นก้อนเดียวกับจุดเริ่ม flood เสมอ
@@ -2722,6 +2764,356 @@ const GEN = {
         ]
         : []),
       `print(f"roi apply: {int(use_b.sum())} px use B ({np.floor(use_b.sum() * 100 / (w_i * h_i) * 10 + 0.5) / 10:.1f}%)")`,
+    ];
+  } },
+  // ---- IP batch 4B (2026-10-15) — 8 op ใหม่ · ใช้อัลกอริทึมเดียวกับแอป (ไม่ใช่ตัวสำเร็จรูปของ cv2 ที่ให้ผลต่าง) · ค่าคงที่ความเร็วมาจาก registry (ไม่ hardcode ซ้ำ) ----
+  // Wiener: psf_kernel (ฝาแฝด 4A) → psf2otf ด้วย np.roll → G·H*/(|H|²+NSR) ด้วย float64 → dft ย้อน · parity เป็น tolerance (dft ของ cv2 5.0 กับ 4.10 ต่างระดับ ulp แล้วถูกขยาย)
+  deconv_wiener: { needs: "any", out: "same", gen: (p) => {
+    const kind = pickOwn({ motion: "motion", disk: "disk" }, p.psf, "motion");
+    const size = Math.round(clampNum(p.psfSize, 9, 1, 50)), ang = Math.round(clampNum(p.psfAngle, 0, 0, 179));
+    const nsr = clampNum(p.nsr, 0.01, 0, 0.5);
+    return [
+      ...psfKernelPyLines(),
+      `psf = psf_kernel("${kind}", ${size}, ${ang})`,
+      "n = psf.shape[0]",
+      "hc = (n - 1) // 2",
+      "hh, ww = img.shape[:2]",
+      "wp = cv2.getOptimalDFTSize(ww + 2 * n)",
+      "hp = cv2.getOptimalDFTSize(hh + 2 * n)",
+      "ph = np.zeros((hp, wp), np.float32)",
+      "ph[:n, :n] = psf",
+      "ph = np.roll(ph, (-hc, -hc), axis=(0, 1))  # psf2otf: จุดกลางของ PSF ไปอยู่ที่ (0, 0) แบบวนรอบ",
+      "otf = cv2.dft(ph, flags=cv2.DFT_COMPLEX_OUTPUT)",
+      `nsr = ${String(nsr)}  # noise / สัญญาณ — 0 = หารตรง (inverse filter) noise ระเบิด`,
+      "def wiener_channel(ch):",
+      "    big = cv2.copyMakeBorder(ch, n, hp - hh - n, n, wp - ww - n, cv2.BORDER_REFLECT)  # ขอบสะท้อนค่า (ไม่ใช้ edgetaper)",
+      "    g = cv2.dft(big.astype(np.float32), flags=cv2.DFT_COMPLEX_OUTPUT)",
+      "    gr, gi = g[:, :, 0].astype(np.float64), g[:, :, 1].astype(np.float64)",
+      "    hr, hi = otf[:, :, 0].astype(np.float64), otf[:, :, 1].astype(np.float64)",
+      "    den = hr * hr + hi * hi + nsr",
+      "    ok = den > 0",
+      "    safe = np.where(ok, den, 1.0)",
+      "    re = np.where(ok, (gr * hr + gi * hi) / safe, 0.0)  # F = G x conj(H) / (|H|^2 + NSR)",
+      "    im = np.where(ok, (gi * hr - gr * hi) / safe, 0.0)",
+      "    f = np.dstack([re, im]).astype(np.float32)",
+      "    inv = cv2.dft(f, flags=cv2.DFT_INVERSE | cv2.DFT_SCALE | cv2.DFT_REAL_OUTPUT)",
+      "    v = np.floor(inv[n:n + hh, n:n + ww].astype(np.float64) + 0.5)",
+      "    return np.where(np.isfinite(v), np.clip(v, 0, 255), 0).astype(np.uint8)",
+      "if img.ndim == 2:",
+      "    img = wiener_channel(img)",
+      "else:",
+      "    img = cv2.merge([wiener_channel(c) for c in cv2.split(img)])  # ทีละช่อง ใช้ OTF ชุดเดียว",
+      `print("wiener deconvolution: psf ${kind === "disk" ? `disk ${size} px` : `motion ${size} px ${ang} deg`}, NSR ${String(nsr)}")`,
+    ];
+  } },
+
+  // Lucy-Richardson: float32 ทุกขั้นเหมือนแอป · filter2D เป็น correlation → kf (PSF พลิก) เป็น convolution, kk (PSF ตรง) เป็น adjoint
+  deconv_lucy: { needs: "any", out: "same", gen: (p) => {
+    const kind = pickOwn({ motion: "motion", disk: "disk" }, p.psf, "motion");
+    const size = Math.round(clampNum(p.psfSize, 9, 1, 50)), ang = Math.round(clampNum(p.psfAngle, 0, 0, 179));
+    const iters = Math.round(clampNum(p.iterations, 10, 1, LUCY_MAX_ITERS));
+    return [
+      ...psfKernelPyLines(),
+      `psf = psf_kernel("${kind}", ${size}, ${ang})`,
+      "kk = psf.astype(np.float32)",
+      "kf = np.ascontiguousarray(np.flip(psf, (0, 1)).astype(np.float32))",
+      `iters = ${iters}`,
+      "def lucy_channel(ch):",
+      "    g = ch.astype(np.float32)",
+      "    est = g.copy()",
+      "    for _ in range(iters):",
+      "        c = cv2.filter2D(est, -1, kf, borderType=cv2.BORDER_REFLECT_101)  # เบลอภาพที่เดา",
+      "        ok = c > 1e-6",
+      "        r = np.where(ok, g / np.where(ok, c, np.float32(1)), np.float32(0)).astype(np.float32)  # จริง / ที่เบลอ",
+      "        corr = cv2.filter2D(r, -1, kk, borderType=cv2.BORDER_REFLECT_101)",
+      "        est = (est * corr).astype(np.float32)",
+      "    return np.clip(np.floor(est.astype(np.float64) + 0.5), 0, 255).astype(np.uint8)",
+      "if img.ndim == 2:",
+      "    img = lucy_channel(img)",
+      "else:",
+      "    img = cv2.merge([lucy_channel(c) for c in cv2.split(img)])",
+      `print("lucy-richardson: ${iters} iterations, psf ${kind === "disk" ? `disk ${size} px` : `motion ${size} px ${ang} deg`}")`,
+    ];
+  } },
+
+  // ECC: A = img (ภาพที่ขยับ), B = img_b (อ้างอิง) · guard ภาพเล็ก/เรียบเหมือนแอป · ผล warp ต่างจากแอปได้ราว 0.05 px (cv2 5.0 กับ 4.10) · out:"color" เสมอ (aligned/overlay/diff เป็น 3 ช่อง)
+  ecc_register: { needs: "any", out: "color", gen: (p, ctx) => {
+    const motion = pickOwn({ translation: "translation", euclidean: "euclidean", affine: "affine", homography: "homography" }, p.motion, "euclidean");
+    const iters = Math.round(clampNum(p.iterations, 50, 10, 300)), maxSide = Math.round(clampNum(p.maxSide, ECC_DEFAULT_SIDE, 64, 1024));
+    const view = pickOwn({ aligned: "aligned", overlay: "overlay", diff: "diff" }, p.view, "aligned");
+    const homog = motion === "homography";
+    const gray = pyGrayCode(ctx);
+    const fx2 = (e) => `{np.floor(${e} * 100 + 0.5) / 100:.2f}`;
+    const fx3 = (e) => `{np.floor(${e} * 1000 + 0.5) / 1000:.3f}`;
+    return [
+      `a_g = img if img.ndim == 2 else cv2.cvtColor(img, ${gray})`,
+      "b_src = img_b if img_b.shape[:2] == img.shape[:2] else cv2.resize(img_b, (img.shape[1], img.shape[0]), interpolation=cv2.INTER_LINEAR)",
+      `b_g = b_src if b_src.ndim == 2 else cv2.cvtColor(b_src, ${gray})`,
+      "hh, ww = a_g.shape",
+      `scale = min(1.0, ${maxSide} / max(ww, hh))  # ย่อภาพก่อนจับคู่`,
+      "aw, ah = max(1, int(np.floor(ww * scale + 0.5))), max(1, int(np.floor(hh * scale + 0.5)))",
+      "if scale < 1:",
+      "    sa = cv2.resize(a_g, (aw, ah), interpolation=cv2.INTER_AREA)",
+      "    sb = cv2.resize(b_g, (aw, ah), interpolation=cv2.INTER_AREA)",
+      "else:",
+      "    sa, sb = a_g, b_g",
+      "ecc_ok = False",
+      "msg = ''",
+      "if min(sa.shape) < 16:",
+      "    msg = 'image too small (< 16 px after shrinking)'",
+      "elif sa.std() < 1 or sb.std() < 1:",
+      "    msg = 'image too flat (no texture to match)'",
+      "else:",
+      `    warp = np.eye(${homog ? 3 : 2}, 3, dtype=np.float32)` + (homog ? "" : "  # 2x3"),
+      "    try:",
+      `        rho, warp = cv2.findTransformECC(sb, sa, warp, cv2.MOTION_${motion.toUpperCase()}, (cv2.TERM_CRITERIA_COUNT | cv2.TERM_CRITERIA_EPS, ${iters}, 1e-5), None, 5)`,
+      "        ecc_ok = True",
+      "    except cv2.error:",
+      "        msg = 'did not converge'",
+      "if ecc_ok:",
+      "    warp[0, 2] = np.float32(float(warp[0, 2]) / scale)  # ขยายค่าเลื่อนกลับเป็นพิกเซลของภาพจริง",
+      "    warp[1, 2] = np.float32(float(warp[1, 2]) / scale)",
+      ...(homog ? ["    warp[2, 0] = np.float32(float(warp[2, 0]) * scale)", "    warp[2, 1] = np.float32(float(warp[2, 1]) * scale)"] : []),
+      "    flags = cv2.INTER_LINEAR + cv2.WARP_INVERSE_MAP",
+      `    warped = cv2.${homog ? "warpPerspective" : "warpAffine"}(img, warp, (ww, hh), flags=flags, borderMode=cv2.BORDER_CONSTANT, borderValue=0)`,
+      "    w00, w01, w10, w11 = float(warp[0, 0]), float(warp[0, 1]), float(warp[1, 0]), float(warp[1, 1])",
+      `    go = warped if warped.ndim == 2 else cv2.cvtColor(warped, ${gray})`,
+      ...(view === "aligned"
+        ? ["    img = warped"]
+        : view === "diff"
+          ? ["    img = cv2.absdiff(go, b_g)"]
+          : ["    img = np.dstack([go, b_g, go])  # R = A, G = B, B = A (ม่วง = A, เขียว = B)"]),
+      `    print(f"ecc ${motion}: dx ${fx2("float(warp[0, 2])")} dy ${fx2("float(warp[1, 2])")} angle ${fx2("np.arctan2(w10, w00) * 180 / np.pi")} scale ${fx3("np.sqrt(abs(w00 * w11 - w01 * w10))")} rho ${fx3("rho")}")`,
+      "else:",
+      `    print('ecc ${motion}: failed (' + msg + ')')`,
+      "if img.ndim == 2:",
+      "    img = cv2.cvtColor(img, cv2.COLOR_GRAY2BGR)",
+    ];
+  } },
+
+  // Gabor: kernel จาก cv2.getGaborKernel (float32 เท่ากับสูตรของแอปทุกค่า) · ส่วนจริงลบค่าเฉลี่ย (บวกตามลำดับเหมือน JS) · ปรับให้ค่าสูงสุดเป็น 255
+  gabor_filter: { needs: "gray", out: "gray", gen: (p) => {
+    const lambd = Math.round(clampNum(p.wavelength, 8, 2, 64)), theta = Math.round(clampNum(p.orientation, 0, 0, 179));
+    const bw = clampNum(p.bandwidth, 1, 0.5, 3), gamma = clampNum(p.aspect, 0.5, 0.2, 1);
+    const real = p.output === "real";
+    return [
+      `lambd = ${lambd}`,
+      `theta = ${theta} * np.pi / 180`,
+      `bw = ${String(bw)}`,
+      `gamma = ${String(gamma)}`,
+      "sigma = lambd / np.pi * np.sqrt(np.log(2) / 2) * (2 ** bw + 1) / (2 ** bw - 1)  # MATLAB imgaborfilt: sigma จาก bandwidth (octave)",
+      "half = min(49, int(np.ceil(3 * sigma / gamma)))",
+      "k = 2 * half + 1",
+      "ke = cv2.getGaborKernel((k, k), sigma, theta, lambd, gamma, 0, ktype=cv2.CV_32F)",
+      "ke = (ke.astype(np.float64) - np.cumsum(ke.astype(np.float64).ravel())[-1] / ke.size).astype(np.float32)  # ลบค่าเฉลี่ย: พื้นเรียบได้ 0",
+      "ko = cv2.getGaborKernel((k, k), sigma, theta, lambd, gamma, np.pi / 2, ktype=cv2.CV_32F)",
+      "f32 = img.astype(np.float32)",
+      "re = cv2.filter2D(f32, cv2.CV_32F, ke, borderType=cv2.BORDER_REFLECT_101)",
+      "im = cv2.filter2D(f32, cv2.CV_32F, ko, borderType=cv2.BORDER_REFLECT_101)",
+      real ? "resp = re" : "resp = cv2.magnitude(re, im)",
+      "resp64 = resp.astype(np.float64)",
+      "mx = float(np.abs(resp).max())",
+      "mean_resp = np.cumsum(np.abs(resp64).ravel())[-1] / resp64.size",
+      "none = (not (mx > 0)) or int(img.min()) == int(img.max())  # ภาพเรียบสนิท: เศษ float32 ของ kernel ต้องไม่ถูกขยายเป็นภาพขาว",
+      "if none:",
+      "    mx, mean_resp = 0.0, 0.0",
+      real
+        ? "img = (np.full(resp.shape, 128.0) if none else np.floor(128 + resp64 * 127 / mx + 0.5)).astype(np.uint8)"
+        : "img = (np.zeros(resp.shape) if none else np.floor(resp64 * 255 / mx + 0.5)).astype(np.uint8)",
+      `print(f"gabor: lambda ${lambd} theta ${theta} sigma {np.floor(sigma * 100 + 0.5) / 100:.2f} kernel {k}x{k} mean {np.floor(mean_resp * 10 + 0.5) / 10:.1f} max {np.floor(mx * 10 + 0.5) / 10:.1f}")`,
+    ];
+  } },
+
+  // GLCM: คู่พิกเซลด้วย slicing + bincount (นับจำนวนเต็มเท่าแอปเป๊ะ) · props ด้วย numpy (ลำดับการบวกต่างจากแอป → ค่าต่างได้ระดับ 1e-12)
+  glcm: { needs: "gray", out: "gray", gen: (p) => {
+    const L = Number(pickOwn({ 2: 2, 4: 4, 8: 8, 16: 16, 32: 32, 64: 64 }, p.levels, 8));
+    const d = Math.round(clampNum(p.distance, 1, 1, 10));
+    const angle = Object.hasOwn({ 0: 1, 45: 1, 90: 1, 135: 1, avg: 1 }, p.angle) ? String(p.angle) : "0";
+    const sym = p.symmetric === true;
+    const matrix = p.view !== "quantized";
+    const OFF = { 0: [d, 0], 45: [d, -d], 90: [0, -d], 135: [-d, -d] };
+    const offs = (angle === "avg" ? [0, 45, 90, 135] : [Number(angle)]).map((a) => `(${OFF[a][0]}, ${OFF[a][1]})`).join(", ");
+    return [
+      `levels = ${L}`,
+      "q = np.minimum(levels - 1, (img.astype(np.int64) * levels) // 255)  # ลดระดับเทา",
+      "def glcm_counts(dx, dy):",
+      "    h, w = q.shape",
+      "    if h - abs(dy) <= 0 or w - abs(dx) <= 0:",
+      "        return np.zeros((levels, levels))",
+      "    a = q[max(0, -dy):h - max(0, dy), max(0, -dx):w - max(0, dx)]",
+      "    b = q[max(0, dy):h - max(0, -dy), max(0, dx):w - max(0, -dx)]",
+      "    return np.bincount((a * levels + b).ravel(), minlength=levels * levels).reshape(levels, levels).astype(np.float64)",
+      "def glcm_props(c):",
+      "    n = c.sum()",
+      "    if n == 0:",
+      "        return None",
+      "    pr = c / n",
+      "    i, j = np.indices(c.shape)",
+      "    contrast = ((i - j) ** 2 * pr).sum()",
+      "    energy = (pr * pr).sum()",
+      "    homog = (pr / (1 + np.abs(i - j))).sum()",
+      "    mi, mj = (i * pr).sum(), (j * pr).sum()",
+      "    if (c.sum(axis=1) > 0).sum() <= 1 or (c.sum(axis=0) > 0).sum() <= 1:",
+      "        corr = None  # ทุกคู่อยู่ในระดับเดียว (sigma = 0)",
+      "    else:",
+      "        si = np.sqrt(((i - mi) ** 2 * pr).sum())",
+      "        sj = np.sqrt(((j - mj) ** 2 * pr).sum())",
+      "        corr = ((i - mi) * (j - mj) * pr).sum() / (si * sj)",
+      "    return [contrast, corr, energy, homog, n]",
+      `offsets = [${offs}]`,
+      "mats = []",
+      "props = []",
+      "for dx, dy in offsets:",
+      "    c = glcm_counts(dx, dy)",
+      ...(sym ? ["    c = c + c.T  # นับทั้งสองทาง"] : []),
+      "    mats.append(c)",
+      "    props.append(glcm_props(c))",
+      "pairs = sum(float(m.sum()) for m in mats)",
+      "def avg_prop(k):",
+      "    vals = [pr[k] if pr is not None else None for pr in props]",
+      "    return None if any(v is None for v in vals) else sum(vals) / len(vals)",
+      "contrast, corr, energy, homog = avg_prop(0), avg_prop(1), avg_prop(2), avg_prop(3)",
+      "total = sum(mats)  # ผลรวม GLCM ของทุกทิศ",
+      ...(matrix
+        ? [
+          "cmax = total.max()",
+          "m8 = np.where(total == 0, 0, np.floor(255 * np.log1p(total) / np.log1p(max(cmax, 1)) + 0.5))",
+          "img = np.repeat(np.repeat(m8, 256 // levels, axis=0), 256 // levels, axis=1).astype(np.uint8)  # ตาราง GLCM ขยายเป็น 256x256",
+        ]
+        : ["img = np.floor(q * 255 / (levels - 1) + 0.5).astype(np.uint8)"]),
+      "fx = lambda v, d: '-' if v is None else f'{np.floor(v * 10 ** d + 0.5) / 10 ** d:.{d}f}'",
+      "if pairs == 0:",
+      "    print('glcm: no pixel pairs (image smaller than the distance)')",
+      "else:",
+      `    print(f"glcm levels {levels} dist ${d} angle ${angle}: contrast {fx(contrast, 2)} energy {fx(energy, 3)} homogeneity {fx(homog, 3)} correlation {fx(corr, 3)} pairs {int(pairs)}")`,
+    ];
+  } },
+
+  // NLM: ลูป offset ลำดับเดียวกับ nlmCore (dy นอก dx ใน) · S จำนวนเต็มแม่นทั้งสองฝั่ง · cv2.fastNlMeansDenoising ให้ผลต่างจากแอป จึงไม่ใช้
+  nlm_denoise: { needs: "any", out: "same", gen: (p) => {
+    const h = Math.round(clampNum(p.h, 10, 1, 50));
+    const patch = Number(pickOwn({ 3: 3, 5: 5, 7: 7 }, p.patch, 5)), search = Number(pickOwn({ 7: 7, 11: 11, 15: 15 }, p.search, 11));
+    return [
+      `h = ${h}`,
+      `pr = ${(patch - 1) / 2}  # แผ่น ${patch}x${patch}`,
+      `sr = ${(search - 1) / 2}  # หน้าต่างค้นหา ${search}x${search}`,
+      "hh0, ww0 = img.shape[:2]",
+      `scale = min(1.0, ${NLM_MAX_SIDE} / max(ww0, hh0))  # ภาพใหญ่ย่อก่อน (ช้ามาก)`,
+      "if scale < 1:",
+      "    work = cv2.resize(img, (max(1, int(np.floor(ww0 * scale + 0.5))), max(1, int(np.floor(hh0 * scale + 0.5)))), interpolation=cv2.INTER_AREA)",
+      "else:",
+      "    work = img",
+      "x = work.astype(np.int64) if work.ndim == 3 else work.astype(np.int64)[:, :, None]",
+      "hh, ww, nc = x.shape",
+      "acc = np.zeros((hh, ww, nc))",
+      "wsum = np.zeros((hh, ww))",
+      "yy0, xx0 = np.arange(hh), np.arange(ww)",
+      "y_lo, y_hi = np.maximum(0, yy0 - pr), np.minimum(hh - 1, yy0 + pr)",
+      "x_lo, x_hi = np.maximum(0, xx0 - pr), np.minimum(ww - 1, xx0 + pr)",
+      "area = ((y_hi - y_lo + 1)[:, None] * (x_hi - x_lo + 1)[None, :] * nc).astype(np.float64)",
+      "for dy in range(-sr, sr + 1):",
+      "    for dx in range(-sr, sr + 1):",
+      "        nb = x[np.clip(yy0 + dy, 0, hh - 1)][:, np.clip(xx0 + dx, 0, ww - 1)]  # เพื่อนบ้านที่ติดขอบ = ค่าขอบ (replicate)",
+      "        d2 = ((x - nb) ** 2).sum(axis=2).astype(np.float64)",
+      "        integ = np.zeros((hh + 1, ww + 1))",
+      "        integ[1:, 1:] = np.cumsum(np.cumsum(d2, axis=1), axis=0)",
+      "        s = integ[y_hi + 1][:, x_hi + 1] - integ[y_lo][:, x_hi + 1] - integ[y_hi + 1][:, x_lo] + integ[y_lo][:, x_lo]",
+      "        w = np.exp(-(s / area) / (h * h))",
+      "        wsum += w",
+      "        acc += w[:, :, None] * nb",
+      "res = np.clip(np.floor(acc / wsum[:, :, None] + 0.5), 0, 255).astype(np.uint8)",
+      "res = res if nc > 1 else res[:, :, 0]",
+      "if scale < 1:",
+      "    res = cv2.resize(res, (ww0, hh0), interpolation=cv2.INTER_LINEAR)",
+      "img = res",
+      `print("non-local means: h ${h}, patch ${patch}, search ${search}")`,
+    ];
+  } },
+
+  // Dehaze: dark channel prior · float32/float64 ตามจุดเดียวกับแอป (refine = false → ผลเท่าแอปทุก byte) · guided_f32 ฝาแฝดจาก 4A
+  dehaze: { needs: "any", out: "same", outOf: (p) => (p.view === "transmission" || p.view === "dark" ? "gray" : "same"), gen: (p, ctx) => {
+    const omega = clampNum(p.amount, 0.95, 0.1, 1), ps = odd(clampNum(p.patch, 15, 3, 31));
+    const refine = p.refine !== false;
+    const view = pickOwn({ result: "result", transmission: "transmission", dark: "dark" }, p.view, "result");
+    const mir = isMirrored(ctx);
+    return [
+      ...(refine ? guidedPyLines() : []),
+      `omega = ${String(omega)}`,
+      "x = img if img.ndim == 3 else img[:, :, None]",
+      "hh, ww, nc = x.shape",
+      "n_px = hh * ww",
+      `ker = cv2.getStructuringElement(cv2.MORPH_RECT, (${ps}, ${ps}))`,
+      "dark = cv2.erode(np.ascontiguousarray(x.min(axis=2)), ker)  # dark channel",
+      "hist = np.bincount(dark.ravel(), minlength=256)",
+      "top = max(1, n_px // 1000)  # จุดที่ dark สูงสุด 0.1% (อย่างน้อย 1 จุด)",
+      "t_dark = 255 - int(np.argmax(np.cumsum(hist[::-1]) >= top))",
+      "sel = dark >= t_dark",
+      `atm = np.maximum(x[sel].sum(axis=0, dtype=np.int64) / int(sel.sum()), 1)  # แสงหมอก A ตามลำดับช่องของภาพ${mir ? " (B, G, R)" : ""}`,
+      "mn = (x.astype(np.float64) / atm).min(axis=2).astype(np.float32)",
+      "dn = cv2.erode(mn, ker)",
+      "t = (1 - omega * dn.astype(np.float64)).astype(np.float32)  # แผนที่ความโปร่งใสหยาบ",
+      ...(refine
+        ? [
+          `gray = cv2.cvtColor(img, ${pyGrayCode(ctx)}) if img.ndim == 3 else img`,
+          "pp = (t.astype(np.float64) * 255).astype(np.float32)",
+          `q = guided_f32(gray.astype(np.float32), pp, ${Math.max(4, 2 * ps)}, np.float32(65.025))  # เกลี่ยตามขอบวัตถุ`,
+          "t = (q.astype(np.float64) / 255).astype(np.float32)",
+        ]
+        : []),
+      "t = np.maximum(t.astype(np.float64), 0.1)",
+      "t_mean = np.cumsum(t.ravel())[-1] / n_px",
+      "res = np.floor((x.astype(np.float64) - atm) / t[:, :, None] + atm + 0.5)",
+      "res = np.clip(res, 0, 255).astype(np.uint8)",
+      ...(view === "result" ? ["img = res if nc > 1 else res[:, :, 0]"] : view === "transmission" ? ["img = np.floor(t * 255 + 0.5).astype(np.uint8)"] : ["img = dark"]),
+      `a3 = [float(atm[0])] * 3 if nc == 1 else [float(v) for v in ${mir ? "atm[::-1]" : "atm"}]  # R, G, B`,
+      `print(f"dehaze: A (R/G/B) ${pyFixed1("a3[0]")}/${pyFixed1("a3[1]")}/${pyFixed1("a3[2]")} t_mean {np.floor(t_mean * 100 + 0.5) / 100:.2f}")`,
+    ];
+  } },
+
+  // DCT 8x8: ตาราง C ด้วย numpy · ทุกบล็อกพร้อมกันด้วย einsum · ปัดแบบ sign x floor(|x| + 0.5) · cv2.dct(block) ให้ค่าเดียวกัน (float32) ใช้ตรวจได้
+  dct_jpeg: { needs: "gray", out: "gray", gen: (p) => {
+    const zonal = p.method === "zonal";
+    const quality = Math.round(clampNum(p.quality, 50, 1, 100)), K = Math.round(clampNum(p.keep, 4, 1, 8));
+    const view = pickOwn({ result: "result", coeffs: "coeffs", error: "error" }, p.view, "result");
+    return [
+      "hh, ww = img.shape",
+      "hp, wp = (hh + 7) // 8 * 8, (ww + 7) // 8 * 8",
+      "pad = cv2.copyMakeBorder(img, 0, hp - hh, 0, wp - ww, cv2.BORDER_REPLICATE)",
+      "c = np.zeros((8, 8))",
+      "for u in range(8):",
+      "    for xx in range(8):",
+      "        c[u, xx] = (np.sqrt(1 / 8) if u == 0 else np.sqrt(2 / 8)) * np.cos((2 * xx + 1) * u * np.pi / 16)",
+      "blocks = (pad.astype(np.float64) - 128).reshape(hp // 8, 8, wp // 8, 8).transpose(0, 2, 1, 3)",
+      "f = np.einsum('ui,abij,vj->abuv', c, blocks, c)  # F = C B C^T ทุกบล็อก",
+      ...(zonal
+        ? [
+          `keep = ${K}`,
+          "zone = (np.arange(8)[:, None] < keep) & (np.arange(8)[None, :] < keep)",
+          "fq = np.where(zone, f, 0.0)",
+          "n_zero = (64 - keep * keep) * (hp // 8) * (wp // 8)",
+        ]
+        : [
+          "q50 = np.array([16, 11, 10, 16, 24, 40, 51, 61, 12, 12, 14, 19, 26, 58, 60, 55, 14, 13, 16, 24, 40, 57, 69, 56, 14, 17, 22, 29, 51, 87, 80, 62,",
+          "                18, 22, 37, 56, 68, 109, 103, 77, 24, 35, 55, 64, 81, 104, 113, 92, 49, 64, 78, 87, 103, 121, 120, 101, 72, 92, 95, 98, 112, 100, 103, 99]).reshape(8, 8)",
+          `quality = ${quality}`,
+          "s = 5000 // quality if quality < 50 else 200 - 2 * quality  # สเกลแบบ IJG",
+          "qs = np.maximum(1, (q50 * s + 50) // 100)",
+          "z = f / qs",
+          "qf = np.sign(z) * np.floor(np.abs(z) + 0.5)  # ปัดครึ่งออกจาก 0 เหมือนแอป",
+          "fq = qf * qs",
+          "n_zero = int(np.count_nonzero(qf == 0))",
+        ]),
+      "rec = np.einsum('ui,abuv,vj->abij', c, fq, c) + 128",
+      "rec = np.clip(np.floor(rec + 0.5), 0, 255).transpose(0, 2, 1, 3).reshape(hp, wp).astype(np.uint8)[:hh, :ww]",
+      "diff = img.astype(np.float64) - rec",
+      "mse = (diff ** 2).sum() / (hh * ww)",
+      "psnr = float('inf') if mse == 0 else 10 * np.log10(255 * 255 / mse)",
+      ...(view === "result"
+        ? ["img = rec"]
+        : view === "coeffs"
+          ? ["img = np.minimum(255, np.floor(255 * np.log1p(np.abs(fq)) / np.log1p(1024) + 0.5)).transpose(0, 2, 1, 3).reshape(hp, wp)[:hh, :ww].astype(np.uint8)"]
+          : ["img = np.minimum(255, np.abs(diff) * 8).astype(np.uint8)"]),
+      `print(f"dct ${zonal ? `zonal ${K}x${K}` : `jpeg q${quality}`}: zero {np.floor(n_zero * 100 / ((hp // 8) * (wp // 8) * 64) * 10 + 0.5) / 10:.1f}% psnr " + ("inf" if psnr == float("inf") else f"{np.floor(psnr * 100 + 0.5) / 100:.2f}"))`,
     ];
   } },
 };

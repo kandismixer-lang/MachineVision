@@ -1,5 +1,5 @@
 // UI metadata — เพิ่มความสวย/สื่อความ โดยไม่แตะ backend algorithm
-import { OPS, fixed2, signedText, quantizeBits, SHAPE_FILTER_PROP_TH } from "./registry.js";
+import { OPS, fixed2, signedText, quantizeBits, SHAPE_FILTER_PROP_TH, HITMISS_PATTERNS } from "./registry.js";
 
 // ไอคอนประจำการ์ดเครื่องมือ (Design §7.1 — ภาพ mockup มี icon chip หน้าแต่ละเครื่องมือ)
 export const GROUP_ICON = {
@@ -55,6 +55,12 @@ function pnum(opId, key, v, { int = false } = {}) {
   const x = Number.isFinite(n) ? n : Number(spec.default);
   const c = Math.min(spec.max, Math.max(spec.min, x));
   return int ? Math.round(c) : c;
+}
+
+// PSF บนการ์ดของ Wiener / Lucy (IP batch 4B): "motion 9px 0°" หรือ "disk r9" — ชนิดเลือกด้วย own-property เหมือน registry
+function psfCardText(p) {
+  const size = pnum("deconv_wiener", "psfSize", p.psfSize, { int: true });
+  return p.psf === "disk" ? `disk r${size}` : `motion ${size}px ${pnum("deconv_wiener", "psfAngle", p.psfAngle, { int: true })}°`;
 }
 
 // ข้อความการ์ดของ op ที่มีตัวเลือก operation (IP batch 2 ชิ้น B)
@@ -115,6 +121,12 @@ export const OP_PRIMARY = {
     // ใหม่ (2026-10-01, IP batch MORPHOLOGY)
     : p.op === "convex_hull" ? "Convex Hull (รูปนูน)"
     : p.op === "endpoints_branchpoints" ? "จุดปลาย/จุดแยก (ต่อจาก Skeleton)"
+    // ใหม่ (2026-10-15, IP batch 4B) — แม่แบบเลือกด้วย own-property เหมือน registry (ค่าแปลก → จุดเดี่ยว)
+    : p.op === "hit_or_miss" ? `Hit-or-Miss · ${ownOr(HITMISS_PATTERNS, p.hmPattern, "isolated").th}`
+    : p.op === "regional_max" ? "Regional Maxima"
+    : p.op === "regional_min" ? "Regional Minima"
+    : p.op === "h_maxima" ? `H-maxima h=${pnum("morphology", "hHeight", p.hHeight, { int: true })}`
+    : p.op === "extended_max" ? `Extended Maxima h=${pnum("morphology", "hHeight", p.hHeight, { int: true })}`
     : (p.op || "erode") + " · k=" + (p.ksize ?? 5)
   ),
   binary_threshold: (p) => "thresh: " + (p.thresh ?? 127),
@@ -231,6 +243,18 @@ export const OP_PRIMARY = {
       + (p.invert === true ? " · กลับด้าน" : "")
       + (pnum(op, "feather", p.feather, { int: true }) > 0 ? ` · ขอบนุ่ม ${pnum(op, "feather", p.feather, { int: true })}px` : "");
   },
+  // ใหม่ (2026-10-15, IP batch 4B) — ตัวเลขผ่าน pnum (ค่าหลัง clamp ที่ op ใช้จริง) · ตัวเลือกที่ไม่รู้จักแสดงเป็นค่าเริ่มต้นเหมือน registry
+  deconv_wiener: (p) => `${psfCardText(p)} · NSR ${pnum("deconv_wiener", "nsr", p.nsr)}`,
+  deconv_lucy: (p) => `${pnum("deconv_lucy", "iterations", p.iterations, { int: true })} รอบ · ${psfCardText(p)}`,
+  ecc_register: (p) => `${ownOr({ translation: "เลื่อนอย่างเดียว", euclidean: "เลื่อน + หมุน", affine: "เลื่อน + หมุน + ย่อขยาย + เฉือน", homography: "มุมมองเปลี่ยน" }, p.motion, "euclidean")} · ≤ ${pnum("ecc_register", "iterations", p.iterations, { int: true })} รอบ · ย่อ ${pnum("ecc_register", "maxSide", p.maxSide, { int: true })}px`,
+  gabor_filter: (p) => `λ ${pnum("gabor_filter", "wavelength", p.wavelength, { int: true })}px · θ ${pnum("gabor_filter", "orientation", p.orientation, { int: true })}°`,
+  glcm: (p) => `${ownOr({ 2: "2", 4: "4", 8: "8", 16: "16", 32: "32", 64: "64" }, p.levels, "8")} ระดับ · d=${pnum("glcm", "distance", p.distance, { int: true })} · ${ownOr({ 0: "0°", 45: "45°", 90: "90°", 135: "135°", avg: "เฉลี่ย 4 ทิศ" }, p.angle, "0")}`,
+  nlm_denoise: (p) => `h ${pnum("nlm_denoise", "h", p.h, { int: true })} · แผ่น ${ownOr({ 3: "3", 5: "5", 7: "7" }, p.patch, "5")} · ค้นหา ${ownOr({ 7: "7", 11: "11", 15: "15" }, p.search, "11")}`,
+  dehaze: (p) => {
+    const ps0 = pnum("dehaze", "patch", p.patch, { int: true });
+    return `ω ${pnum("dehaze", "amount", p.amount)} · หน้าต่าง ${ps0 % 2 === 0 ? ps0 + 1 : ps0}` + (p.refine === false ? " · ไม่เกลี่ย" : "");
+  },
+  dct_jpeg: (p) => (p.method === "zonal" ? `ความถี่ต่ำ ${pnum("dct_jpeg", "keep", p.keep, { int: true })}×${pnum("dct_jpeg", "keep", p.keep, { int: true })}` : `JPEG q${pnum("dct_jpeg", "quality", p.quality, { int: true })}`),
   // Tier 2, 18d — Motion (ค่าเริ่มต้น/ช่วง อ่านจาก OPS ผ่าน pnum: history 10-2000 def 500, varThreshold 4-100
   // def 16, maxMotion 1-50 def 10, maxPoints 10-300 def 100, trailLength 1-50 def 10 · int = ตัวที่ registry
   // ใช้ intIn (ปัดเป็นจำนวนเต็ม) ตรงตามตารางของเทสต์ tier2d-MN-1)

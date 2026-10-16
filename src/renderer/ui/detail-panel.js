@@ -143,6 +143,27 @@ const VAL_META = {
   de_b_b:         { d: 2 },
   ra_px:          { d: 0 },
   ra_pct:         { d: 1 },
+  // IP batch 4B — จัดภาพ ECC · Gabor · GLCM · Dehaze · DCT/JPEG (ชื่อของ scalar มาจาก label ของ registry)
+  ecc_ok:         { d: 0, tip: "1 = ลู่เข้าและจัดภาพได้ · 0 = ไม่สำเร็จ (ภาพเรียบ/เล็ก/ไม่ลู่เข้า) — ค่าอื่นจะว่าง" },
+  ecc_rho:        { d: 3, tip: "ยิ่งใกล้ 1 ยิ่งทับกันดี" },
+  ecc_dx:         { d: 2 },
+  ecc_dy:         { d: 2 },
+  ecc_angle_deg:  { d: 2 },
+  ecc_scale:      { d: 3 },
+  gabor_mean:     { d: 1 },
+  gabor_max:      { d: 1 },
+  glcm_contrast:    { d: 4, tip: "สูง = เพื่อนบ้านต่างกันมาก (ลายหยาบ/ขอบเยอะ)" },
+  glcm_correlation: { d: 4, tip: "ใกล้ 1 = เพื่อนบ้านไปทางเดียวกัน · ว่างเมื่อภาพมีระดับเดียว" },
+  glcm_energy:      { d: 4, tip: "สูง = ลายซ้ำ ๆ เป็นระเบียบ" },
+  glcm_homogeneity: { d: 4, tip: "สูง = ภาพเรียบ" },
+  glcm_pairs:       { d: 0 },
+  dh_a_r:         { d: 1 },
+  dh_a_g:         { d: 1 },
+  dh_a_b:         { d: 1 },
+  dh_t_mean:      { d: 3 },
+  dct_psnr:       { d: 2, tip: "ยิ่งสูงยิ่งเหมือนภาพเดิม", infTip: "ค่าสูงไม่จำกัด — เหมือนเดิมทุกพิกเซล" },
+  dct_zero_pct:   { d: 1 },
+  dct_blocks:     { d: 0 },
 };
 const META_FALLBACK = { w: 88, pri: true }; // key ที่ไม่รู้จัก → d undefined = ใช้ heuristic ใน fmtVal
 function metaOf(key) {

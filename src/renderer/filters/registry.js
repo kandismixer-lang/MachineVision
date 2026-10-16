@@ -1151,6 +1151,327 @@ function whiteBalanceByGain(cv, src, p, ctx, method) {
 }
 
 // ===================================================================
+// ตัวช่วยของ IP batch 4B (2026-10-15) — Wiener/Lucy (PSF) · ECC · Hit-or-Miss · Regional Max · Gabor · GLCM · NLM · Dehaze · DCT/JPEG
+// ตัวช่วยที่ไม่ใช่ cv (typed array ล้วน) export ให้เทสต์หน่วยเรียกโดยไม่ต้องมี opencv · ตัวช่วยของ 4A (psfKernel / guidedFilterF32) เรียกใช้เท่านั้น ห้ามแก้
+// ===================================================================
+// นโยบาย op ช้า (แหล่งความจริงเดียว — codegen import ค่าเหล่านี้ ไม่ hardcode ซ้ำ): ภาพใหญ่กว่า NLM_MAX_SIDE ถูกย่อก่อน · Lucy จำกัดรอบ · ECC ย่อภาพก่อนจับคู่
+export const NLM_MAX_SIDE = 640;
+export const LUCY_MAX_ITERS = 50;
+export const ECC_DEFAULT_SIDE = 320;
+const SLOW_MODE_HINT = "ช้า — เหมาะกับภาพนิ่ง (กล้องสดจะกระตุก)";
+// ทศนิยม 3 ตำแหน่งแบบปัดครึ่งขึ้น (คู่กับ fixed2) — Python ใช้ np.floor(x*1000+0.5)/1000 แล้ว :.3f
+export function fixed3(x) { return (Math.floor(x * 1000 + 0.5) / 1000).toFixed(3); }
+
+// ---- PSF ของ Wiener / Lucy-Richardson (ช่วง/ค่าเริ่มต้นเท่ากับ param ของ custom_kernel) ----
+const PSF_KINDS = { motion: true, disk: true };
+export function psfParamDefs() {
+  return [
+    { key: "psf", type: "select", label: "ชนิด PSF (รูปแบบการเบลอ)", options: [
+      { value: "motion", label: "Motion (เบลอจากการขยับ)" },
+      { value: "disk", label: "Disk (เบลอจากโฟกัสหลุด)" },
+    ], default: "motion" },
+    { key: "psfSize", type: "number", label: "ขนาด PSF (px) — ต้องตรงกับที่ภาพเบลอจริง", min: 1, max: 50, step: 1, default: 9, desc: "Motion = ความยาวของรอยขยับ · Disk = รัศมีวงกลม — ตั้งให้เท่ากับตอนที่ทำให้ภาพเบลอ (เช่นค่าใน Custom Kernel)" },
+    { key: "psfAngle", type: "number", label: "มุม PSF (องศา) — ใช้กับ Motion เท่านั้น", min: 0, max: 179, step: 1, default: 0, desc: "0° = ขยับแนวนอน · 90° = แนวตั้ง · มุมเพิ่มทวนเข็มนาฬิกา" },
+  ];
+}
+export function psfInfo(kind, size, angle, n) {
+  return kind === "disk" ? `disk รัศมี ${size} px (${n}x${n})` : `motion ยาว ${size} px มุม ${angle}° (${n}x${n})`;
+}
+// อ่านชุด param PSF (select ด้วย ownKey, ตัวเลข clamp) แล้วสร้าง kernel — ใช้ร่วมกันใน Wiener และ Lucy
+function psfFromParams(p) {
+  const kind = ownKey(PSF_KINDS, p.psf, "motion");
+  const size = intIn(p.psfSize, 9, 1, 50), angle = intIn(p.psfAngle, 0, 0, 179);
+  return { kind, size, angle, psf: psfKernel(kind, size, angle) };
+}
+
+// ---- Hit-or-Miss: 4 แม่แบบ 3×3 (1 = ต้องขาว, −1 = ต้องดำ, 0 = ไม่สน) แถวบน → ล่าง · เพิ่มแม่แบบ = เพิ่ม 1 แถว (และ option ใน hmPattern) ----
+export const HITMISS_PATTERNS = {
+  isolated: { th: "จุดเดี่ยว", label: "จุดเดี่ยว (ขาวล้อมด้วยดำ)", k: [[-1, -1, -1], [-1, 1, -1], [-1, -1, -1]] },
+  hole: { th: "รูจุดเดียว", label: "รูจุดเดียว (ดำล้อมด้วยขาว)", k: [[1, 1, 1], [1, -1, 1], [1, 1, 1]] },
+  corner: { th: "มุมนูน", label: "มุมนูน (มุมขวาบน; รวม 4 ทิศ = ทุกมุม)", k: [[0, -1, -1], [1, 1, -1], [0, 1, 0]] },
+  line_end: { th: "ปลายเส้น", label: "ปลายเส้นตั้ง/นอน (ปลายบน; รวม 4 ทิศ)", k: [[-1, -1, -1], [-1, 1, -1], [0, 1, 0]] },
+};
+// หมุนตามเข็มนาฬิกา 90° (array 3×3) — new[i][j] = old[2−j][i]
+export function rotate90cw(k) {
+  const n = k.length;
+  return k.map((_, i) => k[i].map((__, j) => k[n - 1 - j][i]));
+}
+// kernel ทั้งหมดของแม่แบบ (rotate = 4 ทิศ ตัดตัวซ้ำออก — ผลรวม OR ไม่เปลี่ยน) → array ของ array ยาว 9
+export function hitMissKernels(pattern, rotate) {
+  const out = [], seen = new Set();
+  let k = HITMISS_PATTERNS[pattern].k;
+  for (let r = 0; r < (rotate ? 4 : 1); r++) {
+    const flat = k.flat(), key = flat.join(",");
+    if (!seen.has(key)) { seen.add(key); out.push(flat); }
+    k = rotate90cw(k);
+  }
+  return out;
+}
+
+// ---- Morphological reconstruction by dilation 8-connected แบบ hybrid ของ Vincent (1993) ----
+// J, I = Int32Array ขนาด W·H (J ≤ I ทุกจุด) · แก้ J ในที่แล้วคืน J · O(N) แม้บนที่ราบยาว (ห้ามใช้วิธีวน dilate ในแอป)
+export function reconstructDilate(J, I, W, H) {
+  const N = W * H;
+  if (N === 0) return J;
+  // (1) raster scan: J[p] = min(max(J[p], J[q] ทุก q ใน N+(p)), I[p]) · N+ = ซ้าย, ซ้ายบน, บน, ขวาบน
+  for (let y = 0; y < H; y++) {
+    for (let x = 0; x < W; x++) {
+      const p = y * W + x;
+      let m = J[p];
+      if (x > 0 && J[p - 1] > m) m = J[p - 1];
+      if (y > 0) {
+        if (x > 0 && J[p - W - 1] > m) m = J[p - W - 1];
+        if (J[p - W] > m) m = J[p - W];
+        if (x < W - 1 && J[p - W + 1] > m) m = J[p - W + 1];
+      }
+      J[p] = m < I[p] ? m : I[p];
+    }
+  }
+  // (2) anti-raster scan ด้วย N− = ขวา, ขวาล่าง, ล่าง, ซ้ายล่าง + ใส่คิวถ้ายังมีเพื่อนบ้านที่ต้องรับค่าต่อ
+  const queue = new Int32Array(N), inq = new Uint8Array(N);
+  let qh = 0, qt = 0, qn = 0;
+  const push = (p) => { if (!inq[p]) { inq[p] = 1; queue[qt] = p; qt = qt + 1 === N ? 0 : qt + 1; qn++; } };
+  for (let y = H - 1; y >= 0; y--) {
+    for (let x = W - 1; x >= 0; x--) {
+      const p = y * W + x;
+      let m = J[p];
+      const hasR = x < W - 1, hasD = y < H - 1, hasL = x > 0;
+      if (hasR && J[p + 1] > m) m = J[p + 1];
+      if (hasD) {
+        if (hasR && J[p + W + 1] > m) m = J[p + W + 1];
+        if (J[p + W] > m) m = J[p + W];
+        if (hasL && J[p + W - 1] > m) m = J[p + W - 1];
+      }
+      const v = m < I[p] ? m : I[p];
+      J[p] = v;
+      let need = false;
+      if (hasR && J[p + 1] < v && J[p + 1] < I[p + 1]) need = true;
+      else if (hasD) {
+        if (hasR && J[p + W + 1] < v && J[p + W + 1] < I[p + W + 1]) need = true;
+        else if (J[p + W] < v && J[p + W] < I[p + W]) need = true;
+        else if (hasL && J[p + W - 1] < v && J[p + W - 1] < I[p + W - 1]) need = true;
+      }
+      if (need) push(p);
+    }
+  }
+  // (3) ส่งค่าต่อทางคิว (FIFO) ทั้ง 8 ทิศ
+  while (qn > 0) {
+    const p = queue[qh]; qh = qh + 1 === N ? 0 : qh + 1; qn--; inq[p] = 0;
+    const px = p % W, py = (p - px) / W, vp = J[p];
+    for (let dy = -1; dy <= 1; dy++) {
+      const yy = py + dy;
+      if (yy < 0 || yy >= H) continue;
+      for (let dx = -1; dx <= 1; dx++) {
+        if (dx === 0 && dy === 0) continue;
+        const xx = px + dx;
+        if (xx < 0 || xx >= W) continue;
+        const q = yy * W + xx;
+        if (J[q] < vp && I[q] !== J[q]) { J[q] = vp < I[q] ? vp : I[q]; push(q); }
+      }
+    }
+  }
+  return J;
+}
+// Regional Maxima: บริเวณที่สว่างกว่าทุกพิกเซลรอบตัว (8-connected) → Uint8Array 0/255 · I = Int32Array
+export function regionalMaxMask(I, W, H) {
+  const n = I.length, J = new Int32Array(n);
+  for (let i = 0; i < n; i++) J[i] = I[i] - 1;
+  reconstructDilate(J, I, W, H);
+  const out = new Uint8Array(n);
+  for (let i = 0; i < n; i++) out[i] = I[i] - J[i] >= 1 ? 255 : 0;
+  return out;
+}
+// H-maxima: กดยอดทุกยอดลง h ระดับ (ตัดที่ 0 เหมือน imhmax บน uint8) → Int32Array ใหม่
+export function hMaximaImage(I, W, H, h) {
+  const n = I.length, J = new Int32Array(n);
+  for (let i = 0; i < n; i++) J[i] = Math.max(I[i] - h, 0);
+  return reconstructDilate(J, I, W, H);
+}
+
+// ---- Gabor (สูตร getGaborKernel ของ OpenCV — build นี้ไม่มี จึงคำนวณเอง · ได้ kernel float32 เท่ากับ cv2.getGaborKernel ทุกค่า) ----
+export function gaborKernel(k, sigma, thetaDeg, lambd, gamma, psi) {
+  const th = (thetaDeg * Math.PI) / 180, c = Math.cos(th), s = Math.sin(th), half = (k - 1) / 2;
+  const ex = -0.5 / (sigma * sigma), ey = -0.5 / ((sigma / gamma) * (sigma / gamma)), cs = (2 * Math.PI) / lambd;
+  const out = new Float32Array(k * k);
+  for (let y = -half; y <= half; y++) {
+    for (let x = -half; x <= half; x++) {
+      const xr = x * c + y * s, yr = -x * s + y * c;
+      out[(half - y) * k + (half - x)] = Math.exp(ex * xr * xr + ey * yr * yr) * Math.cos(cs * xr + psi);
+    }
+  }
+  return out;
+}
+// σ จาก bandwidth (octave) ตามนิยามของ MATLAB imgaborfilt · ลำดับการคำนวณตายตัว (Python ใช้ลำดับเดียวกัน)
+export function gaborSigma(lambd, bandwidth) {
+  return lambd / Math.PI * Math.sqrt(Math.LN2 / 2) * (Math.pow(2, bandwidth) + 1) / (Math.pow(2, bandwidth) - 1);
+}
+export function gaborHalf(sigma, gamma) { return Math.min(49, Math.ceil(3 * sigma / gamma)); }
+
+// ---- GLCM ----
+// q = ระดับเทาที่ลดแล้ว (Uint8Array, 0..L−1) · offset (dx, dy) · คืน Float64Array L·L ของจำนวนคู่ [ระดับพิกเซล][ระดับเพื่อนบ้าน]
+export function glcmCounts(q, W, H, L, dx, dy) {
+  const C = new Float64Array(L * L);
+  const y0 = Math.max(0, -dy), y1 = Math.min(H, H - dy), x0 = Math.max(0, -dx), x1 = Math.min(W, W - dx);
+  for (let y = y0; y < y1; y++) {
+    for (let x = x0; x < x1; x++) C[q[y * W + x] * L + q[(y + dy) * W + x + dx]]++;
+  }
+  return C;
+}
+// 4 ค่าของ graycoprops (index เริ่ม 0 — ผลเท่า MATLAB ที่เริ่ม 1) · ไม่มีคู่เลย → null · correlation null เมื่อทุกคู่อยู่ในระดับเดียว (σ = 0)
+export function glcmProps(C, L) {
+  let N = 0;
+  const rowNZ = new Uint8Array(L), colNZ = new Uint8Array(L);
+  for (let i = 0; i < L; i++) for (let j = 0; j < L; j++) { const c = C[i * L + j]; N += c; if (c > 0) { rowNZ[i] = 1; colNZ[j] = 1; } }
+  if (N === 0) return null;
+  let contrast = 0, energy = 0, homogeneity = 0, mi = 0, mj = 0;
+  for (let i = 0; i < L; i++) {
+    for (let j = 0; j < L; j++) {
+      const p = C[i * L + j] / N;
+      contrast += (i - j) * (i - j) * p;
+      energy += p * p;
+      homogeneity += p / (1 + Math.abs(i - j));
+      mi += i * p;
+      mj += j * p;
+    }
+  }
+  let vi = 0, vj = 0, cov = 0;
+  for (let i = 0; i < L; i++) {
+    for (let j = 0; j < L; j++) {
+      const p = C[i * L + j] / N;
+      vi += (i - mi) * (i - mi) * p;
+      vj += (j - mj) * (j - mj) * p;
+      cov += (i - mi) * (j - mj) * p;
+    }
+  }
+  let nzr = 0, nzc = 0;
+  for (let i = 0; i < L; i++) { nzr += rowNZ[i]; nzc += colNZ[i]; }
+  // σ = 0 เมื่อแถวหรือคอลัมน์ที่มีคู่เหลือระดับเดียว (ตัดสินจากจำนวนเต็ม ไม่พึ่งเศษปัดของ float)
+  const correlation = nzr <= 1 || nzc <= 1 ? null : cov / (Math.sqrt(vi) * Math.sqrt(vj));
+  return { contrast, correlation, energy, homogeneity, pairs: N };
+}
+
+// ---- Non-local Means (ภาพ 1 หรือ 3 ช่อง interleaved Uint8Array) ----
+// ลูป offset (dy นอก dx ใน) → d2 ต่อพิกเซล → integral image → หน้าต่าง patch ตัดที่ขอบ → น้ำหนัก exp(−(S/n)/h²) · ห้ามเปลี่ยนลำดับการบวก (Python บวกลำดับเดียวกัน)
+// d2 / integral เป็น Int32Array: ผลรวมจริงของหน้าต่างไม่เกิน 49·3·255² ≈ 9.6 ล้าน (< 2³¹) และผลต่างของ integral ที่ wrap รอบ 2³² ให้ค่าถูกเป๊ะเสมอ
+// (S จึงเป็นจำนวนเต็มแม่นเท่ากับแบบ Float64) · แยกฟังก์ชันตามจำนวนช่อง (1 / 3 / อื่น) เพื่อให้แต่ละลูป JIT แบบเดียว: รวมลูป 1 ช่องกับ 3 ช่องไว้ฟังก์ชันเดียว
+// วัดแล้วช้าลง 2 เท่าเมื่อสลับเรียกภาพเทา/สีในโปรเซสเดียวกัน (ผลเท่ากันทุก bit)
+function nlmD2(data, W, H, ch, dx, dy, xb, d2) {
+  for (let x = 0; x < W; x++) { const t = x + dx; xb[x] = t < 0 ? 0 : t >= W ? W - 1 : t; }
+  for (let y = 0; y < H; y++) {
+    const ty = y + dy, rb = (ty < 0 ? 0 : ty >= H ? H - 1 : ty) * W, ra = y * W;
+    if (ch === 1) {
+      for (let x = 0; x < W; x++) { const t = data[ra + x] - data[rb + xb[x]]; d2[ra + x] = t * t; }
+    } else if (ch === 3) {
+      for (let x = 0; x < W; x++) {
+        const p = (ra + x) * 3, b = (rb + xb[x]) * 3, t0 = data[p] - data[b], t1 = data[p + 1] - data[b + 1], t2 = data[p + 2] - data[b + 2];
+        d2[ra + x] = t0 * t0 + t1 * t1 + t2 * t2;
+      }
+    } else {
+      for (let x = 0; x < W; x++) { const p = ra + x, b = rb + xb[x]; let sq = 0; for (let c = 0; c < ch; c++) { const t = data[p * ch + c] - data[b * ch + c]; sq += t * t; } d2[p] = sq; }
+    }
+  }
+}
+// integral image ของ d2 แล้วคำนวณน้ำหนัก w ต่อพิกเซลของ offset นี้ (หน้าต่างตัดที่ขอบภาพ) → wbuf · บวกเข้า wsum ตามลำดับพิกเซล
+function nlmWeights(d2, W, H, ch, hh, dy, xb, xl, xh, yl, yh, I, wbuf, wsum) {
+  const W1 = W + 1;
+  for (let y = 0; y < H; y++) {
+    let rs = 0;
+    for (let x = 0; x < W; x++) { rs += d2[y * W + x]; I[(y + 1) * W1 + x + 1] = I[y * W1 + x + 1] + rs; }
+  }
+  for (let y = 0; y < H; y++) {
+    const y0 = yl[y], y1 = yh[y], wy = y1 - y0 + 1, i1 = (y1 + 1) * W1, i0 = y0 * W1;
+    for (let x = 0; x < W; x++) {
+      const x0 = xl[x], x1 = xh[x];
+      const S = (I[i1 + x1 + 1] - I[i0 + x1 + 1] - I[i1 + x0] + I[i0 + x0]) | 0;
+      const w = Math.exp(-(S / (wy * (x1 - x0 + 1) * ch)) / hh);
+      wbuf[y * W + x] = w;
+      wsum[y * W + x] += w;
+    }
+  }
+}
+function nlmAccum1(data, W, H, dy, xb, wbuf, out) {
+  for (let y = 0; y < H; y++) {
+    const ty = y + dy, rb = (ty < 0 ? 0 : ty >= H ? H - 1 : ty) * W, ra = y * W;
+    for (let x = 0; x < W; x++) out[ra + x] += wbuf[ra + x] * data[rb + xb[x]];
+  }
+}
+function nlmAccum3(data, W, H, dy, xb, wbuf, out) {
+  for (let y = 0; y < H; y++) {
+    const ty = y + dy, rb = (ty < 0 ? 0 : ty >= H ? H - 1 : ty) * W, ra = y * W;
+    for (let x = 0; x < W; x++) {
+      const w = wbuf[ra + x], p3 = (ra + x) * 3, b3 = (rb + xb[x]) * 3;
+      out[p3] += w * data[b3]; out[p3 + 1] += w * data[b3 + 1]; out[p3 + 2] += w * data[b3 + 2];
+    }
+  }
+}
+function nlmAccumN(data, W, H, ch, dy, xb, wbuf, out) {
+  for (let y = 0; y < H; y++) {
+    const ty = y + dy, rb = (ty < 0 ? 0 : ty >= H ? H - 1 : ty) * W, ra = y * W;
+    for (let x = 0; x < W; x++) { const w = wbuf[ra + x], p = ra + x, b = rb + xb[x]; for (let c = 0; c < ch; c++) out[p * ch + c] += w * data[b * ch + c]; }
+  }
+}
+export function nlmCore(data, W, H, ch, h, pr, sr) {
+  const N = W * H, hh = h * h;
+  const out = new Float64Array(N * ch), wsum = new Float64Array(N), wbuf = new Float64Array(N), d2 = new Int32Array(N), I = new Int32Array((W + 1) * (H + 1));
+  const xb = new Int32Array(W), xl = new Int32Array(W), xh = new Int32Array(W), yl = new Int32Array(H), yh = new Int32Array(H);
+  for (let x = 0; x < W; x++) { xl[x] = Math.max(0, x - pr); xh[x] = Math.min(W - 1, x + pr); }
+  for (let y = 0; y < H; y++) { yl[y] = Math.max(0, y - pr); yh[y] = Math.min(H - 1, y + pr); }
+  for (let dy = -sr; dy <= sr; dy++) {
+    for (let dx = -sr; dx <= sr; dx++) {
+      nlmD2(data, W, H, ch, dx, dy, xb, d2);
+      nlmWeights(d2, W, H, ch, hh, dy, xb, xl, xh, yl, yh, I, wbuf, wsum);
+      if (ch === 1) nlmAccum1(data, W, H, dy, xb, wbuf, out);
+      else if (ch === 3) nlmAccum3(data, W, H, dy, xb, wbuf, out);
+      else nlmAccumN(data, W, H, ch, dy, xb, wbuf, out);
+    }
+  }
+  const res = new Uint8Array(N * ch);
+  for (let p = 0; p < N; p++) {
+    for (let c = 0; c < ch; c++) {
+      const v = Math.floor(out[p * ch + c] / wsum[p] + 0.5);
+      res[p * ch + c] = v < 0 ? 0 : v > 255 ? 255 : v;
+    }
+  }
+  return res;
+}
+
+// ---- DCT 8×8 / JPEG ----
+let DCT8_TABLE = null;
+// C[u][x] = α(u)·cos((2x+1)uπ/16) · α(0) = √(1/8), α(u>0) = √(2/8) · Float64Array 64 (แถว u, คอลัมน์ x) · สร้างครั้งเดียว
+export function dct8Table() {
+  if (!DCT8_TABLE) {
+    DCT8_TABLE = new Float64Array(64);
+    for (let u = 0; u < 8; u++) {
+      const a = u === 0 ? Math.sqrt(1 / 8) : Math.sqrt(2 / 8);
+      for (let x = 0; x < 8; x++) DCT8_TABLE[u * 8 + x] = a * Math.cos(((2 * x + 1) * u * Math.PI) / 16);
+    }
+  }
+  return DCT8_TABLE;
+}
+// F = C·B·Cᵀ (B, F = Float64Array 64 แถว y/u คอลัมน์ x/v) · แยกเป็นสองรอบ (T = C·B แล้ว F = T·Cᵀ)
+export function dct8Forward(B, F) {
+  const C = dct8Table(), T = new Float64Array(64);
+  for (let u = 0; u < 8; u++) for (let x = 0; x < 8; x++) { let s = 0; for (let y = 0; y < 8; y++) s += C[u * 8 + y] * B[y * 8 + x]; T[u * 8 + x] = s; }
+  for (let u = 0; u < 8; u++) for (let v = 0; v < 8; v++) { let s = 0; for (let x = 0; x < 8; x++) s += T[u * 8 + x] * C[v * 8 + x]; F[u * 8 + v] = s; }
+  return F;
+}
+// B = Cᵀ·F·C
+export function dct8Inverse(F, B) {
+  const C = dct8Table(), T = new Float64Array(64);
+  for (let y = 0; y < 8; y++) for (let v = 0; v < 8; v++) { let s = 0; for (let u = 0; u < 8; u++) s += C[u * 8 + y] * F[u * 8 + v]; T[y * 8 + v] = s; }
+  for (let y = 0; y < 8; y++) for (let x = 0; x < 8; x++) { let s = 0; for (let v = 0; v < 8; v++) s += T[y * 8 + v] * C[v * 8 + x]; B[y * 8 + x] = s; }
+  return B;
+}
+// ตารางความสว่างมาตรฐาน JPEG Annex K.1 (แถวบน → ล่าง)
+const JPEG_Q50 = [16, 11, 10, 16, 24, 40, 51, 61, 12, 12, 14, 19, 26, 58, 60, 55, 14, 13, 16, 24, 40, 57, 69, 56, 14, 17, 22, 29, 51, 87, 80, 62,
+  18, 22, 37, 56, 68, 109, 103, 77, 24, 35, 55, 64, 81, 104, 113, 92, 49, 64, 78, 87, 103, 121, 120, 101, 72, 92, 95, 98, 112, 100, 103, 99];
+// สเกลแบบ IJG: S = q < 50 ? floor(5000/q) : 200 − 2q · Qs = max(1, floor((Q·S + 50)/100)) · q ต้องเป็นจำนวนเต็ม 1–100
+export function jpegQTable(quality) {
+  const S = quality < 50 ? Math.floor(5000 / quality) : 200 - 2 * quality;
+  return Int32Array.from(JPEG_Q50, (q) => Math.max(1, Math.floor((q * S + 50) / 100)));
+}
+
+// ===================================================================
 // OPS — operation ย่อยแต่ละตัว (logic เดิม ไม่เปลี่ยน)
 // ===================================================================
 export const OPS = {
@@ -1766,7 +2087,7 @@ export const OPS = {
   morphology: {
     name: "Morphological Operation",
     needs: "gray",
-    desc: "จัดการ 'รูปทรง' ของวัตถุขาวในภาพขาว-ดำ ด้วยการเอาตัวแปรง (kernel) ไล่ทาบทั่วภาพ: Erode กัดวัตถุให้ผอมลง/ลบจุดจิ๋วรบกวน, Dilate พอกให้อ้วนขึ้น/อุดรูโหว่, Opening ลบจุดเล็กแต่คงขนาดเดิม, Closing อุดรูข้างในวัตถุ, Gradient ดึงเฉพาะเส้นขอบ ส่วน TopHat/BlackHat ดึงส่วนที่สว่าง/มืดกว่ารอบข้าง มักใช้ต่อหลัง threshold",
+    desc: "จัดการ 'รูปทรง' ของวัตถุขาวในภาพขาว-ดำ ด้วยการเอาตัวแปรง (kernel) ไล่ทาบทั่วภาพ: Erode กัดวัตถุให้ผอมลง/ลบจุดจิ๋วรบกวน, Dilate พอกให้อ้วนขึ้น/อุดรูโหว่, Opening ลบจุดเล็กแต่คงขนาดเดิม, Closing อุดรูข้างในวัตถุ, Gradient ดึงเฉพาะเส้นขอบ ส่วน TopHat/BlackHat ดึงส่วนที่สว่าง/มืดกว่ารอบข้าง มักใช้ต่อหลัง threshold · Hit-or-Miss หาลายแม่แบบ 3×3 (บางช่องต้องขาว บางช่องต้องดำ) โดย erode ภาพขาวด้วยช่อง 'ต้องขาว' แล้ว AND กับ erode ภาพกลับด้านด้วยช่อง 'ต้องดำ' — นอกขอบภาพ OpenCV นับเป็น 'ไม่สน' ส่วน MATLAB bwhitmiss นับเป็นดำ จุดที่ติดขอบภาพจึงอาจนับต่างกัน · กรณีหาปลายเส้นทั่วไป Endpoints & Branchpoints สะดวกกว่า · Regional Maxima / H-maxima / Extended Maxima ใช้หา 'ยอด' ในภาพเทาหรือภาพ Distance Transform เพื่อทำ marker แยกวัตถุที่ติดกัน — noise ทำให้เกิดยอดเล็กจำนวนมาก เพิ่ม h หรือ blur ก่อน · นับแบบ 8-connected เหมือนค่าเริ่มต้นของ MATLAB",
     params: [
       { key: "op", type: "select", label: "Operation", options: [
         { value: "erode", label: "Erosion (กัดให้เล็กลง)", hint: "กัดขอบวัตถุขาวให้ผอมลง ลบจุดจิ๋วรบกวน" },
@@ -1783,6 +2104,11 @@ export const OPS = {
         { value: "reconstruct_open", label: "Opening by Reconstruction (คงรูปร่างเดิม)", hint: "เหมือน Opening แต่รักษาขอบวัตถุที่รอดไว้แม่นกว่า (ไม่มุมมน) — ใช้ ksize/จำนวนรอบ ด้านล่างเป็นขนาดกัดตอนสร้าง marker แต่ 'รูปร่าง kernel' ด้านล่างไม่มีผล (ใช้ Rect เสมอตอนกัด marker)" },
         { value: "convex_hull", label: "Convex Hull (ห่อด้วยรูปนูน)", hint: "ห่อแต่ละวัตถุด้วยรูปนูนที่เล็กที่สุดที่ครอบวัตถุไว้ได้พอดี (เหมือนรัดหนังยางรอบวัตถุ) แล้วเทียบพื้นที่เดิมกับพื้นที่รูปนูนเป็นค่า solidity (รวมทุกชิ้น ชิ้นใหญ่มีน้ำหนักมากกว่า) เส้นบาง/จุดเดี่ยวก็ถูกห่อและนับเป็นหนึ่งชิ้นด้วย — ใช้หารอยบิ่น/รอยเว้าของวัตถุ (solidity ยิ่งต่ำ ยิ่งเว้าแหว่งมาก) ไม่ใช้ค่า 'รูปร่าง kernel'/'ขนาด kernel'/'จำนวนรอบ' ด้านล่างเลย" },
         { value: "endpoints_branchpoints", label: "Endpoints & Branchpoints (จุดปลาย/จุดแยก)", hint: "⚠️ ใช้ต่อจาก Skeleton เสมอ — ถ้าวัตถุยังหนาอยู่ (ไม่ใช่เส้นบาง 1 พิกเซล) การนับจะไม่มีความหมาย นับเพื่อนบ้านสีขาว 8 ทิศรอบแต่ละพิกเซลเส้น: มีเพื่อนบ้าน 1 จุด = จุดปลาย (วาดวงเขียว), ส่วนจุดแยก (วาดวงแดง) ใช้ Crossing Number (นับจำนวนช่วงที่ขาว-ดำสลับกันรอบวงแหวนเพื่อนบ้าน หาร 2) ≥3 — ไม่ใช่แค่นับจำนวนเพื่อนบ้านตรง ๆ เพราะพิกเซลข้างจุดตัดจริงก็มีเพื่อนบ้าน ≥3 ได้เหมือนกันแต่ไม่ใช่จุดแยกจริง เป็นค่าประมาณ ไม่ใช่ lookup table แบบที่ MATLAB ใช้จริง ใช้นับจำนวนกิ่ง/ปลายของรอยร้าวหรือเส้นลายเส้นได้ ไม่ใช้ค่า 'รูปร่าง kernel'/'ขนาด kernel'/'จำนวนรอบ' ด้านล่างเลย" },
+        { value: "hit_or_miss", label: "Hit-or-Miss (หาลายแม่แบบ 3×3)", hint: "หาตำแหน่งที่ลายรอบพิกเซลตรงแม่แบบ: บางช่องต้องขาว บางช่องต้องดำ บางช่องไม่สน — ภาพที่ไม่ใช่ขาว-ดำล้วนจะถูกตัดที่ 127 ก่อน · ไม่ใช้ค่า รูปร่าง/ขนาด kernel/จำนวนรอบ ด้านล่าง" },
+        { value: "regional_max", label: "Regional Maxima (ยอดเฉพาะที่)", hint: "บริเวณที่สว่างกว่าทุกพิกเซลรอบตัว (ใช้ภาพเทา ไม่ตัด 127) — ผลเป็นภาพขาว-ดำ · ไม่ใช้ค่า รูปร่าง/ขนาด kernel/จำนวนรอบ ด้านล่าง" },
+        { value: "regional_min", label: "Regional Minima (หุบเฉพาะที่)", hint: "บริเวณที่มืดกว่าทุกพิกเซลรอบตัว (ใช้ภาพเทา ไม่ตัด 127) — ผลเป็นภาพขาว-ดำ" },
+        { value: "h_maxima", label: "H-maxima transform (ตัดยอดที่เตี้ยกว่า h)", hint: "ผลเป็นภาพเทา: ยอดทุกยอดถูกกดลง h ระดับ ยอดที่สูงไม่ถึง h หายไป — ใช้ค่า 'ความสูง h' ด้านล่าง" },
+        { value: "extended_max", label: "Extended Maxima (ยอดที่สูงกว่ารอบข้างอย่างน้อย h)", hint: "= Regional Maxima ของ H-maxima · ใช้ทำ marker ให้ Watershed — ใช้ค่า 'ความสูง h' ด้านล่าง" },
       ], default: "erode" },
       { key: "shape", type: "select", label: "รูปร่าง kernel (ไม่มีผลกับ Skeleton และ Opening by Reconstruction)", options: [
         { value: "rect", label: "สี่เหลี่ยม (Rect)" },
@@ -1796,8 +2122,14 @@ export const OPS = {
       { key: "iterations", type: "number", label: "จำนวนรอบ", min: 1, max: 5, step: 1, default: 1, desc: "ทำ operation ซ้ำกี่รอบ — มาก = ผลยิ่งเข้มขึ้น (สำหรับ Opening by Reconstruction คือจำนวนรอบกัดตอนสร้าง marker)" },
       { key: "minArea", type: "number", label: "พื้นที่ขั้นต่ำ (px) — ใช้กับ Remove Small Objects เท่านั้น", min: 10, max: 5000, step: 10, default: 150, desc: "วัตถุที่มีพื้นที่น้อยกว่านี้ (พิกเซล) จะถูกลบทิ้ง — พารามิเตอร์นี้ไม่มีผลกับ Operation อื่นนอกจาก Remove Small Objects" },
       { key: "lineAngle", type: "number", label: "มุมของเส้น (องศา) — ใช้กับรูปร่าง Line เท่านั้น", min: 0, max: 179, step: 1, default: 0, desc: "0° = แนวนอน, 90° = แนวตั้ง — ไม่มีผลถ้าเลือกรูปร่างอื่น" },
+      { key: "hmPattern", type: "select", label: "แม่แบบ Hit-or-Miss — ใช้กับ Hit-or-Miss เท่านั้น", options: Object.entries(HITMISS_PATTERNS).map(([value, v]) => ({ value, label: v.label })), default: "isolated" },
+      { key: "hmRotate", type: "boolean", label: "รวมทั้ง 4 ทิศ (หมุนทีละ 90°) — ใช้กับ Hit-or-Miss เท่านั้น", default: true },
+      { key: "hHeight", type: "number", label: "ความสูง h — ใช้กับ H-maxima / Extended Maxima เท่านั้น", min: 1, max: 255, step: 1, default: 10, desc: "ยอดที่สูงกว่ารอบข้างไม่ถึง h ระดับ (0–255) จะถูกตัดทิ้ง — เพิ่ม h เมื่อภาพมี noise มาก" },
     ],
     apply(cv, src, p, ctx) {
+      // IP batch 4B — ตัวเลือกใหม่ (ไม่ใช้ shape/ksize/iterations) · path เดิมทุกตัวด้านล่างไม่เปลี่ยน
+      if (p.op === "hit_or_miss") return hitMissOp(cv, src, p, ctx);
+      if (p.op === "regional_max" || p.op === "regional_min" || p.op === "h_maxima" || p.op === "extended_max") return regionalOp(cv, src, p, ctx);
       if (p.op === "fill_holes") {
         // imfill semantics: เติมเฉพาะ "รู" (บริเวณ 0) ที่ปิดสนิท คือไม่ต่อกับขอบภาพเลยแม้แต่จุดเดียว
         // แนวทาง: (1) binarize ที่ 127 กันภาพเกรย์ที่ไม่ใช่ 0/255 ล้วน (2) เติมขอบ 0 หนา 1px รอบภาพ
@@ -6872,7 +7204,762 @@ export const OPS = {
       }
     },
   },
+
+  // ===================================================================
+  // IP batch 4B (2026-10-15) — 8 op ใหม่ (สเปก specs/ip_batch4B_2026-10-15.md) · ตัวช่วยอยู่ด้านบน (ก่อน OPS) และท้ายตาราง OPS
+  // ===================================================================
+  // Wiener Deconvolution — F = G·H*/(|H|² + NSR) ในโดเมนความถี่ · ภาพเทา 1 ช่อง / สี 3 ช่อง (ใช้ OTF ชุดเดียว) · ขอบภาพใช้การสะท้อนค่า
+  deconv_wiener: {
+    name: "Wiener Deconvolution (แก้ภาพเบลอเมื่อรู้ PSF)",
+    needs: "any",
+    desc: "แก้ภาพเบลอ 'ย้อนกลับ' เมื่อรู้หน้าตาของการเบลอ: PSF (point spread function) คือหน้าตาของจุดเดียวหลังเบลอ — ถ้ารู้ PSF ก็ 'หารกลับ' ในโดเมนความถี่ได้ · สูตร F = G·H*/(|H|² + NSR) — G คือภาพเบลอ, H คือ PSF, NSR กันการหารด้วยค่าเกือบ 0 ที่ทำให้ noise ระเบิด · ลองแบบนี้: ใช้ Custom Kernel preset Motion (ค่าเริ่มต้น 9 px 0°) ทำภาพเบลอก่อน แล้วต่อกล่องนี้ด้วยค่าเริ่มต้น → ภาพกลับมาคมขึ้น · ถ้าขนาด/มุม PSF ไม่ตรงกับที่เบลอจริง ผลจะแย่ลง · รอยคลื่น (ringing) รอบขอบคมเป็นเรื่องปกติของ deconvolution และขอบภาพใช้การสะท้อนค่าแทน edgetaper ของ MATLAB · ภาพ 8 bit มีรอยปัดเศษเสมอ NSR = 0 จึงแทบไม่เคยใช้ได้ · เทียบ deconvwnr(I, PSF, NSR) ของ MATLAB · ไม่รองรับการเดา PSF เอง (blind deconvolution)",
+    params: [
+      ...psfParamDefs(),
+      { key: "nsr", type: "number", label: "NSR (noise ÷ สัญญาณ)", min: 0, max: 0.5, step: 0.001, default: 0.01, desc: "0 = หารตรง (inverse filter) ขยาย noise รุนแรง · มากขึ้น = เนียนขึ้นแต่คมน้อยลง · MATLAB deconvwnr ใช้ความหมายเดียวกัน" },
+    ],
+    apply(cv, src, p, ctx) {
+      if (isEmptyMat(src)) { if (ctx) ctx.info = "ภาพว่าง"; return src.clone(); }
+      const { kind, size, angle, psf } = psfFromParams(p);
+      const nsr = numIn(p.nsr, 0.01, 0, 0.5);
+      let rgb = null, dst = null;
+      try {
+        rgb = dropAlpha(cv, src);
+        dst = wienerDeconvolve(cv, rgb || src, psf, nsr);
+        if (ctx) ctx.info = `Wiener deconvolution · PSF ${psfInfo(kind, size, angle, psf.n)} · NSR ${nsr}` + (nsr === 0 ? " · NSR = 0 คือหารตรง (inverse filter) — noise และรอยปัดเศษ 8 bit ถูกขยายมาก" : "") + bigImageNote(src, 0);
+        const out = dst; dst = null;
+        return out;
+      } finally {
+        if (dst) dst.delete();
+        if (rgb) rgb.delete();
+      }
+    },
+  },
+
+  // Lucy-Richardson — สูตรพื้นฐาน (ไม่มีตัวเร่ง/damping แบบ MATLAB) · filter2D เป็น correlation → ใช้ PSF พลิก (Kf) เป็น convolution แล้ว PSF ตรงเป็น adjoint
+  deconv_lucy: {
+    name: "Lucy-Richardson Deconvolution (แก้เบลอแบบวนรอบ)",
+    modeHint: SLOW_MODE_HINT,
+    needs: "any",
+    desc: "เดาภาพคมทีละรอบ: เบลอภาพที่เดาด้วย PSF → เทียบกับภาพจริง → แก้ภาพที่เดาตามอัตราส่วน (จริง ÷ ที่เบลอ) แล้ววนซ้ำ · ต่างจาก Wiener ตรงที่ค่าไม่ติดลบเสมอและค่อย ๆ คมขึ้นตามจำนวนรอบ · รอบมากเกิน noise ถูกขยาย — ดูผลทีละ 5–10 รอบ · ช้า: ภาพ 640×480 สี 10 รอบ ราวครึ่งวินาที เหมาะกับภาพนิ่ง · เทียบ deconvlucy(I, PSF, N) ของ MATLAB — MATLAB มีตัวเร่ง (acceleration) และ damping ส่วนแอปเป็นสูตรพื้นฐาน ผลจึงต่างกันเมื่อรอบเท่ากัน",
+    params: [
+      ...psfParamDefs(),
+      { key: "iterations", type: "number", label: "จำนวนรอบ", min: 1, max: LUCY_MAX_ITERS, step: 1, default: 10, desc: "มากขึ้น = คมขึ้นแต่ noise และ ringing เพิ่ม · MATLAB ค่าเริ่มต้น 10" },
+    ],
+    apply(cv, src, p, ctx) {
+      if (isEmptyMat(src)) { if (ctx) ctx.info = "ภาพว่าง"; return src.clone(); }
+      const { kind, size, angle, psf } = psfFromParams(p);
+      const iters = intIn(p.iterations, 10, 1, LUCY_MAX_ITERS);
+      let rgb = null, dst = null;
+      try {
+        rgb = dropAlpha(cv, src);
+        const x = rgb || src;
+        dst = lucyDeconvolve(cv, x, psf, iters);
+        if (ctx) ctx.info = `Lucy-Richardson ${iters} รอบ · PSF ${psfInfo(kind, size, angle, psf.n)}` + (x.channels() === 3 ? " · ภาพสีใช้เวลาราว 3 เท่าของภาพเทา" : "") + bigImageNote(src, iters);
+        const out = dst; dst = null;
+        return out;
+      } finally {
+        if (dst) dst.delete();
+        if (rgb) rgb.delete();
+      }
+    },
+  },
+
+  // ECC (findTransformECC ของ OpenCV) — A = ภาพที่ขยับ, B = ภาพอ้างอิง · ย่อภาพก่อนจับคู่แล้วขยาย warp กลับ · ไม่ลู่เข้า/ภาพเรียบ/เล็ก = คืน A เดิม (ไม่ throw)
+  ecc_register: {
+    name: "Image Registration ECC (จัดภาพให้ตรงกัน)",
+    needs: "any",
+    desc: "หาการขยับ (เลื่อน / หมุน / ย่อขยาย / มุมมอง) ที่ทำให้ภาพ A ทับภาพ B ได้ตรง โดยเพิ่มค่าความสัมพันธ์ (ECC) ทีละรอบ · ใช้คู่กับ Absolute Difference เพื่อหาสิ่งที่เปลี่ยนไประหว่างสองภาพ (เช่นชิ้นงานกับภาพต้นแบบที่วางเอียงต่างกัน) · ต้องเหลื่อมกันไม่มาก (ราวไม่เกิน 10% ของขนาดภาพ) และมีลวดลาย — ภาพเรียบหรือเลื่อนไกลจะไม่ลู่เข้า · เลือกแบบการขยับให้น้อยเท่าที่พอ แบบที่อิสระมากลู่เข้ายากกว่าและช้ากว่า · ค่า dx, dy = ตำแหน่งใน A ของมุมซ้ายบนของ B · เทียบ imregister ของ MATLAB (MATLAB ใช้ optimizer อีกแบบ) แอปใช้ findTransformECC ของ OpenCV — สคริปต์ Python (cv2 5.0) ได้ค่าต่างจากแอปได้ราว 0.05 px",
+    params: [
+      { key: "motion", type: "select", label: "แบบการขยับ", options: [
+        { value: "translation", label: "เลื่อนอย่างเดียว" },
+        { value: "euclidean", label: "เลื่อน + หมุน" },
+        { value: "affine", label: "เลื่อน + หมุน + ย่อขยาย + เฉือน" },
+        { value: "homography", label: "มุมมองเปลี่ยน (perspective)" },
+      ], default: "euclidean" },
+      { key: "iterations", type: "number", label: "จำนวนรอบสูงสุด", min: 10, max: 300, step: 10, default: 50 },
+      { key: "maxSide", type: "number", label: "ย่อภาพก่อนจับคู่ (ด้านยาว px)", min: 64, max: 1024, step: 32, default: ECC_DEFAULT_SIDE, desc: "เล็ก = เร็ว · ใหญ่ = ละเอียดขึ้น (640 ≈ 180 ms)" },
+      { key: "view", type: "select", label: "แสดงผลเป็น", options: [
+        { value: "aligned", label: "A ที่จัดแล้ว" },
+        { value: "overlay", label: "ซ้อนสี (ม่วง = A, เขียว = B, เทา = ตรงกัน)" },
+        { value: "diff", label: "ความต่าง |A ที่จัดแล้ว − B|" },
+      ], default: "aligned" },
+    ],
+    apply(cv, src, p, ctx) {
+      const pass = passthroughNoSrc2(src, ctx);
+      if (pass) { if (ctx) ctx.values = scalarValues(ECC_FIELDS, [0]); return pass; }
+      if (isEmptyMat(src)) { ctx.info = "ภาพว่าง"; ctx.values = scalarValues(ECC_FIELDS, [0]); return src.clone(); }
+      const motion = ownKey(ECC_MOTIONS, p.motion, "euclidean");
+      const iters = intIn(p.iterations, 50, 10, 300), maxSide = intIn(p.maxSide, ECC_DEFAULT_SIDE, 64, 1024);
+      const view = ownKey(ECC_VIEWS, p.view, "aligned");
+      const W = src.cols, H = src.rows, homog = motion === "homography";
+      let matched = null, gA0 = null, gB0 = null, rA = null, rB = null, mean = null, sd = null, warp = null, mask = null, out = null, gO0 = null, extra = null, dst = null;
+      // ล้มเหลว (ภาพเล็ก/เรียบ/ไม่ลู่เข้า) → คืน A เดิม + ecc_ok = 0 · ห้ามแตะค่าที่ catch ได้ (ถ้าเป็นเลข = C++ exception ที่รั่วอยู่แล้ว แก้ในแอปไม่ได้)
+      const fail = (msg) => { ctx.info = msg; ctx.values = scalarValues(ECC_FIELDS, [0]); return src.clone(); };
+      try {
+        const m = matchSize(cv, src, ctx.src2);
+        matched = m.resized ? m.mat : null;
+        const Bm = m.mat;
+        gA0 = grayIfNeeded(cv, src);
+        gB0 = grayIfNeeded(cv, Bm);
+        const gA = gA0 || src, gB = gB0 || Bm;
+        const sc = analysisScale(W, H, maxSide), s = sc.scale;
+        let sA = gA, sB = gB;
+        if (s < 1) {
+          rA = new cv.Mat(); cv.resize(gA, rA, new cv.Size(sc.w, sc.h), 0, 0, cv.INTER_AREA); sA = rA;
+          rB = new cv.Mat(); cv.resize(gB, rB, new cv.Size(sc.w, sc.h), 0, 0, cv.INTER_AREA); sB = rB;
+        }
+        if (Math.min(sA.cols, sA.rows) < 16) return fail("ภาพเล็กเกินไปสำหรับจัดภาพ (ต้องกว้าง/สูงอย่างน้อย 16 px หลังย่อ)");
+        mean = new cv.Mat(); sd = new cv.Mat();
+        cv.meanStdDev(sA, mean, sd);
+        const stdA = sd.doubleAt(0, 0);
+        cv.meanStdDev(sB, mean, sd);
+        const stdB = sd.doubleAt(0, 0);
+        if (stdA < 1 || stdB < 1) return fail("ภาพเรียบเกินไป ไม่มีลวดลายให้จับคู่");
+        warp = cv.matFromArray(homog ? 3 : 2, 3, cv.CV_32FC1, homog ? [1, 0, 0, 0, 1, 0, 0, 0, 1] : [1, 0, 0, 0, 1, 0]);
+        mask = new cv.Mat();
+        const crit = new cv.TermCriteria(cv.TermCriteria_COUNT + cv.TermCriteria_EPS, iters, 1e-5);
+        let rho = 0, ok = false;
+        // template = B, input = A — warp แปลงพิกัดของ B ไปหา A · ต้องส่ง 7 อาร์กิวเมนต์
+        try { rho = cv.findTransformECC(sB, sA, warp, cv[ECC_MOTIONS[motion].code], crit, mask, 5); ok = true; } catch (e) { ok = false; }
+        if (!ok) return fail("จัดภาพไม่สำเร็จ (ไม่ลู่เข้า) — ลองเพิ่มจำนวนรอบ ใช้แบบเลื่อนอย่างเดียว หรือให้สองภาพเหลื่อมกันน้อยลง · ถ้าล้มเหลวซ้ำ ๆ อย่าปล่อยให้รันต่อเนื่องบนกล้องสด (หน่วยความจำจะรั่วทีละน้อยทุกเฟรม) — ใช้กับภาพนิ่งแทน");
+        // ขยาย warp กลับขนาดจริง (ค่าเลื่อนเป็น px ของภาพย่อ) · ใช้ s ตัวเดียวทั้ง x/y ทั้งที่ภาพย่อปัดขนาดแยกแกน (คลาดน้อยกว่า 0.03 px) — ตามสเปก Python ทำเหมือนกัน
+        const w = warp.data32F;
+        w[2] = w[2] / s; w[5] = w[5] / s;
+        if (homog) { w[6] = w[6] * s; w[7] = w[7] * s; }
+        const dx = w[2], dy = w[5], w00 = w[0], w01 = w[1], w10 = w[3], w11 = w[4];
+        const angle = Math.atan2(w10, w00) * 180 / Math.PI, scale = Math.sqrt(Math.abs(w00 * w11 - w01 * w10));
+        out = new cv.Mat();
+        const flags = cv.INTER_LINEAR + cv.WARP_INVERSE_MAP;
+        if (homog) cv.warpPerspective(src, out, warp, new cv.Size(W, H), flags, cv.BORDER_CONSTANT, new cv.Scalar(0, 0, 0, 0));
+        else cv.warpAffine(src, out, warp, new cv.Size(W, H), flags, cv.BORDER_CONSTANT, new cv.Scalar(0, 0, 0, 0));
+        if (view === "aligned") { dst = out; out = null; }
+        else {
+          gO0 = grayIfNeeded(cv, out);
+          const gO = gO0 || out;
+          if (view === "diff") {
+            extra = new cv.Mat();
+            cv.absdiff(gO, gB, extra);
+            dst = extra; extra = null;
+          } else {
+            const N = W * H, go = gO.data, gb = gB.data, res = new Uint8Array(N * 3);
+            for (let i = 0; i < N; i++) { res[3 * i] = go[i]; res[3 * i + 1] = gb[i]; res[3 * i + 2] = go[i]; }
+            dst = cv.matFromArray(H, W, cv.CV_8UC3, res);
+          }
+        }
+        ctx.values = scalarValues(ECC_FIELDS, [1, rho, dx, dy, angle, scale]);
+        ctx.info = `จัดภาพแบบ${ECC_MOTIONS[motion].th} · A เลื่อน (${fixed2(dx)}, ${fixed2(dy)}) px · หมุน ${fixed2(angle)}° · ขยาย ×${fixed3(scale)} · ρ = ${fixed3(rho)}`
+          + (s < 1 ? ` · จับคู่บนภาพย่อ ${sc.w}×${sc.h}` : "") + (m.resized ? RESIZED_B_INFO : "");
+        const result = dst; dst = null;
+        return result;
+      } finally {
+        for (const mm of [dst, extra, gO0, out, warp, mask, sd, mean, rB, rA, gB0, gA0, matched]) if (mm) mm.delete();
+      }
+    },
+  },
+
+  // Gabor — kernel จาก gaborKernel (สูตร getGaborKernel) · ส่วนจริงลบค่าเฉลี่ยของ kernel (พื้นเรียบ → 0) · ปรับให้ค่าสูงสุดเป็น 255 ทุกภาพ
+  gabor_filter: {
+    name: "Gabor Filter (หาลายตามความถี่และทิศ)",
+    needs: "gray",
+    desc: "Gabor = คลื่น cos คูณระฆังเกาส์ — ตอบสนองแรงตรงที่มีลายซ้ำระยะ λ ในทิศ θ · ใช้ทำ texture: ต่อหลายกล่องที่ θ ต่างกัน (เช่น 0/45/90/135) แล้วเทียบกัน · magnitude ไม่สนว่าลายเลื่อนไปครึ่งช่วงคลื่น ส่วน real เห็นลายบวก/ลบ · ค่าเริ่มต้น bandwidth/aspect ตาม imgaborfilt ของ MATLAB แต่แอปลบค่าเฉลี่ยของ kernel ส่วนจริงออก ผลจึงไม่เท่า MATLAB ทุกค่า · OpenCV.js ชุดนี้ไม่มี getGaborKernel แอปจึงคำนวณสูตรเดียวกันเอง · ภาพปรับความสว่างอัตโนมัติ — สองภาพเทียบกันได้จากตัวเลขในแผงเท่านั้น",
+    params: [
+      { key: "wavelength", type: "number", label: "ความยาวคลื่น λ (px)", min: 2, max: 64, step: 1, default: 8, desc: "ระยะห่างของลายที่ต้องการหา" },
+      { key: "orientation", type: "number", label: "มุม θ (องศา)", min: 0, max: 179, step: 1, default: 0, desc: "0° = ตอบสนองลายเส้นแนวตั้ง (คลื่นวิ่งตามแนวนอน) · 90° = ลายแนวนอน" },
+      { key: "bandwidth", type: "number", label: "แบนด์วิดท์ (octave)", min: 0.5, max: 3, step: 0.1, default: 1, hint: "MATLAB ค่าเริ่มต้น 1" },
+      { key: "aspect", type: "number", label: "อัตราส่วนรูปไข่ γ", min: 0.2, max: 1, step: 0.05, default: 0.5, hint: "MATLAB ค่าเริ่มต้น 0.5" },
+      { key: "output", type: "select", label: "แสดงผลเป็น", options: [
+        { value: "magnitude", label: "ขนาดผลตอบสนอง (ไม่สนเฟส)" },
+        { value: "real", label: "ส่วนจริง (เห็นลายบวก/ลบ)" },
+      ], default: "magnitude" },
+    ],
+    apply(cv, src, p, ctx) {
+      if (isEmptyMat(src)) { if (ctx) { ctx.info = "ภาพว่าง"; ctx.values = scalarValues(GABOR_FIELDS, []); } return src.clone(); }
+      const lambd = intIn(p.wavelength, 8, 2, 64), theta = intIn(p.orientation, 0, 0, 179);
+      const bw = numIn(p.bandwidth, 1, 0.5, 3), gamma = numIn(p.aspect, 0.5, 0.2, 1);
+      const output = ownKey(GABOR_OUTPUTS, p.output, "magnitude");
+      const sigma = gaborSigma(lambd, bw), half = gaborHalf(sigma, gamma), k = 2 * half + 1;
+      const even = gaborKernel(k, sigma, theta, lambd, gamma, 0);
+      let sum = 0;
+      for (let i = 0; i < even.length; i++) sum += even[i];
+      const mu = sum / (k * k);
+      for (let i = 0; i < even.length; i++) even[i] = Math.fround(even[i] - mu);
+      const odd = gaborKernel(k, sigma, theta, lambd, gamma, Math.PI / 2);
+      let g = null, F = null, ke = null, ko = null, re = null, im = null, mg = null, dst = null;
+      try {
+        g = grayIfNeeded(cv, src);
+        const s = g || src;
+        const W = s.cols, H = s.rows, N = W * H;
+        F = new cv.Mat();
+        s.convertTo(F, cv.CV_32F);
+        ke = cv.matFromArray(k, k, cv.CV_32FC1, even);
+        ko = cv.matFromArray(k, k, cv.CV_32FC1, odd);
+        re = new cv.Mat(); im = new cv.Mat();
+        const anchor = new cv.Point(-1, -1);
+        cv.filter2D(F, re, cv.CV_32F, ke, anchor, 0, cv.BORDER_REFLECT_101);
+        cv.filter2D(F, im, cv.CV_32F, ko, anchor, 0, cv.BORDER_REFLECT_101);
+        let resp = re;
+        if (output === "magnitude") { mg = new cv.Mat(); cv.magnitude(re, im, mg); resp = mg; }
+        const rd = resp.data32F, o = new Uint8Array(N);
+        let mx = 0, tot = 0;
+        for (let i = 0; i < N; i++) { const a = Math.abs(rd[i]); tot += a; if (a > mx) mx = a; }
+        // ภาพเรียบสนิท (ทุกพิกเซลเท่ากัน) → ไม่มีลาย: kernel ส่วนจริงลบค่าเฉลี่ยแล้วแต่ float32 ยังเหลือเศษ (วัดได้ถึง ~0.044 ที่ภาพขาว 255 กับ kernel ใหญ่)
+        // ซึ่งการปรับให้ค่าสูงสุดเป็น 255 จะขยายเป็นภาพขาวทั้งภาพ จึงตรวจว่าภาพเรียบจากข้อมูลต้นทางโดยตรง ไม่ใช้เกณฑ์ขนาดของเศษ
+        let none = !(mx > 0);
+        if (!none) { const sd0 = s.data; let lo = 255, hi = 0; for (let i = 0; i < N; i++) { const v = sd0[i]; if (v < lo) lo = v; if (v > hi) hi = v; } none = lo === hi; }
+        if (none) { mx = 0; tot = 0; }
+        if (output === "magnitude") for (let i = 0; i < N; i++) o[i] = none ? 0 : Math.floor(rd[i] * 255 / mx + 0.5);
+        else for (let i = 0; i < N; i++) o[i] = none ? 128 : Math.floor(128 + rd[i] * 127 / mx + 0.5);
+        dst = cv.matFromArray(H, W, cv.CV_8UC1, o);
+        if (ctx) {
+          ctx.values = scalarValues(GABOR_FIELDS, [tot / N, mx]);
+          ctx.info = `Gabor λ=${lambd} px θ=${theta}° (σ=${fixed2(sigma)} px, kernel ${k}×${k}) · `
+            + (none ? "ไม่พบลายที่ความถี่และทิศนี้ (ภาพเรียบ ทุกพิกเซลเท่ากัน)"
+              : output === "magnitude"
+                ? "สว่าง = มีลายที่ความถี่และทิศนี้ · ปรับให้ค่าสูงสุดเป็น 255 ทุกภาพ (ค่าจริงดูที่แผงตัวเลข)"
+                : "เทากลาง 128 = ไม่มีลาย · สว่างกว่า = ผลบวก มืดกว่า = ผลลบ · ปรับให้ค่าสูงสุดของ |ผล| อยู่ที่ขอบช่วง (ค่าจริงดูที่แผงตัวเลข)");
+        }
+        const out = dst; dst = null;
+        return out;
+      } finally {
+        for (const mm of [dst, mg, im, re, ko, ke, F, g]) if (mm) mm.delete();
+      }
+    },
+  },
+
+  // GLCM — นับคู่พิกเซลทั้งภาพ (ไม่ต้องใช้ cv) · 256×256 = ตาราง GLCM ขยายเป็นบล็อก · ค่าเริ่มต้นตรงกับ MATLAB graycomatrix (8 ระดับ, [0 1], ไม่ symmetric)
+  glcm: {
+    name: "GLCM Texture (ตารางคู่ระดับเทา)",
+    needs: "gray",
+    desc: "นับว่าคู่พิกเซลที่ห่างกัน d ในทิศที่เลือก มีระดับเทา (i, j) บ่อยแค่ไหน แล้วสรุปเป็น 4 ค่า: Contrast สูง = เพื่อนบ้านต่างกันมาก (ลายหยาบ/ขอบเยอะ) · Energy สูง = ลายซ้ำ ๆ เป็นระเบียบ · Homogeneity สูง = เรียบ · Correlation ใกล้ 1 = เพื่อนบ้านไปทางเดียวกัน · เปรียบเทียบได้เฉพาะภาพที่ตั้งค่าเดียวกัน (ระดับ/ระยะ/ทิศ) · ใช้ทั้งภาพ (MATLAB graycomatrix ก็เป็นทั้งภาพ) — ถ้าสนใจบริเวณเดียวให้ Crop ก่อน · เทียบ graycomatrix + graycoprops ของ MATLAB ค่าเริ่มต้นตรงกับ MATLAB (8 ระดับ, [0 1], ไม่ symmetric)",
+    params: [
+      { key: "levels", type: "select", label: "จำนวนระดับเทา", options: [
+        { value: "2", label: "2" }, { value: "4", label: "4" }, { value: "8", label: "8" }, { value: "16", label: "16" }, { value: "32", label: "32" }, { value: "64", label: "64" },
+      ], default: "8", hint: "MATLAB ค่าเริ่มต้น 8" },
+      { key: "distance", type: "number", label: "ระยะคู่พิกเซล (px)", min: 1, max: 10, step: 1, default: 1 },
+      { key: "angle", type: "select", label: "ทิศของคู่", options: [
+        { value: "0", label: "0° (ขวา)" }, { value: "45", label: "45° (ขวาบน)" }, { value: "90", label: "90° (บน)" }, { value: "135", label: "135° (ซ้ายบน)" }, { value: "avg", label: "เฉลี่ย 4 ทิศ" },
+      ], default: "0", hint: "MATLAB ค่าเริ่มต้น Offset [0 1] = 0°" },
+      { key: "symmetric", type: "boolean", label: "นับทั้งสองทาง (symmetric)", default: false },
+      { key: "view", type: "select", label: "แสดงผลเป็น", options: [
+        { value: "matrix", label: "ตาราง GLCM (ขยายเป็นภาพ 256×256)" },
+        { value: "quantized", label: "ภาพหลังลดระดับเทา" },
+      ], default: "matrix" },
+    ],
+    apply(cv, src, p, ctx) {
+      if (isEmptyMat(src)) { if (ctx) { ctx.info = "ภาพว่าง"; ctx.values = scalarValues(GLCM_FIELDS, []); } return src.clone(); }
+      const L = Number(ownKey(GLCM_LEVELS, p.levels, "8"));
+      const d = intIn(p.distance, 1, 1, 10);
+      const angle = ownKey(GLCM_ANGLES, p.angle, "0");
+      const sym = p.symmetric === true;
+      const view = ownKey(GLCM_VIEWS, p.view, "matrix");
+      let g = null, dst = null;
+      try {
+        g = grayIfNeeded(cv, src);
+        const s = g || src;
+        const W = s.cols, H = s.rows, N = W * H;
+        const sd = s.data, q = new Uint8Array(N);
+        for (let i = 0; i < N; i++) q[i] = Math.min(L - 1, Math.floor((sd[i] * L) / 255));
+        const dirs = angle === "avg" ? [0, 45, 90, 135] : [Number(angle)];
+        const OFF = { 0: [d, 0], 45: [d, -d], 90: [0, -d], 135: [-d, -d] };
+        const total = new Float64Array(L * L);
+        const props = [];
+        let pairs = 0;
+        for (const a of dirs) {
+          let C = glcmCounts(q, W, H, L, OFF[a][0], OFF[a][1]);
+          if (sym) { const T = new Float64Array(L * L); for (let i = 0; i < L; i++) for (let j = 0; j < L; j++) T[i * L + j] = C[i * L + j] + C[j * L + i]; C = T; }
+          const pr = glcmProps(C, L);
+          props.push(pr);
+          if (pr) pairs += pr.pairs;
+          for (let i = 0; i < L * L; i++) total[i] += C[i];
+        }
+        const avgOf = (key) => {
+          let sum = 0;
+          for (const pr of props) { if (!pr || pr[key] === null) return null; sum += pr[key]; }
+          return sum / props.length;
+        };
+        const vals = pairs === 0 ? [null, null, null, null, 0]
+          : [avgOf("contrast"), avgOf("correlation"), avgOf("energy"), avgOf("homogeneity"), pairs];
+        if (view === "matrix") {
+          const o = new Uint8Array(256 * 256), bs = 256 / L;
+          let cmax = 0;
+          for (let i = 0; i < L * L; i++) if (total[i] > cmax) cmax = total[i];
+          for (let y = 0; y < 256; y++) {
+            const i = Math.floor(y / bs);
+            for (let x = 0; x < 256; x++) {
+              const c = total[i * L + Math.floor(x / bs)];
+              o[y * 256 + x] = c === 0 ? 0 : Math.floor(255 * Math.log1p(c) / Math.log1p(cmax) + 0.5);
+            }
+          }
+          dst = cv.matFromArray(256, 256, cv.CV_8UC1, o);
+        } else {
+          const o = new Uint8Array(N);
+          for (let i = 0; i < N; i++) o[i] = Math.floor(q[i] * 255 / (L - 1) + 0.5);
+          dst = cv.matFromArray(H, W, cv.CV_8UC1, o);
+        }
+        if (ctx) {
+          ctx.values = scalarValues(GLCM_FIELDS, vals);
+          const angTxt = angle === "avg" ? "เฉลี่ย 4 ทิศ" : `${angle}°`;
+          if (pairs === 0) ctx.info = `ภาพเล็กกว่าระยะ ${d} px — ไม่มีคู่พิกเซลให้นับ`;
+          else {
+            const t3 = (v) => (v === null ? "—" : fixed3(v));
+            ctx.info = `GLCM ${L} ระดับ · ระยะ ${d} px ทิศ ${angTxt} · contrast ${vals[0] === null ? "—" : fixed2(vals[0])} · energy ${t3(vals[2])} · homogeneity ${t3(vals[3])} · correlation ${t3(vals[1])}`
+              + (view === "matrix" ? " · แถว = ระดับของพิกเซล คอลัมน์ = ระดับของเพื่อนบ้าน · เส้นทแยงสว่าง = ภาพเรียบ" : "")
+              + (vals[1] === null ? (props.some((pr) => !pr) ? " · บางทิศไม่มีคู่พิกเซล (ภาพเล็กกว่าระยะ) จึงหาค่าเฉลี่ย 4 ทิศไม่ได้" : " · ภาพมีระดับเดียว correlation หาไม่ได้") : "");
+          }
+        }
+        const out = dst; dst = null;
+        return out;
+      } finally {
+        if (dst) dst.delete();
+        if (g) g.delete();
+      }
+    },
+  },
+
+  // NLM — เขียนเองใน nlmCore (ไม่มี fastNlMeansDenoising ใน build นี้) · ภาพด้านยาว > NLM_MAX_SIDE ย่อก่อนแล้วขยายผลกลับ
+  nlm_denoise: {
+    name: "Non-local Means (ลด noise แบบเทียบแผ่น)",
+    modeHint: SLOW_MODE_HINT,
+    needs: "any",
+    desc: "แทนที่จะเฉลี่ยเฉพาะเพื่อนบ้านติดกัน NLM เฉลี่ยพิกเซลที่ 'ลายรอบตัวคล้ายกัน' จากทั้งหน้าต่างค้นหา — ลายผ้า/ตัวอักษรที่ซ้ำ ๆ จึงไม่เบลอ · h คุมว่าคล้ายแค่ไหนถึงนับ · ช้ามาก: 640×480 ราว 1 วินาที (ค้นหา 11) ใช้กับภาพนิ่ง หรือย่อภาพก่อน · เทียบ imnlmfilt ของ MATLAB (MATLAB เดาความแรงจาก noise เองและค้นหา 21×21) · fastNlMeansDenoising ของ OpenCV ไม่มีใน OpenCV.js ชุดนี้ และสูตรต่างจากของแอป — สคริปต์ Python จึงใช้สูตรของแอป",
+    params: [
+      { key: "h", type: "number", label: "ความแรง h", min: 1, max: 50, step: 1, default: 10, desc: "มาก = เรียบขึ้นแต่รายละเอียดหาย · ค่าใกล้ σ ของ noise มักได้ผลดี" },
+      { key: "patch", type: "select", label: "ขนาดแผ่นที่ใช้เทียบ (px)", options: [{ value: "3", label: "3" }, { value: "5", label: "5" }, { value: "7", label: "7" }], default: "5", hint: "MATLAB ค่าเริ่มต้น 5" },
+      { key: "search", type: "select", label: "ขนาดหน้าต่างค้นหา (px)", options: [{ value: "7", label: "7" }, { value: "11", label: "11" }, { value: "15", label: "15" }], default: "11", hint: "MATLAB ใช้ 21 — แอปใช้ 11 เพราะ 21 ช้ากว่าราว 10 เท่า" },
+    ],
+    apply(cv, src, p, ctx) {
+      if (isEmptyMat(src)) { if (ctx) ctx.info = "ภาพว่าง"; return src.clone(); }
+      const h = intIn(p.h, 10, 1, 50);
+      const patch = Number(ownKey(NLM_PATCHES, p.patch, "5")), search = Number(ownKey(NLM_SEARCHES, p.search, "11"));
+      let rgb = null, small = null, proc = null, dst = null;
+      try {
+        rgb = dropAlpha(cv, src);
+        const x = rgb || src;
+        const W = x.cols, H = x.rows, ch = x.channels();
+        const sc = analysisScale(W, H, NLM_MAX_SIDE);
+        let work = x;
+        if (sc.scale < 1) { small = new cv.Mat(); cv.resize(x, small, new cv.Size(sc.w, sc.h), 0, 0, cv.INTER_AREA); work = small; }
+        const res = nlmCore(work.data, work.cols, work.rows, ch, h, (patch - 1) / 2, (search - 1) / 2);
+        proc = cv.matFromArray(work.rows, work.cols, work.type(), res);
+        if (sc.scale < 1) { dst = new cv.Mat(); cv.resize(proc, dst, new cv.Size(W, H), 0, 0, cv.INTER_LINEAR); } else { dst = proc; proc = null; }
+        if (ctx) {
+          ctx.info = `Non-local Means h=${h} · แผ่น ${patch}×${patch} · ค้นหา ${search}×${search}`
+            + (sc.scale < 1 ? ` · ประมวลผลบนภาพย่อ ${sc.w}×${sc.h} แล้วขยายกลับ (ภาพใหญ่ช้ามาก)` : "") + " · ช้า: เหมาะกับภาพนิ่ง";
+        }
+        const out = dst; dst = null;
+        return out;
+      } finally {
+        for (const mm of [dst, proc, small, rgb]) if (mm) mm.delete();
+      }
+    },
+  },
+
+  // Dehaze (He et al. 2009, dark channel prior) — guided filter จาก 4A ปรับแผนที่ t · ทุกขั้นกำหนดลำดับ/ความละเอียด (double/float32) ตายตัวเพื่อให้ Python ที่ export ได้ผลเท่ากัน
+  dehaze: {
+    name: "Dehaze (ลดหมอก)",
+    needs: "any",
+    desc: "สมมติฐาน dark channel: ภาพกลางแจ้งที่ไม่มีหมอก ในหน้าต่างเล็ก ๆ จะมีช่องสีใดช่องหนึ่งที่มืดเกือบ 0 — หมอกทำให้ค่านี้สูงขึ้น จึงใช้ประมาณความหนาของหมอก · A = สีของหมอก (จากจุดที่หมอกหนา) · t = สัดส่วนแสงจากวัตถุที่ทะลุหมอกมาถึงกล้อง · ท้องฟ้าและวัตถุสีขาวขัดกับสมมติฐาน → อาจสีเพี้ยน/คล้ำเกินจริง · guided filter ทำให้แผนที่หมอกตามขอบวัตถุ ไม่เป็นบล็อก · เทียบ imreducehaze ของ MATLAB (หลักการเดียวกัน รายละเอียดต่าง) · พบไม่บ่อยในงาน Machine Vision ในโรงงาน แต่เห็นผลชัดกับภาพกลางแจ้ง",
+    params: [
+      { key: "amount", type: "number", label: "ปริมาณการลดหมอก ω", min: 0.1, max: 1, step: 0.05, default: 0.95, hint: "MATLAB imreducehaze ค่าเริ่มต้น 0.95" },
+      { key: "patch", type: "number", label: "ขนาดหน้าต่าง dark channel (px)", min: 3, max: 31, step: 2, default: 15 },
+      { key: "refine", type: "boolean", label: "เกลี่ยแผนที่หมอกตามขอบวัตถุ (guided filter)", default: true },
+      { key: "view", type: "select", label: "แสดงผลเป็น", options: [
+        { value: "result", label: "ภาพที่ลดหมอกแล้ว" },
+        { value: "transmission", label: "แผนที่ความโปร่งใส t (ขาว = ใส)" },
+        { value: "dark", label: "dark channel (ขาว = หมอกหนา)" },
+      ], default: "result" },
+    ],
+    apply(cv, src, p, ctx) {
+      if (isEmptyMat(src)) { if (ctx) { ctx.info = "ภาพว่าง"; ctx.values = scalarValues(DEHAZE_FIELDS, []); } return src.clone(); }
+      const omega = numIn(p.amount, 0.95, 0.1, 1), ps = ensureOdd(intIn(p.patch, 15, 3, 31));
+      const refine = p.refine !== false, view = ownKey(DEHAZE_VIEWS, p.view, "result");
+      let rgb = null, ker = null, d8m = null, dark = null, mnM = null, dnM = null, gm = null, G = null, Pm = null, qM = null, dst = null;
+      try {
+        rgb = dropAlpha(cv, src);
+        const x = rgb || src;
+        const W = x.cols, H = x.rows, ch = x.channels(), N = W * H;
+        ker = cv.getStructuringElement(cv.MORPH_RECT, new cv.Size(ps, ps));
+        // 1) dark channel = min ข้ามช่อง แล้ว erode (ทุกครั้งที่อ่าน .data อ่านใหม่ก่อนใช้ — หลังจองแมตใหม่ heap อาจขยายจน view เก่าใช้ไม่ได้)
+        const d8 = new Uint8Array(N);
+        { const xd = x.data; for (let i = 0; i < N; i++) { let m = xd[i * ch]; for (let c = 1; c < ch; c++) if (xd[i * ch + c] < m) m = xd[i * ch + c]; d8[i] = m; } }
+        d8m = cv.matFromArray(H, W, cv.CV_8UC1, d8);
+        dark = new cv.Mat();
+        cv.erode(d8m, dark, ker);
+        // 2) แสงหมอก A = ค่าเฉลี่ยของจุดที่ dark สูงสุด 0.1% (อย่างน้อย 1 จุด)
+        const A = [0, 0, 0];
+        {
+          const dd = dark.data, xd = x.data, hist = new Int32Array(256);
+          for (let i = 0; i < N; i++) hist[dd[i]]++;
+          const kTop = Math.max(1, Math.floor(N / 1000));
+          let T = 0, cum = 0;
+          for (let v = 255; v >= 0; v--) { cum += hist[v]; if (cum >= kTop) { T = v; break; } }
+          const sums = [0, 0, 0];
+          let cnt = 0;
+          for (let i = 0; i < N; i++) if (dd[i] >= T) { cnt++; for (let c = 0; c < ch; c++) sums[c] += xd[i * ch + c]; }
+          for (let c = 0; c < ch; c++) A[c] = Math.max(sums[c] / cnt, 1);
+        }
+        // 3) แผนที่หมอกหยาบ: 1 − ω · erode(min_c(x_c / A_c)) (เก็บเป็น float32 ตามสเปก)
+        const mn = new Float32Array(N);
+        { const xd = x.data; for (let i = 0; i < N; i++) { let m = xd[i * ch] / A[0]; for (let c = 1; c < ch; c++) { const v = xd[i * ch + c] / A[c]; if (v < m) m = v; } mn[i] = m; } }
+        mnM = cv.matFromArray(H, W, cv.CV_32FC1, mn);
+        dnM = new cv.Mat();
+        cv.erode(mnM, dnM, ker);
+        const t = new Float32Array(N);
+        { const dn = dnM.data32F; for (let i = 0; i < N; i++) t[i] = 1 - omega * dn[i]; }
+        // 4) เกลี่ยตามขอบวัตถุด้วย guided filter (guide = ภาพเทา)
+        if (refine) {
+          if (ch === 3) { gm = new cv.Mat(); cv.cvtColor(x, gm, cv.COLOR_RGB2GRAY); G = new cv.Mat(); gm.convertTo(G, cv.CV_32F); }
+          else { G = new cv.Mat(); x.convertTo(G, cv.CV_32F); }
+          const P = new Float32Array(N);
+          for (let i = 0; i < N; i++) P[i] = t[i] * 255;
+          Pm = cv.matFromArray(H, W, cv.CV_32FC1, P);
+          qM = guidedFilterF32(cv, G, Pm, Math.max(4, 2 * ps), 65.025);
+          const qd = qM.data32F;
+          for (let i = 0; i < N; i++) t[i] = qd[i] / 255;
+        }
+        // 5) กัน t ใกล้ 0 (double) แล้วคืนค่าภาพ J = (I − A)/t + A
+        const tt = new Float64Array(N);
+        let tsum = 0;
+        for (let i = 0; i < N; i++) { tt[i] = Math.max(t[i], 0.1); tsum += tt[i]; }
+        const tMean = tsum / N;
+        if (view === "result") {
+          dst = new cv.Mat(H, W, x.type());
+          const od = dst.data, xd = x.data;
+          for (let i = 0; i < N; i++) for (let c = 0; c < ch; c++) {
+            const v = Math.floor((xd[i * ch + c] - A[c]) / tt[i] + A[c] + 0.5);
+            od[i * ch + c] = v < 0 ? 0 : v > 255 ? 255 : v;
+          }
+        } else if (view === "transmission") {
+          const o = new Uint8Array(N);
+          for (let i = 0; i < N; i++) o[i] = Math.floor(tt[i] * 255 + 0.5);
+          dst = cv.matFromArray(H, W, cv.CV_8UC1, o);
+        } else { dst = dark; dark = null; }
+        if (ctx) {
+          const a = ch === 1 ? [A[0], A[0], A[0]] : A;
+          ctx.values = scalarValues(DEHAZE_FIELDS, [a[0], a[1], a[2], tMean]);
+          ctx.info = `Dehaze ω=${omega} หน้าต่าง ${ps}×${ps} · แสงหมอก A (R/G/B) = ${fixed1(a[0])}/${fixed1(a[1])}/${fixed1(a[2])} · ความโปร่งใสเฉลี่ย ${fixed2(tMean)}`
+            + (refine ? "" : " · ไม่เกลี่ยแผนที่หมอก (เห็นเป็นบล็อกรอบขอบวัตถุ)");
+        }
+        const out = dst; dst = null;
+        return out;
+      } finally {
+        for (const mm of [dst, qM, Pm, G, gm, dnM, mnM, dark, d8m, ker, rgb]) if (mm) mm.delete();
+      }
+    },
+  },
+
+  // DCT 8×8 / JPEG-style (เฉพาะภาพเทา, ไม่เข้ารหัสไฟล์) — ไม่มี cv.dct ใน build นี้ จึงคูณ matrix เอง (dct8Forward/dct8Inverse)
+  dct_jpeg: {
+    name: "DCT / JPEG-style (บีบอัดแบบ JPEG)",
+    needs: "gray",
+    desc: "JPEG แบ่งภาพเป็นบล็อก 8×8 แล้วใช้ DCT แปลงพิกเซลเป็น 'ความถี่' — พลังงานส่วนใหญ่รวมอยู่มุมซ้ายบน (ความถี่ต่ำ) · quantization หารด้วยตาราง Q แล้วปัดเศษ ความถี่สูงส่วนใหญ่กลายเป็น 0 → ไฟล์เล็กลง (ขั้นเข้ารหัสไฟล์จริง เช่น Huffman ไม่ได้ทำในกล่องนี้ จึงไม่มีขนาดไฟล์ให้ดู) · quality ต่ำ → เห็นขอบบล็อก 8×8 (blocking) และคลื่นรอบขอบ · แบบ 'เก็บความถี่ต่ำ' แสดงว่าภาพยังจำได้แม้เก็บ 16/64 ค่า · JPEG สีจริงแยก Y/Cb/Cr และลดความละเอียดสีด้วย — กล่องนี้ทำเฉพาะภาพเทา · เทียบ dct2 + blockproc ของ MATLAB · OpenCV.js ชุดนี้ไม่มี cv.dct แอปจึงคูณ matrix เอง · เป็นเรื่องหลักการบีบอัด ไม่ใช่งานตรวจสอบโดยตรง",
+    params: [
+      { key: "method", type: "select", label: "วิธี", options: [
+        { value: "jpeg", label: "บีบอัดแบบ JPEG (quality)" },
+        { value: "zonal", label: "เก็บเฉพาะความถี่ต่ำ K×K ต่อบล็อก" },
+      ], default: "jpeg" },
+      { key: "quality", type: "number", label: "คุณภาพ — ใช้กับแบบ JPEG เท่านั้น", min: 1, max: 100, step: 1, default: 50, desc: "100 = เกือบเหมือนเดิม · 10 = เห็นเป็นบล็อก 8×8" },
+      { key: "keep", type: "number", label: "จำนวนความถี่ที่เก็บต่อด้าน K — ใช้กับแบบเก็บความถี่ต่ำเท่านั้น", min: 1, max: 8, step: 1, default: 4 },
+      { key: "view", type: "select", label: "แสดงผลเป็น", options: [
+        { value: "result", label: "ภาพหลังบีบอัด" },
+        { value: "coeffs", label: "สัมประสิทธิ์ DCT ต่อบล็อก (log)" },
+        { value: "error", label: "ความต่างจากภาพเดิม ×8" },
+      ], default: "result" },
+    ],
+    apply(cv, src, p, ctx) {
+      if (isEmptyMat(src)) { if (ctx) { ctx.info = "ภาพว่าง"; ctx.values = scalarValues(DCT_FIELDS, []); } return src.clone(); }
+      const method = ownKey(DCT_METHODS, p.method, "jpeg"), quality = intIn(p.quality, 50, 1, 100), K = intIn(p.keep, 4, 1, 8);
+      const view = ownKey(DCT_VIEWS, p.view, "result");
+      let g = null, pad = null, dst = null;
+      try {
+        g = grayIfNeeded(cv, src);
+        const s = g || src;
+        const W = s.cols, H = s.rows;
+        const Wp = Math.ceil(W / 8) * 8, Hp = Math.ceil(H / 8) * 8;
+        pad = new cv.Mat();
+        cv.copyMakeBorder(s, pad, 0, Hp - H, 0, Wp - W, cv.BORDER_REPLICATE);
+        const pd = pad.data, rec = new Uint8Array(Wp * Hp), coef = view === "coeffs" ? new Uint8Array(Wp * Hp) : null;
+        const Q = jpegQTable(quality), blk = new Float64Array(64), F = new Float64Array(64), Fq = new Float64Array(64), R = new Float64Array(64);
+        const L1024 = Math.log1p(1024);
+        let zeros = 0;
+        const bw = Wp / 8, bh = Hp / 8;
+        for (let by = 0; by < bh; by++) {
+          for (let bx = 0; bx < bw; bx++) {
+            for (let y = 0; y < 8; y++) for (let x = 0; x < 8; x++) blk[y * 8 + x] = pd[(by * 8 + y) * Wp + bx * 8 + x] - 128;
+            dct8Forward(blk, F);
+            for (let u = 0; u < 8; u++) {
+              for (let v = 0; v < 8; v++) {
+                const i = u * 8 + v;
+                if (method === "jpeg") {
+                  const z = F[i] / Q[i], qf = Math.sign(z) * Math.floor(Math.abs(z) + 0.5);
+                  Fq[i] = qf * Q[i];
+                  if (qf === 0) zeros++;
+                } else if (u < K && v < K) Fq[i] = F[i];
+                else { Fq[i] = 0; zeros++; }
+              }
+            }
+            dct8Inverse(Fq, R);
+            for (let y = 0; y < 8; y++) {
+              for (let x = 0; x < 8; x++) {
+                const o = (by * 8 + y) * Wp + bx * 8 + x, v = Math.floor(R[y * 8 + x] + 128 + 0.5);
+                rec[o] = v < 0 ? 0 : v > 255 ? 255 : v;
+                if (coef) coef[o] = Math.min(255, Math.floor(255 * Math.log1p(Math.abs(Fq[y * 8 + x])) / L1024 + 0.5));
+              }
+            }
+          }
+        }
+        const o = new Uint8Array(W * H);
+        let sse = 0;
+        for (let y = 0; y < H; y++) {
+          for (let x = 0; x < W; x++) {
+            const a = pd[y * Wp + x], b = rec[y * Wp + x], e = a - b;
+            sse += e * e;
+            o[y * W + x] = view === "result" ? b : view === "coeffs" ? coef[y * Wp + x] : Math.min(255, Math.abs(e) * 8);
+          }
+        }
+        dst = cv.matFromArray(H, W, cv.CV_8UC1, o);
+        const mse = sse / (W * H), psnr = mse === 0 ? Infinity : 10 * Math.log10((255 * 255) / mse);
+        const blocks = bw * bh, zeroPct = zeros * 100 / (blocks * 64);
+        if (ctx) {
+          ctx.values = scalarValues(DCT_FIELDS, [psnr, zeroPct, blocks]);
+          const psnrTxt = psnr === Infinity ? "∞ (เหมือนเดิมทุกพิกเซล)" : `${fixed2(psnr)} dB`;
+          ctx.info = (method === "jpeg"
+            ? `DCT 8×8 แบบ JPEG quality ${quality} · สัมประสิทธิ์เป็น 0 ${fixed1(zeroPct)}% · PSNR ${psnrTxt}`
+            : `เก็บความถี่ต่ำ ${K}×${K} จาก 8×8 ต่อบล็อก (${K * K}/64) · PSNR ${psnrTxt}`)
+            + (view === "coeffs" ? " · มุมซ้ายบนของทุกบล็อก = ความถี่ต่ำ (สว่าง)" : "");
+        }
+        const out = dst; dst = null;
+        return out;
+      } finally {
+        for (const mm of [dst, pad, g]) if (mm) mm.delete();
+      }
+    },
+  },
 };
+
+// ---- ตัวช่วย/ตารางของ IP batch 4B ที่ต้องใช้ cv หรืออ้างจาก apply (function declaration ถูก hoist · const ใช้ตอนรันหลังโหลดโมดูลเสร็จ) ----
+const ECC_FIELDS = [["ecc_ok", "จัดภาพสำเร็จ (1 = ใช่)"], ["ecc_rho", "ความเข้ากัน ρ (0–1)"], ["ecc_dx", "เลื่อนแนวนอน (px)"], ["ecc_dy", "เลื่อนแนวตั้ง (px)"], ["ecc_angle_deg", "หมุน (°)"], ["ecc_scale", "ขยาย (เท่า)"]];
+const ECC_MOTIONS = {
+  translation: { th: "เลื่อนอย่างเดียว", code: "MOTION_TRANSLATION" },
+  euclidean: { th: "เลื่อน + หมุน", code: "MOTION_EUCLIDEAN" },
+  affine: { th: "เลื่อน + หมุน + ย่อขยาย + เฉือน", code: "MOTION_AFFINE" },
+  homography: { th: "มุมมองเปลี่ยน (perspective)", code: "MOTION_HOMOGRAPHY" },
+};
+const ECC_VIEWS = { aligned: true, overlay: true, diff: true };
+const GABOR_FIELDS = [["gabor_mean", "ผลตอบสนองเฉลี่ย"], ["gabor_max", "ผลตอบสนองสูงสุด"]];
+const GABOR_OUTPUTS = { magnitude: true, real: true };
+const GLCM_FIELDS = [["glcm_contrast", "Contrast (ความต่างของคู่)"], ["glcm_correlation", "Correlation (ความสัมพันธ์)"], ["glcm_energy", "Energy (ความสม่ำเสมอ)"], ["glcm_homogeneity", "Homogeneity (ความเรียบ)"], ["glcm_pairs", "จำนวนคู่ที่นับ"]];
+const GLCM_LEVELS = { 2: true, 4: true, 8: true, 16: true, 32: true, 64: true };
+const GLCM_ANGLES = { 0: true, 45: true, 90: true, 135: true, avg: true };
+const GLCM_VIEWS = { matrix: true, quantized: true };
+const NLM_PATCHES = { 3: true, 5: true, 7: true };
+const NLM_SEARCHES = { 7: true, 11: true, 15: true };
+const DEHAZE_FIELDS = [["dh_a_r", "แสงหมอก A ช่อง R"], ["dh_a_g", "แสงหมอก A ช่อง G"], ["dh_a_b", "แสงหมอก A ช่อง B"], ["dh_t_mean", "ความโปร่งใสเฉลี่ย t"]];
+const DEHAZE_VIEWS = { result: true, transmission: true, dark: true };
+const DCT_FIELDS = [["dct_psnr", "PSNR เทียบภาพเดิม (dB)"], ["dct_zero_pct", "สัมประสิทธิ์ที่เป็น 0 (%)"], ["dct_blocks", "จำนวนบล็อก 8×8"]];
+const DCT_METHODS = { jpeg: true, zonal: true };
+const DCT_VIEWS = { result: true, coeffs: true, error: true };
+const MORPH_NEW_LABEL = { regional_max: "Regional Maxima", regional_min: "Regional Minima", h_maxima: "H-maxima", extended_max: "Extended Maxima" };
+
+// แกน Wiener / Lucy (export ให้เทสต์ใช้ PSF ที่ไม่สมมาตรได้ — psfKernel สร้างแต่ PSF ที่สมมาตรจุดกลาง ซึ่ง OTF เป็นจำนวนจริง เทสต์ conj / การพลิก kernel จึงต้องใช้ PSF อื่น)
+// x = Mat 8U 1 หรือ 3 ช่อง (ไม่มี alpha) · psf = { n (คี่), k: array n·n } · คืน Mat 8U ใหม่ขนาดเท่า x (ผู้เรียก delete)
+export function wienerDeconvolve(cv, x, psf, nsr) {
+  const n = psf.n, hc = (n - 1) / 2;
+  let vec = null, phMat = null, Hm = null;
+  try {
+    const W = x.cols, H = x.rows, ch = x.channels();
+    const Wp = cv.getOptimalDFTSize(W + 2 * n), Hp = cv.getOptimalDFTSize(H + 2 * n);
+    // psf2otf: วาง PSF แล้วหมุนวนให้จุดกลางอยู่ที่ (0,0)
+    const ph = new Float32Array(Hp * Wp);
+    for (let y = 0; y < n; y++) for (let xx = 0; xx < n; xx++) ph[((y - hc + Hp) % Hp) * Wp + ((xx - hc + Wp) % Wp)] = psf.k[y * n + xx];
+    phMat = cv.matFromArray(Hp, Wp, cv.CV_32FC1, ph);
+    Hm = new cv.Mat();
+    cv.dft(phMat, Hm, cv.DFT_COMPLEX_OUTPUT);
+    const res = new Uint8Array(W * H * ch);
+    if (ch === 1) {
+      wienerChannel(cv, x, W, H, n, Wp, Hp, Hm, nsr, res, 0, 1);
+    } else {
+      vec = new cv.MatVector();
+      cv.split(x, vec);
+      for (let c = 0; c < ch; c++) {
+        const m = vec.get(c);
+        try { wienerChannel(cv, m, W, H, n, Wp, Hp, Hm, nsr, res, c, ch); } finally { m.delete(); }
+      }
+    }
+    return cv.matFromArray(H, W, x.type(), res); // คืน Mat ใหม่ที่ผู้เรียกเป็นเจ้าของ (matFromArray เป็นขั้นสุดท้าย — ถ้า throw ก็ยังไม่มี Mat ของผลลัพธ์ให้ต้องลบ)
+  } finally {
+    if (Hm) Hm.delete();
+    if (phMat) phMat.delete();
+    if (vec) vec.delete();
+  }
+}
+export function lucyDeconvolve(cv, x, psf, iters) {
+  const n = psf.n;
+  let vec = null, K = null, Kf = null;
+  try {
+    const W = x.cols, H = x.rows, ch = x.channels();
+    K = cv.matFromArray(n, n, cv.CV_32FC1, Array.from(psf.k));
+    Kf = new cv.Mat();
+    cv.flip(K, Kf, -1);
+    const res = new Uint8Array(W * H * ch);
+    if (ch === 1) {
+      lucyChannel(cv, x, K, Kf, iters, res, 0, 1);
+    } else {
+      vec = new cv.MatVector();
+      cv.split(x, vec);
+      for (let c = 0; c < ch; c++) {
+        const m = vec.get(c);
+        try { lucyChannel(cv, m, K, Kf, iters, res, c, ch); } finally { m.delete(); }
+      }
+    }
+    return cv.matFromArray(H, W, x.type(), res);
+  } finally {
+    if (Kf) Kf.delete();
+    if (K) K.delete();
+    if (vec) vec.delete();
+  }
+}
+
+// ภาพใหญ่กว่า 640×480 พิกเซล: Wiener / Lucy ไม่ย่อภาพ (ผลต้องเท่ากับภาพจริง) จึงแจ้งเตือนในข้อความแทน — Lucy 1080p สี 10 รอบ ≈ 7 วินาที, 50 รอบ ≈ 35 วินาที
+function bigImageNote(src, iters) {
+  if (src.cols * src.rows <= 640 * 480) return "";
+  return ` · ภาพใหญ่ (${src.cols}×${src.rows} px) ช้า${iters > 0 ? ` — Lucy ${iters} รอบบนภาพขนาดนี้อาจใช้เวลาหลายวินาที` : ""} ควรย่อภาพ (Resize) ก่อน หรือใช้กับภาพนิ่ง`;
+}
+
+// Wiener ต่อ 1 ช่อง: ขอบสะท้อน → dft → G·H*/(|H|²+NSR) (double) → dft ย้อน → ตัดขอบ → ปัดครึ่งขึ้น · เขียนลง res (interleaved) ช่อง c
+function wienerChannel(cv, m, W, H, n, Wp, Hp, Hm, nsr, res, c, ch) {
+  let big = null, f = null, G = null, inv = null;
+  try {
+    big = new cv.Mat();
+    cv.copyMakeBorder(m, big, n, Hp - H - n, n, Wp - W - n, cv.BORDER_REFLECT);
+    f = new cv.Mat();
+    big.convertTo(f, cv.CV_32F);
+    G = new cv.Mat();
+    cv.dft(f, G, cv.DFT_COMPLEX_OUTPUT);
+    { // ไม่จองแมตใหม่ระหว่างถือ view (heap อาจขยายแล้ว view เก่าใช้ไม่ได้)
+      const g = G.data32F, hd = Hm.data32F, len = Hp * Wp;
+      for (let i = 0; i < len; i++) {
+        const gr = g[2 * i], gi = g[2 * i + 1], hr = hd[2 * i], hi = hd[2 * i + 1];
+        const den = hr * hr + hi * hi + nsr;
+        if (den > 0) { g[2 * i] = (gr * hr + gi * hi) / den; g[2 * i + 1] = (gi * hr - gr * hi) / den; }
+        else { g[2 * i] = 0; g[2 * i + 1] = 0; }
+      }
+    }
+    inv = new cv.Mat();
+    cv.dft(G, inv, cv.DFT_INVERSE + cv.DFT_SCALE + cv.DFT_REAL_OUTPUT);
+    const d = inv.data32F;
+    for (let y = 0; y < H; y++) {
+      for (let x = 0; x < W; x++) {
+        const v = Math.floor(d[(y + n) * Wp + x + n] + 0.5);
+        res[(y * W + x) * ch + c] = Number.isFinite(v) ? (v < 0 ? 0 : v > 255 ? 255 : v) : 0;
+      }
+    }
+  } finally {
+    for (const mm of [inv, G, f, big]) if (mm) mm.delete();
+  }
+}
+
+// Lucy-Richardson ต่อ 1 ช่อง (float32 ทุกขั้น) · Mat c / r / corr จองนอกลูป ไม่ new ในลูป
+function lucyChannel(cv, m, K, Kf, iters, res, c, ch) {
+  let g = null, est = null, cc = null, r = null, corr = null;
+  try {
+    g = new cv.Mat();
+    m.convertTo(g, cv.CV_32F);
+    est = g.clone();
+    cc = new cv.Mat(); corr = new cv.Mat();
+    r = new cv.Mat(g.rows, g.cols, cv.CV_32FC1);
+    const n = g.rows * g.cols, anchor = new cv.Point(-1, -1);
+    for (let it = 0; it < iters; it++) {
+      cv.filter2D(est, cc, -1, Kf, anchor, 0, cv.BORDER_REFLECT_101);
+      { const gd = g.data32F, cd = cc.data32F, rd = r.data32F; for (let i = 0; i < n; i++) rd[i] = cd[i] > 1e-6 ? gd[i] / cd[i] : 0; }
+      cv.filter2D(r, corr, -1, K, anchor, 0, cv.BORDER_REFLECT_101);
+      { const ed = est.data32F, cr = corr.data32F; for (let i = 0; i < n; i++) ed[i] = ed[i] * cr[i]; }
+    }
+    const ed = est.data32F;
+    for (let i = 0; i < n; i++) {
+      const v = Math.floor(ed[i] + 0.5);
+      res[i * ch + c] = v < 0 ? 0 : v > 255 ? 255 : v;
+    }
+  } finally {
+    for (const mm of [corr, r, cc, est, g]) if (mm) mm.delete();
+  }
+}
+
+// Morphology ตัวเลือกใหม่ (IP batch 4B) — Hit-or-Miss: bin ที่ 127 → MORPH_HITMISS ต่อ kernel (หมุน 4 ทิศถ้าเลือก) → OR สะสม
+function hitMissOp(cv, src, p, ctx) {
+  if (isEmptyMat(src)) { if (ctx) ctx.info = "ภาพว่าง"; return src.clone(); }
+  const pat = ownKey(HITMISS_PATTERNS, p.hmPattern, "isolated");
+  const rotate = p.hmRotate !== false;
+  let g = null, bin = null, acc = null;
+  try {
+    g = grayIfNeeded(cv, src); // worker ส่งภาพเทามาให้อยู่แล้ว (needs: gray) — กัน MORPH_HITMISS throw C++ ถ้าถูกเรียกตรงด้วยภาพสี
+    bin = new cv.Mat();
+    cv.threshold(g || src, bin, 127, 255, cv.THRESH_BINARY);
+    acc = cv.Mat.zeros(bin.rows, bin.cols, cv.CV_8UC1);
+    for (const flat of hitMissKernels(pat, rotate)) {
+      let k = null, tmp = null;
+      try {
+        k = cv.matFromArray(3, 3, cv.CV_32SC1, flat);
+        tmp = new cv.Mat();
+        cv.morphologyEx(bin, tmp, cv.MORPH_HITMISS, k);
+        cv.bitwise_or(acc, tmp, acc);
+      } finally {
+        if (tmp) tmp.delete();
+        if (k) k.delete();
+      }
+    }
+    if (ctx) ctx.info = `Hit-or-Miss (${HITMISS_PATTERNS[pat].th}${rotate ? " · 4 ทิศ" : ""}) พบ ${cv.countNonZero(acc)} ตำแหน่ง`;
+    const out = acc; acc = null;
+    return out;
+  } finally {
+    if (acc) acc.delete();
+    if (bin) bin.delete();
+    if (g) g.delete();
+  }
+}
+
+// Morphology ตัวเลือกใหม่ (IP batch 4B) — Regional Max/Min, H-maxima, Extended Maxima บนภาพเทา (ไม่ตัด 127) ด้วย reconstructDilate แบบ O(N)
+function regionalOp(cv, src, p, ctx) {
+  if (isEmptyMat(src)) { if (ctx) ctx.info = "ภาพว่าง"; return src.clone(); }
+  const op = p.op, h = intIn(p.hHeight, 10, 1, 255);
+  let g = null, maskM = null, labels = null, dst = null;
+  try {
+    g = grayIfNeeded(cv, src);
+    const s = g || src;
+    const W = s.cols, H = s.rows, N = W * H;
+    const I = new Int32Array(N);
+    let flat = false;
+    { const sd = s.data; let mn = 255, mx = 0; for (let i = 0; i < N; i++) { const v = sd[i]; I[i] = v; if (v < mn) mn = v; if (v > mx) mx = v; } flat = mn === mx; }
+    let mask, grey = null;
+    if (op === "regional_max") mask = regionalMaxMask(I, W, H);
+    else if (op === "regional_min") { for (let i = 0; i < N; i++) I[i] = 255 - I[i]; mask = regionalMaxMask(I, W, H); }
+    else {
+      grey = hMaximaImage(I, W, H, h);
+      mask = op === "extended_max" ? regionalMaxMask(grey, W, H) : null;
+    }
+    const count = (a) => { let c = 0; for (let i = 0; i < N; i++) if (a[i]) c++; return c; };
+    const comps = (a) => {
+      maskM = cv.matFromArray(H, W, cv.CV_8UC1, a);
+      labels = new cv.Mat();
+      const nl = cv.connectedComponents(maskM, labels, 8, cv.CV_32S);
+      labels.delete(); labels = null; maskM.delete(); maskM = null;
+      return nl - 1;
+    };
+    if (op === "h_maxima") {
+      const o = new Uint8Array(N);
+      for (let i = 0; i < N; i++) o[i] = grey[i];
+      dst = cv.matFromArray(H, W, cv.CV_8UC1, o);
+      if (ctx) ctx.info = `H-maxima · กดยอดลง ${h} ระดับ · ยอดที่เหลือ ${comps(regionalMaxMask(grey, W, H))} บริเวณ`;
+    } else {
+      dst = cv.matFromArray(H, W, cv.CV_8UC1, mask);
+      if (ctx) ctx.info = `${MORPH_NEW_LABEL[op]}${op === "extended_max" ? ` (h=${h})` : ""} · พบ ${comps(mask)} บริเวณ (${count(mask)} พิกเซล)` + (flat ? " · ภาพมีค่าเดียว ทั้งภาพจึงเป็นยอดเดียว" : "");
+    }
+    const out = dst; dst = null;
+    return out;
+  } finally {
+    for (const mm of [dst, labels, maskM, g]) if (mm) mm.delete();
+  }
+}
 
 // ctx.values ของ farneback_optical_flow (ใช้ทั้งเฟรมแรกและเฟรมปกติ — ค่าเป็น px ของภาพจริง)
 function farnebackValues(mean, max, pct, dx, dy, frame) {
@@ -6995,7 +8082,7 @@ export const FILTERS = {
     ["crop", "roi_polygon", "resize", "rotate", "flip", "perspective_warp", "undistort", "translate_shear"], "resize"),
 
   frequency: mergeGroup("Frequency Domain", "Frequency Domain",
-    ["fft_magnitude", "fft_filter", "bandpass_notch"], "fft_magnitude"),
+    ["fft_magnitude", "fft_filter", "bandpass_notch", "dct_jpeg"], "fft_magnitude"),
 
   // Image Arithmetic — กลุ่มใหม่ (Tier 2, 18a) ป้อนภาพ 2 ใบ (inputs:2 → FilterNode เพิ่มช่องอินพุต
   // "เข้า B" ให้อัตโนมัติ) กลุ่มนี้แยกจาก group อื่นเสมอเพราะ input contract ต่างกันจริง (ตามแนวเดียวกับ
@@ -7004,7 +8091,7 @@ export const FILTERS = {
   // IP batch 2 ชิ้น B (2026-10-02) ต่อท้าย imarith/logical_ops/inpaint/hist_match — ห้ามสลับลำดับ 3 ตัวเดิม
   // (ไฟล์โปรเจกต์เก่าที่บันทึก mode ไว้ต้องเปิดได้เหมือนเดิม)
   image_arithmetic: mergeGroup("Image Arithmetic", "Image Arithmetic",
-    ["imabsdiff", "imfuse", "mask", "imarith", "logical_ops", "inpaint", "hist_match", "roi_apply"], "imabsdiff", [], { inputs: 2 }),
+    ["imabsdiff", "imfuse", "mask", "imarith", "logical_ops", "inpaint", "hist_match", "roi_apply", "ecc_register"], "imabsdiff", [], { inputs: 2 }),
 
   // Template Matching (Tier 2, 18b) — กลุ่มเดี่ยวใหม่ inputs:2 (ตามแนวเดียวกับ morphology/watershed/
   // grabcut ที่มี op เดียวไม่ต้องมี mode select wrapper) primary = ภาพค้นหา, src2 = template
@@ -7031,16 +8118,16 @@ export const FILTERS = {
     ["grayscale", "colorspace", "channel_split", "rgb_adjust", "color_inrange", "kmeans_segment", "slic", "white_balance", "invert", "pseudocolor"], "grayscale"),
 
   enhance_tools: mergeGroup("Enhance", "Enhance",
-    ["brightness_contrast", "gamma", "hist_equalize", "clahe", "contrast_stretch", "flatfield_correction", "quantize", "unsharp", "laplacian_sharpen", "custom_kernel"], "brightness_contrast"),
+    ["brightness_contrast", "gamma", "hist_equalize", "clahe", "contrast_stretch", "flatfield_correction", "quantize", "unsharp", "laplacian_sharpen", "custom_kernel", "dehaze"], "brightness_contrast"),
 
   filter_denoise: mergeGroup("Filter & Denoise", "Filter & Denoise",
-    ["salt_pepper_noise", "gaussian_noise", "median_blur", "gaussian_blur", "box_blur", "bilateral", "wiener_filter", "guided_filter"], "salt_pepper_noise"),
+    ["salt_pepper_noise", "gaussian_noise", "median_blur", "gaussian_blur", "box_blur", "bilateral", "wiener_filter", "guided_filter", "nlm_denoise", "deconv_wiener", "deconv_lucy"], "salt_pepper_noise"),
 
   segment_edge: mergeGroup("Segment & Edge", "Segmentation & Edge",
     ["binary_threshold", "otsu_threshold", "adaptive_threshold", "multi_otsu_threshold", "canny", "sobel", "laplacian_edge", "scharr_edge", "prewitt_edge", "roberts_edge", "log_edge", "watershed", "grabcut", "region_growing"], "binary_threshold"),
 
   analysis_detect: mergeGroup("Analyze / Detect", "Analysis & Detection",
-    ["find_contours", "connected_components", "distance_transform", "local_std_filter", "local_entropy_filter", "focus_score", "regionprops", "feret", "line_profile", "shape_filter", "bounding_boxes", "hough_circles", "hough_lines", "harris_corners", "shi_tomasi_corners", "orb_keypoints", "akaze_keypoints", "fast_keypoints"], "find_contours"),
+    ["find_contours", "connected_components", "distance_transform", "local_std_filter", "local_entropy_filter", "gabor_filter", "glcm", "focus_score", "regionprops", "feret", "line_profile", "shape_filter", "bounding_boxes", "hough_circles", "hough_lines", "harris_corners", "shi_tomasi_corners", "orb_keypoints", "akaze_keypoints", "fast_keypoints"], "find_contours"),
 
   // name (ชื่อบนการ์ด node, ถูกตัดที่ ~92px) ของ 2 กลุ่มข้างบนย่อให้พอดี · group (ชิปหมวดใน detail-panel/สี) ยังเป็นชื่อเต็มเหมือนหมวด palette
 

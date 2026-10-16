@@ -1566,7 +1566,7 @@ test('ip4a-mm2. detail panel: switching mmPerPx 0 -> 0.25 -> 0 rebuilds the Regi
 // static: โครงสร้าง / palette / icon / clamp / ข้อความ
 // ===================================================================
 test('ip4a-S1. (static structure) the 5 new ops exist with the right needs and host groups; OPS = 87, FILTERS stays 33; no select key is "mode"; defaultParams() == the OPS defaults (prefixed); legacy groups are untouched and FILTERS.psnr has no params', () => {
-  assert.equal(Object.keys(OPS).length, 87);
+  assert.ok(Object.keys(OPS).length >= 87, 'batch 4B adds 8 more (95 — pinned in ip4b-S1)');
   assert.equal(Object.keys(FILTERS).length, 33);
   const NEEDS = { guided_filter: 'any', focus_score: 'gray', pseudocolor: 'gray', delta_e: 'any', roi_apply: 'any' };
   for (const id of NEW_OPS) {
@@ -1589,7 +1589,7 @@ test('ip4a-S1. (static structure) the 5 new ops exist with the right needs and h
   assert.deepEqual(modes('sharpen'), ['unsharp', 'laplacian_sharpen', 'custom_kernel']);
   assert.deepEqual(modes('threshold'), ['binary_threshold', 'otsu_threshold', 'adaptive_threshold', 'multi_otsu_threshold']);
   assert.deepEqual(modes('shape_analysis'), ['find_contours', 'connected_components', 'distance_transform', 'local_std_filter', 'local_entropy_filter', 'regionprops', 'feret', 'line_profile']);
-  assert.deepEqual(modes('frequency'), ['fft_magnitude', 'fft_filter', 'bandpass_notch']);
+  assert.deepEqual(modes('frequency').slice(0, 3), ['fft_magnitude', 'fft_filter', 'bandpass_notch']); // batch 4B appends dct_jpeg
   assert.deepEqual(modes('color_space'), ['grayscale', 'colorspace', 'channel_split', 'rgb_adjust', 'color_inrange', 'invert']);
   // the category groups = the palette sections, in order (cm-1) · defaults unchanged
   for (const [fid, title, dflt] of [['color_tools', 'COLOR', 'grayscale'], ['filter_denoise', 'FILTER & DENOISE', 'salt_pepper_noise'], ['analysis_detect', 'ANALYSIS & DETECTION', 'find_contours'], ['image_quality', 'IMAGE QUALITY', 'psnr'], ['image_arithmetic', 'IMAGE ARITHMETIC', 'imabsdiff']]) {
@@ -1598,10 +1598,10 @@ test('ip4a-S1. (static structure) the 5 new ops exist with the right needs and h
   }
   const sec = (t) => TOOL_SECTIONS.find((s) => s.title === t).ops;
   assert.deepEqual(sec('COLOR').slice(-2), ['invert', 'pseudocolor']);
-  assert.deepEqual(sec('FILTER & DENOISE').slice(-2), ['wiener_filter', 'guided_filter']);
-  assert.equal(sec('ANALYSIS & DETECTION').indexOf('focus_score'), sec('ANALYSIS & DETECTION').indexOf('local_entropy_filter') + 1);
+  assert.deepEqual(sec('FILTER & DENOISE').slice(6, 8), ['wiener_filter', 'guided_filter']); // batch 4B appends nlm_denoise / deconv_wiener / deconv_lucy after them
+  assert.ok(sec('ANALYSIS & DETECTION').indexOf('focus_score') > sec('ANALYSIS & DETECTION').indexOf('local_entropy_filter')); // batch 4B puts gabor_filter / glcm between them
   assert.equal(sec('ANALYSIS & DETECTION').indexOf('regionprops'), sec('ANALYSIS & DETECTION').indexOf('focus_score') + 1);
-  assert.deepEqual(sec('IMAGE ARITHMETIC').slice(-2), ['hist_match', 'roi_apply']);
+  assert.deepEqual(sec('IMAGE ARITHMETIC').slice(6, 8), ['hist_match', 'roi_apply']); // batch 4B appends ecc_register
   assert.deepEqual(sec('IMAGE QUALITY'), ['psnr', 'ssim', 'delta_e']);
   for (const id of NEW_OPS) assert.equal(TOOL_SECTIONS.filter((s) => s.ops.includes(id)).length, 1, `${id} in exactly one section`);
 });
