@@ -83,7 +83,7 @@ test('p8-csv-1. table: UTF-8 BOM first, English keys as header, CRLF lines, one 
   const t = { kind: 'table', columns: ['index', 'area', 'cx'], rows: [[1, 314.5, 25.123456789], [2, 452, 70], [3, 615, 60.0000001]], total: 3 };
   const s = valuesToCsv(t);
   assert.equal(s.charCodeAt(0), 0xFEFF, 'BOM');
-  assert.equal(s, '﻿index,area,cx\r\n1,314.5,25.123456789\r\n2,452,70\r\n3,615,60.0000001\r\n');
+  assert.equal(s, '\uFEFFindex,area,cx\r\n1,314.5,25.123456789\r\n2,452,70\r\n3,615,60.0000001\r\n');
   assert.equal(Buffer.from(s, 'utf8').subarray(0, 3).toString('hex'), 'efbbbf', 'the encoded file starts with EF BB BF');
 });
 
@@ -100,7 +100,7 @@ test('p8-csv-3. null/undefined/NaN → empty · Infinity → inf · -Infinity �
 
 test('p8-csv-4. scalars: header = keys of every field (not Thai labels), one data row · Thai string values and null', () => {
   const v = { kind: 'scalars', fields: [{ key: 'result', label: 'ผลตัดสิน', value: 'NG' }, { key: 'measured', label: 'ค่า', value: null }, { key: 'reason', label: 'เหตุผล', value: 'ไม่มีค่าจากกล่องก่อนหน้า, ตรวจสาย' }] };
-  assert.equal(valuesToCsv(v), '﻿result,measured,reason\r\nNG,,"ไม่มีค่าจากกล่องก่อนหน้า, ตรวจสาย"\r\n');
+  assert.equal(valuesToCsv(v), '\uFEFFresult,measured,reason\r\nNG,,"ไม่มีค่าจากกล่องก่อนหน้า, ตรวจสาย"\r\n');
 });
 
 test('p8-csv-5. empty table → header only · weird input (null / unknown kind / no fields) never throws', () => {
@@ -633,12 +633,12 @@ test('p8-ui-4. "💾 CSV": cb.onDownloadCsv(text with BOM, "<opId>-YYYYMMDD-HHMM
   t.panel.render(t.step, t.notes(TBL));
   await t.container.one('dv-csv').click();
   assert.equal(t.downloads.length, 1);
-  assert.equal(t.downloads[0][0], '﻿index,area,note\r\n1,314,"a,b"\r\n2,452.5,\r\n');
+  assert.equal(t.downloads[0][0], '\uFEFFindex,area,note\r\n1,314,"a,b"\r\n2,452.5,\r\n');
   assert.match(t.downloads[0][1], /^regionprops-\d{8}-\d{6}\.csv$/);
   const s = makePanel('focus_score', {});
   s.panel.render(s.step, s.notes(SCL));
   await s.container.one('dv-csv').click();
-  assert.equal(s.downloads[0][0], '﻿focus_score,focus_mean\r\n12.5,inf\r\n');
+  assert.equal(s.downloads[0][0], '\uFEFFfocus_score,focus_mean\r\n12.5,inf\r\n');
   assert.match(s.downloads[0][1], /^focus_score-\d{8}-\d{6}\.csv$/);
 }));
 
@@ -649,10 +649,10 @@ test('p8-ui-5. frozen: the buttons export the FROZEN snapshot, not the newer fra
   const newer = { kind: 'scalars', fields: [{ key: 'focus_score', label: 'คะแนน', value: 99 }, { key: 'focus_mean', label: 'เฉลี่ย', value: 1 }] };
   rig.panel.applyNotes(rig.notes(newer));
   await rig.container.one('dv-csv').click();
-  assert.equal(rig.downloads.at(-1)[0], '﻿focus_score,focus_mean\r\n12.5,inf\r\n');
+  assert.equal(rig.downloads.at(-1)[0], '\uFEFFfocus_score,focus_mean\r\n12.5,inf\r\n');
   await rig.container.one('dv-freeze').click(); // unfreeze
   await rig.container.one('dv-csv').click();
-  assert.equal(rig.downloads.at(-1)[0], '﻿focus_score,focus_mean\r\n99,1\r\n');
+  assert.equal(rig.downloads.at(-1)[0], '\uFEFFfocus_score,focus_mean\r\n99,1\r\n');
 }));
 
 test('p8-ui-6. no onDownloadCsv in cb → clicking "💾 CSV" does nothing (no throw) · op without values → no buttons at all', () => withDom(async () => {
@@ -671,7 +671,7 @@ test('p8-ui-7. pass_fail box itself shows the values block with result / measure
   OPS.pass_fail.apply(cv, g, { metric: 'count', cond: 'range', lo: 1, hi: 5 }, ctx).delete(); g.delete();
   rig.panel.render(rig.step, rig.notes(ctx.values));
   await rig.container.one('dv-csv').click();
-  assert.equal(rig.downloads[0][0], '﻿result,measured,lo,hi,reason\r\nOK,1,1,5,\r\n');
+  assert.equal(rig.downloads[0][0], '\uFEFFresult,measured,lo,hi,reason\r\nOK,1,1,5,\r\n');
   assert.match(rig.downloads[0][1], /^pass_fail-/);
 }));
 

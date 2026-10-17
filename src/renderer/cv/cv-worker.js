@@ -235,9 +235,10 @@ export function runPipeline(baseRGB, pipeline, nodeState, activeNodeIds, frameMe
     }
     if (ctx.info) notes.push(mkNote(step, f, { info: ctx.info }));
     if (ctx.values) {
-      notes.push(mkNote(step, f, { values: ctx.values })); // Tier 2 §A.2 — ช่องผลลัพธ์ตัวเลข (inert จนกว่า UI จะอ่าน)
       // pass_fail เองไม่เป็น upstream ของใคร — กล่อง pass_fail ซ้อนกันจึงอ่านกล่องวัดตัวเดียวกันได้
       const opId = opIdOfStep(step);
+      // op = id ของ "วิธี" จริง (กล่องรวม → mode) — batch CSV (P-8 C-B) ใช้ตั้งชื่อคอลัมน์ · เพิ่มแบบ additive UI เดิมไม่อ่าน
+      notes.push(mkNote(step, f, { values: ctx.values, op: opId })); // Tier 2 §A.2 — ช่องผลลัพธ์ตัวเลข
       if (opId !== "pass_fail") upstream = { op: opId, values: ctx.values };
     }
 
@@ -293,7 +294,12 @@ export function computeFrame(width, height, buffer, pipelines, opts = {}) {
         if (!pl.silentNotes && r.notes) for (const n of r.notes) notes.push(n);
         rgba = toRGBA(piped);
         const outData = new Uint8ClampedArray(rgba.data);
-        results.push({ displayId: pl.displayId, width: rgba.cols, height: rgba.rows, buffer: outData.buffer });
+        const res = { displayId: pl.displayId, width: rgba.cols, height: rgba.rows, buffer: outData.buffer };
+        // export (P-8 C-B): แนบ ctx.values ของทุกกล่องที่มีค่า (ชุดเดียวกับแผง "ค่าที่วัดได้") — ไม่แตะ buffer ภาพ
+        if (opts.collectValues === true && r.notes) {
+          res.values = r.notes.filter((n) => n.values).map((n) => ({ op: n.op, id: n.id, nodeId: n.nodeId, values: n.values }));
+        }
+        results.push(res);
         transfer.push(outData.buffer);
       } finally {
         if (piped) piped.delete();
@@ -338,7 +344,7 @@ self.onmessage = async (e) => {
     }
     try {
       // 18d (0-D): export ใช้ state แยกของตัวเอง — ภาพ export ต้องไม่ไหลเข้า MOG2/optical flow ของกล้องสด
-      const { results, transfer } = computeFrame(msg.width, msg.height, msg.buffer, msg.pipelines || [], { isolatedState: true });
+      const { results, transfer } = computeFrame(msg.width, msg.height, msg.buffer, msg.pipelines || [], { isolatedState: true, collectValues: true });
       self.postMessage({ type: "export-result", reqId: msg.reqId, results }, transfer);
     } catch (err) {
       self.postMessage({ type: "export-result", reqId: msg.reqId, results: [], error: err.message });

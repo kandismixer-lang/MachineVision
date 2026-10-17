@@ -195,6 +195,20 @@ export function createSourceBar(container, cb) {
       }
       saveBtn.addEventListener("click", () => cb.onSaveImages());
       outputCluster.appendChild(saveBtn);
+      // P-8 C-B: ภาพนิ่งหลายภาพ → เลือกได้ว่าจะเขียน CSV ค่าที่วัดได้ของทุกภาพลงโฟลเดอร์เดียวกับภาพหรือไม่
+      if (cb.onBatchCsv && source === "image" && batch && batch.total > 1) {
+        const wrap = document.createElement("label");
+        wrap.className = "batch-csv-opt";
+        wrap.title = "ตอนเซฟทั้งโฟลเดอร์ จะเขียนไฟล์ CSV ค่าที่วัดได้ของทุกภาพ (สรุปต่อภาพ + รายวัตถุ) ไว้ข้างภาพผลลัพธ์ — ถ้าไม่มีกล่องที่วัดค่าจะไม่สร้างไฟล์";
+        const box = document.createElement("input");
+        box.type = "checkbox";
+        box.checked = cb.getBatchCsv ? !!cb.getBatchCsv() : true;
+        box.addEventListener("change", () => cb.onBatchCsv(box.checked));
+        const txt = document.createElement("span");
+        txt.textContent = "📊 CSV ค่าที่วัด";
+        wrap.append(box, txt);
+        outputCluster.appendChild(wrap);
+      }
     }
     // Version2ui ย้าย Export YOLO Code ไปอยู่ใน Dataset workflow เพื่อไม่ปนกับการเซฟภาพ
     if (cb.onExportCode && !document.body.classList.contains("ui-v2")) {

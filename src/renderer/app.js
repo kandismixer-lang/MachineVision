@@ -8,6 +8,7 @@ import { createClassPanel } from "./ui/class-panel.js";
 import { createSplitPanel } from "./ui/split-panel.js";
 import { createAnnotateCanvas } from "./ui/annotate-canvas.js";
 import { createSourceBar } from "./ui/source-bar.js";
+import { createBatchCsv, finishBatchCsv } from "./ui/batch-csv.js";
 import { createExportDialog } from "./ui/export-dialog.js";
 import { startCamera, listCameras } from "./camera.js";
 import { startPose, stopPose, pausePose, resumePose, renderStillErgonomics } from "./mediapipe-pose.js";
@@ -849,6 +850,8 @@ annotateCanvas = createAnnotateCanvas({
   onNavImage: (dir) => { if (state.images.length > 1) setImageIndex(state.imageIndex + dir); },
 });
 
+// P-8 C-B: ติ๊กไว้ = ตอน Save Picture ทั้งโฟลเดอร์ (ภาพนิ่ง > 1 ภาพ) เขียน CSV ค่าที่วัดได้ของทุกภาพด้วย (ค่าเริ่มต้น = เปิด; ไม่มีกล่องที่ให้ค่า = ไม่สร้างไฟล์)
+let batchCsvOn = true;
 const sourceBar = createSourceBar(document.getElementById("source-bar"), {
   getSource: () => state.source,
   onSource: (s) => setSource(s),
@@ -869,6 +872,8 @@ const sourceBar = createSourceBar(document.getElementById("source-bar"), {
   onExportCode: () => openExportCode(),
   onSaveImages: () => saveImages(),
   exportBusy: () => exporting,
+  getBatchCsv: () => batchCsvOn,
+  onBatchCsv: (on) => { batchCsvOn = !!on; },
   isPaused: () => state.paused,
   onTogglePause: () => togglePause(),
   // ตัวนำทางชุดภาพ (batch): จำนวน + ชื่อ + Prev/Next
@@ -1111,13 +1116,14 @@ function processExport(imageData, pipelines) {
       settled = true;
       exportWaiters.delete(id);
       exportTimedOutCount++;
-      resolve([]);
+      resolve(Object.assign([], { error: "หมดเวลารอผลประมวลผล" }));
     }, EXPORT_TIMEOUT_MS);
     exportWaiters.set(id, (msg) => {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
-      resolve(msg.results || []);
+      // error (ถ้ามี) แนบไว้บน array ให้ batch CSV รู้ว่าภาพนี้พัง — ผู้เรียกเดิมใช้เป็น array ได้เหมือนเดิม
+      resolve(Object.assign(msg.results || [], { error: msg.error }));
     });
     const copy = new Uint8ClampedArray(imageData.data);
     worker.postMessage(
@@ -1154,6 +1160,11 @@ function pad(n, width) {
 }
 
 let exporting = false;
+function csvStamp() {
+  const d = new Date();
+  const p2 = (n) => String(n).padStart(2, "0");
+  return `batch-${d.getFullYear()}${p2(d.getMonth() + 1)}${p2(d.getDate())}-${p2(d.getHours())}${p2(d.getMinutes())}${p2(d.getSeconds())}`;
+}
 // ระหว่าง export ใด ๆ (batch/YOLO) ทำงานอยู่ ปุ่ม export อื่นต้อง disable กันผู้ใช้กดซ้อน
 // (เช่นกด Save Picture ระหว่าง YOLO export ค้าง → เปิด dialog เลือกโฟลเดอร์ซ้อนแล้ว exportBatch return เงียบ สับสน)
 function setExportButtonsDisabled(disabled) {
@@ -1167,31 +1178,65 @@ async function exportBatch(connected, dir) {
   if (exporting) return;
   const total = state.images.length;
   // โหมด fallback (ไม่มีโฟลเดอร์) ถ้าไฟล์เยอะจะเด้ง dialog รัว — เตือนก่อน
+  const csvOn = batchCsvOn;
   const files = total * connected.length;
-  if (!dir && files > 60 && !window.confirm(`จะบันทึกทั้งหมด ${files} ไฟล์ ดำเนินการต่อ?`)) return;
+  if (!dir && files > 60 && !window.confirm(`จะบันทึกทั้งหมด ${files} ไฟล์${csvOn ? " (+CSV ถ้ามีค่าที่วัด)" : ""} ดำเนินการต่อ?`)) return;
   exporting = true;
   setExportButtonsDisabled(true);
   const width = String(total).length;
   let saved = 0;
+  const csv = csvOn ? createBatchCsv() : null;
+  let failed = 0; // ภาพที่บันทึกไม่สำเร็จ (disk เต็ม / AV ล็อก ฯลฯ)
+  let aborted = false; // หยุดกลางทางเพราะ error ที่ไม่คาดคิด
   try {
-    for (let i = 0; i < total; i++) {
-      statusEl.textContent = `กำลัง Export ภาพ ${i + 1}/${total} …`;
-      // ภาพจากไฟล์ = ถอดทีละภาพ (memory คงที่); ภาพจากคลังแคป = ถอดไว้แล้ว
-      const rec = state.images[i];
-      const im = rec.canvas ? { canvas: rec.canvas, w: rec.w, h: rec.h } : await loadImageFile(rec.file);
-      if (!im) continue;
-      const data = imageToProcData(im);
-      const results = await processExport(data, state.pipelines);
-      for (const dp of connected) {
-        const r = results.find((x) => x.displayId === dp.displayId);
-        if (!r) continue;
-        const blob = await resultToPng(r);
-        const base = sanitizeName(state.images[i].name.replace(/\.[^.]+$/, ""));
-        const tag = connected.length > 1 ? "_" + sanitizeName(captionFor(dp)) : "";
-        if (await saveOne(dir, `${pad(i + 1, width)}_${base}${tag}.png`, blob)) saved++;
+    try {
+      for (let i = 0; i < total; i++) {
+        statusEl.textContent = `กำลัง Export ภาพ ${i + 1}/${total} …`;
+        // ภาพจากไฟล์ = ถอดทีละภาพ (memory คงที่); ภาพจากคลังแคป = ถอดไว้แล้ว
+        const rec = state.images[i];
+        const im = rec.canvas ? { canvas: rec.canvas, w: rec.w, h: rec.h } : await loadImageFile(rec.file);
+        if (!im) {
+          if (csv) csv.addError(rec.name, "เปิดภาพไม่ได้");
+          continue;
+        }
+        const data = imageToProcData(im);
+        const results = await processExport(data, state.pipelines);
+        // บันทึกภาพก่อน — ถ้าเขียนไฟล์พลาดให้นับแล้วไปต่อ (ไม่ให้ลูปหลุดจนเสียแถว CSV ที่สะสมไว้)
+        let saveFailed = false;
+        try {
+          for (const dp of connected) {
+            const r = results.find((x) => x.displayId === dp.displayId);
+            if (!r) continue;
+            const blob = await resultToPng(r);
+            const base = sanitizeName(state.images[i].name.replace(/\.[^.]+$/, ""));
+            const tag = connected.length > 1 ? "_" + sanitizeName(captionFor(dp)) : "";
+            if (await saveOne(dir, `${pad(i + 1, width)}_${base}${tag}.png`, blob)) saved++;
+          }
+        } catch {
+          saveFailed = true;
+          failed++;
+        }
+        if (csv) {
+          // ค่าของทุกกล่องที่ผ่านสายที่ต่ออยู่ (worker แนบมากับผลของแต่ละสาย) — ไม่มีผลเลย = ภาพนี้พัง/หมดเวลา
+          if (saveFailed) csv.addError(rec.name, "บันทึกภาพไม่สำเร็จ");
+          else if (results.length === 0) csv.addError(rec.name, results.error || "ไม่มีผลลัพธ์จาก worker");
+          else csv.add(rec.name, results.flatMap((r) => r.values || []));
+        }
       }
+    } catch {
+      aborted = true; // error อื่นที่ไม่คาดคิด — ยังเขียน CSV ของภาพที่ทำเสร็จแล้วต่อ
     }
-    statusEl.textContent = `Export เสร็จ ${saved} ไฟล์ จาก ${total} ภาพ${dir ? " (ลงโฟลเดอร์ที่เลือก)" : ""}`;
+    // csv = null (ปิดตัวเลือก) → ไม่เขียนอะไรและไม่มีข้อความเพิ่ม
+    const csvNote = await finishBatchCsv(csv, {
+      dir,
+      writeFile: dir ? (d, n, b) => window.mvExport.writeFile(d, n, b) : null,
+      download: downloadBlob,
+      stem: csvStamp(),
+    });
+    const partial = aborted
+      ? " · หยุดกลางทาง (ผลบางส่วน)"
+      : failed > 0 ? ` · บันทึกภาพไม่สำเร็จ ${failed} ภาพ (ผลบางส่วน)` : "";
+    statusEl.textContent = `Export เสร็จ ${saved} ไฟล์ จาก ${total} ภาพ${dir ? " (ลงโฟลเดอร์ที่เลือก)" : ""}${partial}${csvNote}`;
   } finally {
     exporting = false;
     setExportButtonsDisabled(false);

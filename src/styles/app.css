@@ -439,6 +439,15 @@ textarea {
   font-size: 12px;
   color: #94a3b8;
 }
+.batch-csv-opt {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 12px;
+  color: #94a3b8;
+  cursor: pointer;
+  white-space: nowrap;
+}
 .level-select select {
   background: var(--panel-2, #1e293b);
   color: var(--text);

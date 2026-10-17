@@ -5,7 +5,9 @@
 // table → หัว + 1 แถวต่อวัตถุ (ถ้า total > จำนวนแถว = ถูกจำกัด → ต่อท้าย `# total,<จำนวนจริง>`)
 // scalars → หัว (key ของทุกช่อง) + 1 แถวค่า · kind อื่น/ไม่มีข้อมูล → null
 
-function cell(v) {
+const BOM = "\uFEFF"; // U+FEFF — UTF-8 BOM ให้ Excel อ่านไทยถูก
+
+export function cell(v) {
   if (v === null || v === undefined) return "";
   let s;
   if (typeof v === "number") {
@@ -17,6 +19,12 @@ function cell(v) {
     s = String(v);
   }
   return /[",\r\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s;
+}
+
+// rows = อาร์เรย์ของแถว (แต่ละแถวเป็นอาร์เรย์ของค่า) → ข้อความ CSV กฎเดียวกับ valuesToCsv (ใช้ใน batch CSV)
+export function rowsToCsv(rows, opts = {}) {
+  const bom = opts.bom === false ? "" : BOM;
+  return bom + rows.map((r) => r.map(cell).join(",")).join("\r\n") + "\r\n";
 }
 
 export function valuesToCsv(values, opts = {}) {
@@ -43,6 +51,6 @@ export function valuesToCsv(values, opts = {}) {
   if (values.kind === "table" && typeof values.total === "number" && Number.isFinite(values.total) && values.total > rows.length) {
     lines.push("# total," + values.total);
   }
-  const bom = opts.bom === false ? "" : "\uFEFF";
+  const bom = opts.bom === false ? "" : BOM;
   return bom + lines.join("\r\n") + "\r\n";
 }
