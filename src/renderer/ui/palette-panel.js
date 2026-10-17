@@ -9,7 +9,7 @@ export const TOOL_SECTIONS = [
   { title: "FILTER & DENOISE", ops: ["salt_pepper_noise", "gaussian_noise", "median_blur", "gaussian_blur", "box_blur", "bilateral", "wiener_filter", "guided_filter", "nlm_denoise", "deconv_wiener", "deconv_lucy"] },
   { title: "MORPHOLOGY", ops: ["morphology"] },
   { title: "SEGMENTATION & EDGE", ops: ["binary_threshold", "otsu_threshold", "adaptive_threshold", "multi_otsu_threshold", "canny", "sobel", "laplacian_edge", "scharr_edge", "prewitt_edge", "roberts_edge", "log_edge", "watershed", "grabcut", "region_growing"] },
-  { title: "ANALYSIS & DETECTION", ops: ["find_contours", "connected_components", "distance_transform", "local_std_filter", "local_entropy_filter", "gabor_filter", "glcm", "focus_score", "regionprops", "feret", "line_profile", "shape_filter", "bounding_boxes", "hough_circles", "hough_lines", "harris_corners", "shi_tomasi_corners", "orb_keypoints", "akaze_keypoints", "fast_keypoints"] },
+  { title: "ANALYSIS & DETECTION", ops: ["find_contours", "connected_components", "distance_transform", "local_std_filter", "local_entropy_filter", "gabor_filter", "glcm", "focus_score", "regionprops", "feret", "line_profile", "shape_filter", "bounding_boxes", "hough_circles", "hough_lines", "harris_corners", "shi_tomasi_corners", "orb_keypoints", "akaze_keypoints", "fast_keypoints", "pass_fail"] },
   { title: "FREQUENCY DOMAIN", ops: ["fft_magnitude", "fft_filter", "bandpass_notch", "dct_jpeg"] },
   { title: "IMAGE ARITHMETIC", ops: ["imabsdiff", "imfuse", "mask", "imarith", "logical_ops", "inpaint", "hist_match", "roi_apply", "ecc_register"] },
   { title: "TEMPLATE MATCHING", ops: ["template_matching"] },
@@ -82,6 +82,8 @@ const OP_ICON = {
   guided_filter: "≀", pseudocolor: "🌡", focus_score: "⦿", delta_e: "◬", roi_apply: "⊡",
   // ใหม่ (2026-10-15, IP batch 4B) — เช็คแล้วไม่ชนกับ OP_ICON / GROUP_ICON / NC_ICON_FALLBACK (🧩) / 📊 / 📌
   deconv_wiener: "⟲", deconv_lucy: "⌾", ecc_register: "⧉", gabor_filter: "⋈", glcm: "⧈", nlm_denoise: "✣", dehaze: "🌫", dct_jpeg: "⬗",
+  // ใหม่ (2026-10-17, P-8) — ✔ สื่อ "ผ่าน" · เช็คแล้วไม่ชนกับ OP_ICON / GROUP_ICON / NC_ICON_FALLBACK (🧩)
+  pass_fail: "✔",
   // ใหม่ (Tier 2, 18d) — เช็คทุกตัวกับ glyph เดิมทั้งหมดด้านบน และกับ GROUP_ICON ใน ui-meta.js แล้วไม่ชนกันเลย
   mog2: "🎞", // ฟิล์มหลายเฟรม สื่อ "ต้องดูหลายเฟรมต่อเนื่อง"
   farneback_optical_flow: "⇶", // ลูกศรสามเส้นขนานกัน สื่อ "การไหลทั้งภาพ" (dense flow)

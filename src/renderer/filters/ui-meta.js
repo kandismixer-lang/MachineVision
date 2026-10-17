@@ -1,5 +1,5 @@
 // UI metadata — เพิ่มความสวย/สื่อความ โดยไม่แตะ backend algorithm
-import { OPS, boolOr, fixed2, signedText, quantizeBits, SHAPE_FILTER_PROP_TH, HITMISS_PATTERNS } from "./registry.js";
+import { OPS, passFailParams, pfNum, boolOr, fixed2, signedText, quantizeBits, SHAPE_FILTER_PROP_TH, HITMISS_PATTERNS } from "./registry.js";
 
 // ไอคอนประจำการ์ดเครื่องมือ (Design §7.1 — ภาพ mockup มี icon chip หน้าแต่ละเครื่องมือ)
 export const GROUP_ICON = {
@@ -66,6 +66,8 @@ function psfCardText(p) {
 // ข้อความการ์ดของ op ที่มีตัวเลือก operation (IP batch 2 ชิ้น B)
 const IMARITH_LABEL = { add: "A + B", subtract: "A − B", multiply: "A × B ÷ 255", divide: "A ÷ B × 255" };
 const LOGICAL_LABEL = { and: "A AND B", or: "A OR B", xor: "A XOR B", a_and_not_b: "A AND NOT B" };
+// ชื่อสั้นของ metric ของ pass_fail บนการ์ด (key ตรงกับ PASS_FAIL_METRICS ใน registry.js)
+const PASS_FAIL_SHORT = { count: "จำนวนวัตถุ", area_sum: "พื้นที่รวม", area_max: "พื้นที่ใหญ่สุด", roi_mean: "สว่างใน ROI", focus: "ความคม", de_mean: "ΔE เฉลี่ย" };
 function ownOr(table, key, fallback) {
   return Object.hasOwn(table, key) ? table[key] : table[fallback];
 }
@@ -255,6 +257,12 @@ export const OP_PRIMARY = {
     return `ω ${pnum("dehaze", "amount", p.amount)} · หน้าต่าง ${ps0 % 2 === 0 ? ps0 + 1 : ps0}` + (!boolOr(p.refine, true) ? " · ไม่เกลี่ย" : "");
   },
   dct_jpeg: (p) => (p.method === "zonal" ? `ความถี่ต่ำ ${pnum("dct_jpeg", "keep", p.keep, { int: true })}×${pnum("dct_jpeg", "keep", p.keep, { int: true })}` : `JPEG q${pnum("dct_jpeg", "quality", p.quality, { int: true })}`),
+  // ใหม่ (2026-10-17, P-8) — ค่าหลัง clamp/own-property ผ่าน passFailParams เหมือน op
+  pass_fail: (p) => {
+    const q = passFailParams(p);
+    const crit = q.cond === "range" ? `${pfNum(q.lo)}–${pfNum(q.hi)}` : q.cond === "ge" ? `≥ ${pfNum(q.lo)}` : q.cond === "le" ? `≤ ${pfNum(q.hi)}` : `= ${pfNum(q.lo)}`;
+    return `${PASS_FAIL_SHORT[q.metric]} ผ่านเมื่อ ${crit}`;
+  },
   // Tier 2, 18d — Motion (ค่าเริ่มต้น/ช่วง อ่านจาก OPS ผ่าน pnum: history 10-2000 def 500, varThreshold 4-100
   // def 16, maxMotion 1-50 def 10, maxPoints 10-300 def 100, trailLength 1-50 def 10 · int = ตัวที่ registry
   // ใช้ intIn (ปัดเป็นจำนวนเต็ม) ตรงตามตารางของเทสต์ tier2d-MN-1)
@@ -312,6 +320,7 @@ export const OPTION_GROUPS = {
     ["หาเส้นตรง / วงกลม", ["hough_lines", "hough_circles"]],
     ["หาจุดมุม / จุดเด่น", ["harris_corners", "shi_tomasi_corners", "fast_keypoints", "orb_keypoints", "akaze_keypoints"]],
     ["ลายพื้นผิวและความคม", ["local_std_filter", "local_entropy_filter", "gabor_filter", "glcm", "focus_score"]],
+    ["ตัดสินผ่าน / ไม่ผ่าน", ["pass_fail"]],
   ],
   "segment_edge.mode": [
     ["แยกขาว-ดำ (Threshold)", ["binary_threshold", "otsu_threshold", "adaptive_threshold", "multi_otsu_threshold"]],

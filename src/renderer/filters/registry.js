@@ -1492,6 +1492,88 @@ export function jpegQTable(quality) {
 }
 
 // ===================================================================
+// ตัวช่วยของ P-8 (2026-10-17 — pass_fail: ตัดสิน OK / NG จากค่าที่กล่องวัดก่อนหน้าส่งมา)
+// ===================================================================
+// worker ส่ง ctx.upstream = { op, values } ของกล่อง "ล่าสุดที่มี ctx.values" บนสายหลัก (op = id จริงของ op เช่น "regionprops")
+// pass_fail เลือกตัวเลขจาก values ตาม metric · ต้องมาจาก op ที่ถูกต้อง (op) ไม่งั้น = ไม่มีค่า → NG (fail-safe)
+// คอลัมน์พื้นที่: ใช้ area_mm2 ถ้ากล่อง Region Properties ตั้ง มม./px > 0 (มีคอลัมน์นี้) ไม่งั้น area_px — แถวที่ส่งมาถูกจำกัดด้วย maxObjects
+function pfAreaCells(v) {
+  if (!v || v.kind !== "table" || !Array.isArray(v.columns) || !Array.isArray(v.rows) || v.rows.length === 0) return null;
+  let ci = v.columns.indexOf("area_mm2");
+  if (ci < 0) ci = v.columns.indexOf("area_px");
+  if (ci < 0) return null;
+  return v.rows.map((r) => (Array.isArray(r) ? r[ci] : null));
+}
+function pfScalar(v, key) {
+  if (!v || v.kind !== "scalars" || !Array.isArray(v.fields)) return null;
+  const f = v.fields.find((x) => x && x.key === key);
+  return f ? f.value : null;
+}
+// คืนตัวเลข (หรือ null/NaN = ไม่มีค่า) · ผลรวมบวกตามลำดับแถวจากบนลงล่าง (Python ที่ export บวกลำดับเดียวกัน)
+function pfSum(cells) {
+  if (!cells) return null;
+  let s = 0;
+  for (const x of cells) { if (typeof x !== "number") return NaN; s += x; }
+  return s;
+}
+function pfMax(cells) {
+  if (!cells) return null;
+  let m = -Infinity;
+  for (const x of cells) { if (typeof x !== "number") return NaN; if (x > m) m = x; }
+  return m;
+}
+export const PASS_FAIL_METRICS = {
+  count: { op: "regionprops", th: "Region Properties", pick: (v) => (v && v.kind === "table" ? (typeof v.total === "number" ? v.total : (Array.isArray(v.rows) ? v.rows.length : null)) : null) },
+  area_sum: { op: "regionprops", th: "Region Properties", pick: (v) => pfSum(pfAreaCells(v)) },
+  area_max: { op: "regionprops", th: "Region Properties", pick: (v) => pfMax(pfAreaCells(v)) },
+  roi_mean: { op: "roi_polygon", th: "ROI Polygon", pick: (v) => pfScalar(v, "roi_mean") },
+  focus: { op: "focus_score", th: "Focus / Sharpness Score", pick: (v) => pfScalar(v, "focus_score") },
+  de_mean: { op: "delta_e", th: "Color Difference ΔE", pick: (v) => pfScalar(v, "de_mean") },
+};
+// เกณฑ์แสดงบนข้อความ: ปัด 2 ตำแหน่งแล้วตัดศูนย์ท้าย (0.30000000000000004 → 0.3 · 1 → 1)
+export const pfNum = (x) => String(Math.round(x * 100) / 100);
+const PASS_FAIL_CONDS = { range: true, ge: true, le: true, eq: true };
+const PASS_FAIL_FIELDS = [
+  ["result", "ผลตัดสิน (OK / NG)"], ["measured", "ค่าที่วัดได้"], ["lo", "เกณฑ์ต่ำสุด (หรือค่าเป้าหมาย)"], ["hi", "เกณฑ์สูงสุด"],
+  ["reason", "เหตุผล (NG เพราะไม่มีค่า หรือเกณฑ์ต่ำสุด > สูงสุด)"],
+];
+const PASS_FAIL_LIMIT = 10000000; // ช่วง lo/hi ของ param (ค่าที่วัดทุกตัวไม่ติดลบ)
+// param → ค่าที่ใช้จริง (own-property สำหรับ select · clamp ตัวเลข) — แอปและ codegen ใช้ตัวเดียวกัน
+export function passFailParams(p) {
+  p = p || {};
+  return {
+    metric: ownKey(PASS_FAIL_METRICS, p.metric, "count"),
+    cond: ownKey(PASS_FAIL_CONDS, p.cond, "range"),
+    lo: Math.min(PASS_FAIL_LIMIT, Math.max(0, finiteOr(p.lo, 1))),
+    hi: Math.min(PASS_FAIL_LIMIT, Math.max(0, finiteOr(p.hi, 100))),
+  };
+}
+// ตัดสินล้วน ๆ (ไม่แตะ cv) → { result: "OK"|"NG", measured, lo, hi, reason } · lo/hi = null เมื่อเงื่อนไขไม่ใช้ · ไม่มีค่า = NG + reason เสมอ
+export function passFailVerdict(p, upstream) {
+  const { metric, cond, lo, hi } = passFailParams(p);
+  const m = PASS_FAIL_METRICS[metric];
+  const useLo = cond !== "le", useHi = cond === "range" || cond === "le";
+  const out = { result: "NG", measured: null, lo: useLo ? lo : null, hi: useHi ? hi : null, reason: null };
+  const v = upstream && upstream.values;
+  if (!v) { out.reason = "ไม่มีค่าจากกล่องก่อนหน้า (ต้องต่อหลังกล่องที่วัดค่า)"; return out; }
+  if (upstream.op !== m.op) { out.reason = `ค่าล่าสุดมาจากกล่องอื่น — ต้องต่อหลังกล่อง ${m.th}`; return out; }
+  const x = m.pick(v);
+  if (typeof x !== "number" || !Number.isFinite(x)) {
+    out.reason = v.kind === "table" && Array.isArray(v.rows) && v.rows.length === 0 && metric !== "count"
+      ? "ไม่พบวัตถุ (ตารางว่าง) จึงวัดค่านี้ไม่ได้" : "ค่าที่ต้องใช้ว่างหรือไม่ใช่ตัวเลข";
+    return out;
+  }
+  out.measured = x;
+  if (cond === "range" && lo > hi) { out.reason = "เกณฑ์ต่ำสุดมากกว่าเกณฑ์สูงสุด"; return out; }
+  const ok = cond === "range" ? x >= lo && x <= hi
+    : cond === "ge" ? x >= lo
+    : cond === "le" ? x <= hi
+    : Math.abs(x - lo) <= 1e-9 * Math.max(1, Math.abs(lo)); // "=" เทียบทศนิยมแบบยอมคลาด 1e-9 (จำนวนเต็มเท่ากันเป๊ะ)
+  out.result = ok ? "OK" : "NG";
+  return out;
+}
+
+// ===================================================================
 // OPS — operation ย่อยแต่ละตัว (logic เดิม ไม่เปลี่ยน)
 // ===================================================================
 export const OPS = {
@@ -7761,6 +7843,54 @@ export const OPS = {
       }
     },
   },
+
+  // P-8 (2026-10-17) — ตัดสิน OK / NG: อ่านค่าล่าสุดของกล่องวัดบนสายหลัก (ctx.upstream จาก worker) เทียบเกณฑ์ · ภาพ = ภาพที่เข้ามา + กรอบเขียว/แดง + ป้าย
+  pass_fail: {
+    name: "Pass / Fail (ตัดสิน OK / NG)",
+    needs: "any",
+    desc: "ตัดสินว่างานผ่าน (OK) หรือไม่ผ่าน (NG) จากตัวเลขที่กล่องวัดค่าก่อนหน้าวัดได้ — ต่อกล่องนี้ 'ต่อจาก' กล่องวัด เช่น Region Properties → Pass / Fail · ภาพที่ออกคือภาพเดิม + กรอบสีเขียว (OK) หรือแดง (NG) + ป้าย OK/NG · ถ้าไม่มีค่าให้ตัดสิน (ยังไม่ได้ต่อกล่องวัด, ไม่พบวัตถุ, ค่าว่าง) จะตัดสินเป็น NG เสมอ (กันของเสียหลุด) · ใช้ค่าของกล่องวัดล่าสุดบนสายหลักเท่านั้น (ไม่ข้ามไปสาย B) กล่องที่ปิด (bypass) ถูกข้าม · ⚠️ Region Properties วัดและส่งค่าเฉพาะวัตถุที่ใหญ่ที่สุดตามค่า 'แสดงวัตถุสูงสุด' — พื้นที่รวม/ใหญ่สุดจึงคิดจากชิ้นที่แสดงเท่านั้น (จำนวนวัตถุใช้ยอดที่พบจริงทั้งหมด)",
+    params: [
+      { key: "metric", type: "select", label: "ค่าที่ใช้ตัดสิน", options: [
+        { value: "count", label: "จำนวนวัตถุ (ต่อหลัง Region Properties)" },
+        { value: "area_sum", label: "พื้นที่รวมทุกชิ้น (ต่อหลัง Region Properties)", hint: "px หรือ มม.² ถ้าตั้ง มม./px ที่กล่อง Region Properties" },
+        { value: "area_max", label: "พื้นที่ชิ้นที่ใหญ่สุด (ต่อหลัง Region Properties)", hint: "px หรือ มม.² ถ้าตั้ง มม./px ที่กล่อง Region Properties" },
+        { value: "roi_mean", label: "ความสว่างเฉลี่ยใน ROI (ต่อหลัง ROI Polygon)" },
+        { value: "focus", label: "คะแนนความคม (ต่อหลัง Focus / Sharpness Score)" },
+        { value: "de_mean", label: "ΔE เฉลี่ย (ต่อหลัง Color Difference ΔE)" },
+      ], default: "count", desc: "เลือกค่าที่จะเอามาตัดสิน — ต้องต่อกล่องวัดชนิดที่ระบุในวงเล็บไว้ก่อนหน้ากล่องนี้" },
+      { key: "cond", type: "select", label: "เงื่อนไขที่ถือว่าผ่าน", options: [
+        { value: "range", label: "อยู่ในช่วง ต่ำสุด–สูงสุด (รวมขอบ)" },
+        { value: "ge", label: "มากกว่าหรือเท่ากับ (≥)" },
+        { value: "le", label: "น้อยกว่าหรือเท่ากับ (≤)" },
+        { value: "eq", label: "เท่ากับค่าเป้าหมาย (=)" },
+      ], default: "range" },
+      { key: "lo", type: "number", label: "ค่าต่ำสุด / ค่าเป้าหมาย", min: 0, max: PASS_FAIL_LIMIT, step: 0.1, default: 1, visibleWhen: [{ key: "cond", notIn: ["le"] }], hint: "พิมพ์ตัวเลขลงในช่องได้", desc: "ค่าที่วัดได้ต้อง ≥ ค่านี้ (โหมด 'เท่ากับ' ใช้เป็นค่าเป้าหมาย)" },
+      { key: "hi", type: "number", label: "ค่าสูงสุด", min: 0, max: PASS_FAIL_LIMIT, step: 0.1, default: 100, visibleWhen: [{ key: "cond", in: ["range", "le"] }], hint: "พิมพ์ตัวเลขลงในช่องได้", desc: "ค่าที่วัดได้ต้อง ≤ ค่านี้" },
+    ],
+    apply(cv, src, p, ctx) {
+      const v = passFailVerdict(p, ctx && ctx.upstream);
+      if (ctx) {
+        ctx.values = scalarValues(PASS_FAIL_FIELDS, [v.result, v.measured, v.lo, v.hi, v.reason]);
+        const { cond } = passFailParams(p);
+        const crit = cond === "range" ? `${pfNum(v.lo)}–${pfNum(v.hi)}` : cond === "ge" ? `≥ ${pfNum(v.lo)}` : cond === "le" ? `≤ ${pfNum(v.hi)}` : `= ${pfNum(v.lo)}`;
+        ctx.info = v.reason ? `${v.result}: ${v.reason}` : `${v.result}: ค่าที่วัดได้ ${fixed2(v.measured)} · เกณฑ์ผ่าน ${crit}`;
+      }
+      if (isEmptyMat(src)) return src.clone();
+      const dst = rgbIfNeeded(cv, src) || src.clone(); // ต้องเป็นภาพสี เพื่อให้กรอบสีเห็นได้แม้ input เป็นขาวดำ
+      try {
+        const W = dst.cols, H = dst.rows;
+        const t = Math.max(2, Math.round(Math.min(W, H) / 50)), half = Math.floor(t / 2);
+        const color = v.result === "OK" ? new cv.Scalar(0, 200, 0, 255) : new cv.Scalar(255, 0, 0, 255);
+        cv.rectangle(dst, new cv.Point(half, half), new cv.Point(W - 1 - half, H - 1 - half), color, t);
+        const scale = Math.max(0.6, Math.min(W, H) / 300);
+        cv.putText(dst, v.result, new cv.Point(t + 8, t + 8 + Math.round(20 * scale)), cv.FONT_HERSHEY_SIMPLEX, scale, color, Math.max(1, Math.round(scale * 2)));
+      } catch (err) {
+        dst.delete();
+        throw err;
+      }
+      return dst;
+    },
+  },
 };
 
 // ---- ตัวช่วย/ตารางของ IP batch 4B ที่ต้องใช้ cv หรืออ้างจาก apply (function declaration ถูก hoist · const ใช้ตอนรันหลังโหลดโมดูลเสร็จ) ----
@@ -8195,7 +8325,7 @@ export const FILTERS = {
     ["binary_threshold", "otsu_threshold", "adaptive_threshold", "multi_otsu_threshold", "canny", "sobel", "laplacian_edge", "scharr_edge", "prewitt_edge", "roberts_edge", "log_edge", "watershed", "grabcut", "region_growing"], "binary_threshold"),
 
   analysis_detect: mergeGroup("Analyze / Detect", "Analysis & Detection",
-    ["find_contours", "connected_components", "distance_transform", "local_std_filter", "local_entropy_filter", "gabor_filter", "glcm", "focus_score", "regionprops", "feret", "line_profile", "shape_filter", "bounding_boxes", "hough_circles", "hough_lines", "harris_corners", "shi_tomasi_corners", "orb_keypoints", "akaze_keypoints", "fast_keypoints"], "find_contours"),
+    ["find_contours", "connected_components", "distance_transform", "local_std_filter", "local_entropy_filter", "gabor_filter", "glcm", "focus_score", "regionprops", "feret", "line_profile", "shape_filter", "bounding_boxes", "hough_circles", "hough_lines", "harris_corners", "shi_tomasi_corners", "orb_keypoints", "akaze_keypoints", "fast_keypoints", "pass_fail"], "find_contours"),
 
   // name (ชื่อบนการ์ด node, ถูกตัดที่ ~92px) ของ 2 กลุ่มข้างบนย่อให้พอดี · group (ชิปหมวดใน detail-panel/สี) ยังเป็นชื่อเต็มเหมือนหมวด palette
 
@@ -8291,6 +8421,18 @@ export const GROUP_ORDER = [
 // resolve needs รองรับทั้ง string และ function (merged filter)
 export function needsOf(filter, params) {
   return typeof filter.needs === "function" ? filter.needs(params || {}) : filter.needs;
+}
+
+// id จริงของ op ที่ step นี้รัน: กล่องรวม (mergeGroup) = ค่า mode ที่เลือก (ไม่มี = วิธีเริ่มต้น เหมือน apply ของกลุ่ม) · กล่องเดี่ยว = step.id
+// worker ใช้ติดป้ายให้ ctx.upstream ของ pass_fail
+export function opIdOfStep(step) {
+  const f = FILTERS[step && step.id];
+  const first = f && f.params && f.params[0];
+  if (first && first.key === MODE_KEY && first.controls === true) {
+    const m = step.params && step.params[MODE_KEY];
+    return typeof m === "string" && Object.hasOwn(OPS, m) ? m : first.default; // เหมือน apply ของกลุ่ม: mode ที่ไม่รู้จัก → วิธีเริ่มต้น
+  }
+  return step && step.id;
 }
 
 // คืนค่า default params ของ filter (ใช้ตอนเพิ่ม node ใหม่)

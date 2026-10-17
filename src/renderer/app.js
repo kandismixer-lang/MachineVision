@@ -762,6 +762,7 @@ const palettePanel = createPalettePanel(document.getElementById("palette-panel")
 
 const detailPanel = createDetailPanel(document.getElementById("detail-panel"), {
   onTemplates: () => openTemplates(), // ปุ่ม "เริ่มจากเทมเพลต" ใน empty state ของ Properties
+  onDownloadCsv: (text, filename) => downloadBlob(new Blob([text], { type: "text/csv;charset=utf-8" }), filename), // ปุ่ม "💾 CSV" ของบล็อกค่าที่วัดได้ (P-8)
   onParamChange: (key, value) => {
     if (state.selectedNode) {
       invalidateSelectedPreview();

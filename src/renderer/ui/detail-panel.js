@@ -1,5 +1,6 @@
 // Panel ขวา: รายละเอียดของ filter ที่เลือก + คำอธิบายการทำงาน + สไลเดอร์ปรับค่า
-import { FILTERS, defaultParams, isParamVisible, orderParamsControllersFirst } from "../filters/registry.js";
+import { FILTERS, defaultParams, isParamVisible, orderParamsControllersFirst, opIdOfStep } from "../filters/registry.js";
+import { valuesToCsv } from "./values-csv.js";
 import { optionGroupsFor } from "../filters/ui-meta.js";
 
 // ---------- helper แสดงผลล้วน (Phase 2.2) — ไม่ยุ่งกับ state ของบล็อกค่า ----------
@@ -142,6 +143,9 @@ const VAL_META = {
   de_b_L:         { d: 2 },
   de_b_a:         { d: 2 },
   de_b_b:         { d: 2 },
+  // P-8 — Pass / Fail: ชื่อมาจาก label ของ worker · measured/lo/hi ไม่กำหนด d → จำนวนเต็มไม่มีทศนิยม ที่เหลือ 2 ตำแหน่ง
+  result:         { tip: "OK = ผ่านเกณฑ์ · NG = ไม่ผ่าน หรือไม่มีค่าให้ตัดสิน" },
+  reason:         { tip: "ขึ้นเมื่อ NG เพราะไม่มีค่าให้ตัดสิน หรือเกณฑ์ตั้งผิด (ต่ำสุดมากกว่าสูงสุด)" },
   ra_px:          { d: 0 },
   ra_pct:         { d: 1 },
   // IP batch 4B — จัดภาพ ECC · Gabor · GLCM · Dehaze · DCT/JPEG (ชื่อของ scalar มาจาก label ของ registry)
@@ -261,7 +265,7 @@ export function infoTextsOf(notes) {
   return (notes || []).filter((n) => n.info).map((n) => n.info);
 }
 
-// cb: onParamChange(key, value)
+// cb: onParamChange(key, value) · onDownloadCsv(text, filename) (ไม่บังคับ — ปุ่ม "💾 CSV" ของบล็อกค่า) · onTemplates()
 export function createDetailPanel(container, cb) {
   // step ล่าสุด (ใช้ re-render ตัวเองเมื่อเปลี่ยน "วิธี" ใน merged node)
   let curStep = null;
@@ -939,7 +943,7 @@ export function createDetailPanel(container, cb) {
       const t = frozen
         ? "ตรึงค่าไว้อยู่ ตัวเลขจะไม่อัปเดตจนกว่าจะกดอีกครั้ง"
         : view.waiting
-          ? "กำลังรอค่าจากเฟรมถัดไป… (ถ้าค้างนาน ให้ตรวจว่ากล่องนี้ต่อสายถึงกล่องผลลัพธ์แล้ว)"
+          ? "(ค่าเก่า — ยังไม่ใช่ผลของเฟรมล่าสุด) กำลังรอค่าจากเฟรมถัดไป… (ถ้าค้างนาน ให้ตรวจว่ากล่องนี้ต่อสายถึงกล่องผลลัพธ์แล้ว)"
           : "ตัวเลขที่เครื่องมือนี้วัดได้จากภาพเฟรมล่าสุด";
       if (hint.textContent !== t) hint.textContent = t;
     };
@@ -982,6 +986,47 @@ export function createDetailPanel(container, cb) {
     else buildScalarBody(view, v);
 
     head.appendChild(freezeBtn);
+
+    // P-8 C-A: ส่งออกค่าที่เห็นอยู่ (ตรึงอยู่ = ค่าที่ตรึง · ไม่ตรึง = เฟรมล่าสุด) — คัดลอก = CSV ไม่มี BOM · "💾 CSV" = ไฟล์ UTF-8 + BOM ผ่าน cb.onDownloadCsv
+    const shownValues = () => (frozen && frozenSnap ? frozenSnap : lastValues);
+    const copyBtn = document.createElement("button");
+    copyBtn.type = "button";
+    copyBtn.className = "dv-btn dv-copy";
+    copyBtn.textContent = "📋 คัดลอก";
+    copyBtn.title = "คัดลอกค่าที่เห็นอยู่เป็นข้อความ CSV (คั่นจุลภาค) แล้ววางใน Excel / Notepad ได้";
+    let copyTimer = null;
+    copyBtn.addEventListener("click", async () => {
+      const text = valuesToCsv(shownValues(), { bom: false });
+      if (text === null) return;
+      let ok = true;
+      try {
+        await navigator.clipboard.writeText(text);
+      } catch {
+        const ta = document.createElement("textarea");
+        ta.value = text;
+        document.body.appendChild(ta);
+        ta.select();
+        try { ok = document.execCommand("copy") === true; } catch { ok = false; }
+        ta.remove();
+      }
+      copyBtn.textContent = ok ? "✓ คัดลอกแล้ว" : "✗ คัดลอกไม่สำเร็จ";
+      clearTimeout(copyTimer);
+      copyTimer = setTimeout(() => (copyBtn.textContent = "📋 คัดลอก"), 1500);
+    });
+    const csvBtn = document.createElement("button");
+    csvBtn.type = "button";
+    csvBtn.className = "dv-btn dv-csv";
+    csvBtn.textContent = "💾 CSV";
+    csvBtn.title = "บันทึกค่าที่เห็นอยู่เป็นไฟล์ .csv (UTF-8 เปิดใน Excel ได้ ภาษาไทยไม่เพี้ยน) — หัวคอลัมน์เป็น key ภาษาอังกฤษ";
+    csvBtn.addEventListener("click", () => {
+      const text = valuesToCsv(shownValues());
+      if (text === null || !cb.onDownloadCsv) return;
+      const d = new Date(), z = (n) => String(n).padStart(2, "0");
+      const stamp = `${d.getFullYear()}${z(d.getMonth() + 1)}${z(d.getDate())}-${z(d.getHours())}${z(d.getMinutes())}${z(d.getSeconds())}`;
+      cb.onDownloadCsv(text, `${opIdOfStep(curStep) || "values"}-${stamp}.csv`);
+    });
+    head.appendChild(copyBtn);
+    head.appendChild(csvBtn);
     view.syncHint();
     return view;
   }

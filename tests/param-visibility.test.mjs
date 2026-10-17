@@ -219,7 +219,12 @@ test('pv-03 R1 โครงสร้าง: visibleWhen ทุกตัวอ้
 
 test('pv-04 R1 defaultParams ของทุก filter (key ลำดับ + ค่า) เท่ากับก่อนแก้ทุกตัว (hash จาก HEAD 4c4f354)', () => {
   const snap = {};
-  for (const id of Object.keys(FILTERS)) snap[id] = { keys: FILTERS[id].params.map((p) => p.key), defaults: defaultParams(id) };
+  // P-8 เพิ่ม op pass_fail (key pass_fail__*) ใน analysis_detect — ตัดออกก่อน hash เพื่อให้ hash เดิมยังล็อกทุก param เดิมเหมือนเดิม
+  const old = (k) => !k.startsWith('pass_fail__');
+  for (const id of Object.keys(FILTERS)) {
+    const d = defaultParams(id);
+    snap[id] = { keys: FILTERS[id].params.map((p) => p.key).filter(old), defaults: Object.fromEntries(Object.entries(d).filter(([k]) => old(k))) };
+  }
   const h = crypto.createHash('sha256').update(JSON.stringify(snap)).digest('hex');
   assert.equal(Object.keys(snap).length, 33);
   assert.equal(h, '8b7732b84f064393b82060d14b5502a08f6a497738183a7d96411751a86457c4');

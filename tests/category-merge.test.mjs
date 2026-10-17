@@ -133,8 +133,9 @@ const OLD_HOST = {};
 }
 // op ใหม่หลัง 2026-10-07 อยู่เฉพาะกลุ่มระดับหมวด ไม่มี node เดิมให้เทียบ · ลำดับ = ลำดับใน CATEGORY_OPS (cm-5 deepEqual ตามลำดับ)
 // IP batch 4A (2026-10-15) เพิ่ม pseudocolor / guided_filter / focus_score / delta_e (roi_apply อยู่ image_arithmetic ซึ่งไม่ใช่หมวดที่ re-group จึงไม่อยู่ในลิสต์นี้)
+// P-8 (2026-10-17) เพิ่ม pass_fail (ท้ายหมวด ANALYSIS & DETECTION)
 // IP batch 4B (2026-10-15) เพิ่ม dehaze / nlm_denoise / deconv_wiener / deconv_lucy / gabor_filter / glcm (dct_jpeg อยู่ frequency, ecc_register อยู่ image_arithmetic — ไม่ใช่หมวดที่ re-group)
-const POST_MERGE_OPS = ['pseudocolor', 'quantize', 'dehaze', 'guided_filter', 'nlm_denoise', 'deconv_wiener', 'deconv_lucy', 'gabor_filter', 'glcm', 'focus_score', 'shape_filter', 'delta_e'];
+const POST_MERGE_OPS = ['pseudocolor', 'quantize', 'dehaze', 'guided_filter', 'nlm_denoise', 'deconv_wiener', 'deconv_lucy', 'gabor_filter', 'glcm', 'focus_score', 'shape_filter', 'pass_fail', 'delta_e'];
 const CATEGORY_OPS = TOOL_SECTIONS.filter((s) => CATEGORY_FILTER_IDS.includes(OP_TO_FILTER[s.ops[0]])).flatMap((s) => s.ops);
 
 function paramsFor(fid, op) {

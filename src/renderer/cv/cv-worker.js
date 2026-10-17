@@ -1,6 +1,6 @@
 // Web Worker: โหลด OpenCV.js + รัน pipeline ของ filter หลายชั้น แยกจาก main thread
 import cv from "@techstark/opencv-js";
-import { FILTERS, needsOf } from "../filters/registry.js";
+import { FILTERS, needsOf, opIdOfStep } from "../filters/registry.js";
 
 let ready = false;
 
@@ -142,6 +142,7 @@ export function runPipeline(baseRGB, pipeline, nodeState, activeNodeIds, frameMe
   let current = baseRGB;
   let ownsCurrent = false; // baseRGB เป็นของ caller — ยังไม่ต้อง delete
   const notes = [];
+  let upstream = null; // ดู ctx.upstream ด้านล่าง
 
   for (let i = 0; i < pipeline.length; i++) {
     const step = pipeline[i];
@@ -162,7 +163,9 @@ export function runPipeline(baseRGB, pipeline, nodeState, activeNodeIds, frameMe
 
     // ctx ให้ filter รายงานผลกลับ (เช่น จำนวนวัตถุที่พบ, ค่าเกณฑ์ Otsu) — Tier 2: เพิ่ม ctx.src2 (ภาพที่
     // สองสำหรับ op ที่ def.inputs===2) และ ctx.state (per-node persistent state, ดู getNodeState)
-    const ctx = {};
+    // ctx.upstream (P-8) = { op, values } ของกล่อง "ล่าสุดที่มี ctx.values" บนสายหลักนี้ — ให้ pass_fail อ่านค่าจากกล่องวัดก่อนหน้า
+    // (กล่องที่ปิด/bypass ถูกข้ามไปแล้วด้านบน จึงไม่ทับ · สาย B เป็น runPipeline แยก ค่าไม่ข้ามสาย)
+    const ctx = { upstream };
     let src2Mat = null;
     let src2Owned = false;
     let out = null;
@@ -231,7 +234,12 @@ export function runPipeline(baseRGB, pipeline, nodeState, activeNodeIds, frameMe
       throw err;
     }
     if (ctx.info) notes.push(mkNote(step, f, { info: ctx.info }));
-    if (ctx.values) notes.push(mkNote(step, f, { values: ctx.values })); // Tier 2 §A.2 — ช่องผลลัพธ์ตัวเลข (inert จนกว่า UI จะอ่าน)
+    if (ctx.values) {
+      notes.push(mkNote(step, f, { values: ctx.values })); // Tier 2 §A.2 — ช่องผลลัพธ์ตัวเลข (inert จนกว่า UI จะอ่าน)
+      // pass_fail เองไม่เป็น upstream ของใคร — กล่อง pass_fail ซ้อนกันจึงอ่านกล่องวัดตัวเดียวกันได้
+      const opId = opIdOfStep(step);
+      if (opId !== "pass_fail") upstream = { op: opId, values: ctx.values };
+    }
 
     if (converted) converted.delete();
     if (src2Owned && src2Mat) src2Mat.delete(); // ctx.src2 เป็นแค่ view ที่ op ยืมใช้ชั่วคราว ไม่ใช่เจ้าของ

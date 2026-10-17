@@ -7,7 +7,7 @@
 //
 // หมายเหตุ: โค้ดที่ gen ใช้ BGR (cv2.imread) ตามธรรมเนียม OpenCV — ต่างจากในแอปที่ทำงานบน RGB
 // ผลลัพธ์เชิงหลักการเหมือนกัน (ค่าเนื้อสี H, threshold ฯลฯ เท่ากัน)
-import { OPS, FILTERS, NLM_MAX_SIDE, LUCY_MAX_ITERS, LUCY_WORK_BUDGET, ECC_DEFAULT_SIDE, finiteOr, boolOr, HITMISS_PATTERNS } from "./filters/registry.js";
+import { OPS, FILTERS, passFailParams, PASS_FAIL_METRICS, NLM_MAX_SIDE, LUCY_MAX_ITERS, LUCY_WORK_BUDGET, ECC_DEFAULT_SIDE, finiteOr, boolOr, HITMISS_PATTERNS } from "./filters/registry.js";
 
 // ชื่อไทยของ op (โยงกับที่ผู้เรียนเห็นบนจอ) + teaching note สั้น ๆ ต่อ op คลาสสิก
 const TEACH = {
@@ -19,6 +19,7 @@ const TEACH = {
   canny: "ตรวจขอบหลายขั้น — มาตรฐานทองของการหาขอบ",
   morphology: "จัดรูปทรงด้วย kernel (กัด/ขยาย/อุดรู/ลบจุด)",
   find_contours: "หาเส้นรอบวัตถุขาว แล้วนับ/วาด",
+  pass_fail: "เทียบค่าที่วัดได้กับเกณฑ์ → OK (ผ่าน) / NG (ไม่ผ่าน) — ไม่มีค่าให้ตัดสิน = NG",
 };
 function thaiName(opId) {
   return (OPS[opId] && OPS[opId].name) || opId;
@@ -2645,6 +2646,58 @@ const GEN = {
     ];
   } },
 
+  // P-8 pass_fail — ตัดสินจาก snapshot `pf_up` ที่ขั้นวัดก่อนหน้าทิ้งไว้ (pfSnapshotLines) · ไม่มีค่า/มาจากกล่องอื่น = NG เหมือนแอป
+  // รองรับเฉพาะ metric ที่มาจาก regionprops / roi_polygon / focus_score — delta_e ข้ามพร้อมคำเตือน · print เป็น ASCII ล้วน (V15)
+  pass_fail: { needs: "any", out: "color", gen: (p, ctx) => {
+    const q = passFailParams(p);
+    const m = PASS_FAIL_METRICS[q.metric];
+    const srcOp = ctx.pfSource; // op ล่าสุดบนสายหลักที่มี ctx.values (undefined = ยังไม่มี)
+    const toColor = ["if img.ndim == 2:", "    img = cv2.cvtColor(img, cv2.COLOR_GRAY2BGR)  # แปลงเป็นภาพสีเพื่อให้กรอบสีเห็นได้"];
+    if (srcOp === m.op && !PF_PY_SOURCES[m.op]) {
+      return [
+        `# metric '${q.metric}' มาจาก ${thaiName(m.op)} ซึ่งยังไม่รองรับการตัดสินในสคริปต์ Python — ข้ามขั้นนี้ (ภาพผ่านไปเฉย ๆ)`,
+        ...toColor,
+        `print("WARNING: skipped 'pass_fail' (metric from '${m.op}' is app-only in the Python export) - no RESULT, differs from the app")`,
+      ];
+    }
+    const measure = srcOp === undefined
+      ? ["pf_measured = None", "pf_reason = 'no upstream values'"]
+      : srcOp !== m.op
+        ? ["pf_measured = None", "pf_reason = 'values come from another box'"]
+        : [
+          ...({
+            count: ["pf_measured = pf_up['count']"],
+            // ผลรวมเป็นลูปเอง ไม่ใช้ sum() — Python 3.12+ รวมทศนิยมแบบชดเชยต่างจากแอปที่บวกทีละตัว
+            area_sum: ["pf_measured = None", "for pf_a in pf_up['areas']:", "    pf_measured = pf_a if pf_measured is None else pf_measured + pf_a"],
+            area_max: ["pf_measured = max(pf_up['areas']) if pf_up['areas'] else None"],
+          }[q.metric] || ["pf_measured = pf_up['value']"]),
+          "pf_reason = None",
+          "if pf_measured is None or not np.isfinite(pf_measured):",
+          "    pf_measured, pf_reason = None, 'value missing or not a number'",
+        ];
+    const cond = { range: "pf_lo <= pf_measured <= pf_hi", ge: "pf_measured >= pf_lo", le: "pf_measured <= pf_hi",
+      eq: "abs(pf_measured - pf_lo) <= 1e-9 * max(1.0, abs(pf_lo))" }[q.cond];
+    const green = pyColor(ctx, [0, 200, 0]), red = pyColor(ctx, [255, 0, 0]);
+    return [
+      `pf_lo, pf_hi = ${String(q.lo)}, ${String(q.hi)}  # เกณฑ์ (${q.cond}) — ใช้เฉพาะค่าที่เงื่อนไขนี้ต้องการ`,
+      ...measure,
+      "pf_ok = pf_measured is not None and (" + cond + ")",
+      ...(q.cond === "range" ? ["if pf_measured is not None and pf_lo > pf_hi:", "    pf_reason = 'low limit is greater than high limit'"] : []),
+      "img = np.ascontiguousarray(img)",
+      ...toColor,
+      "pf_h, pf_w = img.shape[:2]",
+      "pf_t = max(2, int(np.floor(min(pf_w, pf_h) / 50 + 0.5)))  # ความหนากรอบ",
+      `pf_color = ${green} if pf_ok else ${red}`,
+      "cv2.rectangle(img, (pf_t // 2, pf_t // 2), (pf_w - 1 - pf_t // 2, pf_h - 1 - pf_t // 2), pf_color, pf_t)",
+      "pf_scale = max(0.6, min(pf_w, pf_h) / 300)",
+      "cv2.putText(img, 'OK' if pf_ok else 'NG', (pf_t + 8, pf_t + 8 + int(np.floor(20 * pf_scale + 0.5))), cv2.FONT_HERSHEY_SIMPLEX, pf_scale, pf_color, max(1, int(np.floor(pf_scale * 2 + 0.5))))",
+      "print('RESULT: OK' if pf_ok else 'RESULT: NG')",
+      "print(f'measured: {pf_measured!r}')",
+      "if pf_reason:",
+      "    print('reason: ' + pf_reason)",
+    ];
+  } },
+
   // pseudocolor: ตาราง 3 ช่องจากสูตรเดียวกับ PSEUDOCOLOR_MAPS · ภาพหลัง needs:"gray" เป็น 2 มิติ ผลเป็น BGR (mirrored ตามกฎ codegen)
   pseudocolor: { needs: "gray", out: "color", gen: (p) => {
     const mapId = Object.hasOwn(PSEUDOCOLOR_PY, p.map) ? p.map : "jet"; // select อ่านด้วย own-property เท่านั้น
@@ -3160,6 +3213,28 @@ function appOnlyHeader(appOnly) {
   return `\n# หมายเหตุ: มีขั้นตอนที่ใช้ได้ในแอปเท่านั้น (${appOnly.join(", ")}) ซึ่งถูกข้ามในสคริปต์นี้ — ดูคอมเมนต์ที่ขั้นนั้น`;
 }
 
+// P-8 pass_fail — ops ที่ใส่ ctx.values ใน registry (ตัวที่ "ล่าสุด" บนสายหลักคือแหล่งค่าของ pass_fail · เทสต์ static เทียบกับ registry.js)
+// PF_PY_SOURCES = ตัวที่ gen โค้ด snapshot ให้ได้ (ที่เหลือ: metric ตรงกับ op นั้นแต่ Python ยังไม่รองรับ = คำเตือน)
+// ข้อจำกัดที่รู้ (ยอมรับ): template_matching (ไม่มี template / ใหญ่เกินภาพ) และ psnr/ssim (ไม่ได้ต่อ B) แอปคืนภาพโดยไม่มี values แต่ที่นี่ยังนับเป็น
+// "กล่องวัดล่าสุด" เสมอ — ผลคือ Python ตัดสิน NG (กล่องผิดชนิด) ในกรณีที่แอปจะใช้ค่าของกล่องวัดก่อนหน้า · เอนเอียงไปทาง NG (fail-safe)
+export const PF_VALUE_OPS = new Set(["regionprops", "template_matching", "psnr", "ssim", "mog2", "farneback_optical_flow", "pyrlk_optical_flow", "feret",
+  "line_profile", "shape_filter", "roi_polygon", "slic", "focus_score", "delta_e", "roi_apply", "ecc_register", "gabor_filter", "glcm", "dehaze", "dct_jpeg"]);
+const PF_PY_SOURCES = { regionprops: true, roi_polygon: true, focus_score: true };
+// บรรทัดท้ายขั้นวัด: เก็บค่าที่ pass_fail ต้องใช้ลง `pf_up` ทันที (ตัวแปรของขั้นวัดอาจถูกทับโดยขั้นถัดไป) · เรียกเมื่อ pipeline มี pass_fail เท่านั้น
+function pfSnapshotLines(opId, local, ctx) {
+  if (!PF_VALUE_OPS.has(opId)) return [];
+  ctx.pfSource = opId;
+  if (opId === "regionprops") {
+    // พื้นที่ = area_mm2 เมื่อ มม./px > 0 (สูตรเดียวกับ mmValue: area_px × (f×f)) ไม่งั้น area_px · แถวที่ถูกจำกัดด้วย maxObjects เท่านั้น
+    const area = clampNum(local.mmPerPx, 0, 0, 100) > 0 ? "r['area_px'] * (mm_per_px * mm_per_px)" : "r['area_px']";
+    return [`pf_up = {'count': total_found, 'areas': [${area} for r in regions]}  # ค่าให้ขั้น Pass / Fail`];
+  }
+  if (opId === "roi_polygon") return ["pf_up = {'value': roi_mean}  # ค่าให้ขั้น Pass / Fail"];
+  if (opId === "focus_score") return ["pf_up = {'value': score}  # ค่าให้ขั้น Pass / Fail"];
+  return [];
+}
+const hasPassFail = (pipeline) => pipeline.some((st) => resolveOp(st).opId === "pass_fail");
+
 // step ที่ปิดไว้ (bypass: enabled === false) แอปข้ามไปเลย (cv-worker.js runPipeline `step.enabled === false → continue`, ทั้งสายหลักและสาย B) —
 // Python ที่ export ต้องข้ามเหมือนกัน ไม่งั้นได้ผลต่างจากที่เห็นในแอป
 function activeSteps(pipeline) {
@@ -3186,6 +3261,7 @@ export function buildPythonCode(pipeline, opts = {}) {
 
   let stepNo = 0;
   const appOnly = [];
+  const hasPf = hasPassFail(pipeline);
   for (const step of pipeline) {
     const { opId, local } = resolveOp(step);
     // 18d: op ที่ใช้ได้ในแอปเท่านั้น — ต้องเช็คก่อน GEN[opId] (ทั้ง 3 ตัวไม่มี GEN โดยเจตนา ไม่งั้นจะตกไปที่
@@ -3194,11 +3270,13 @@ export function buildPythonCode(pipeline, opts = {}) {
       stepNo++;
       body.push(...appOnlyLines(opId, `ขั้นที่ ${stepNo}`), "");
       appOnly.push(opId);
+      if (hasPf && PF_VALUE_OPS.has(opId)) ctx.pfSource = opId; // แอปรันกล่องนี้จริงและมี values → เป็นแหล่งค่าล่าสุดของ pass_fail
       continue;
     }
     const g = GEN[opId];
     if (!g) {
       body.push(`# (ข้าม: ยังไม่รองรับการ gen โค้ดของ '${opId}')`);
+      if (hasPf && PF_VALUE_OPS.has(opId)) ctx.pfSource = opId;
       continue;
     }
     stepNo++;
@@ -3211,6 +3289,7 @@ export function buildPythonCode(pipeline, opts = {}) {
     body.push(`# ── ขั้นที่ ${stepNo}: ${thaiName(opId)} (${opId}) ──`);
     if (TEACH[opId]) body.push(`# ${TEACH[opId]}`);
     for (const line of g.gen(local, ctx)) body.push(line);
+    if (hasPf) body.push(...pfSnapshotLines(opId, local, ctx));
     // อัปเดตสถานะภาพ (ขาวดำ/สี)
     const out = g.outOf ? g.outOf(local) : g.out;
     if (out === "gray") ctx.gray = true;
@@ -3285,6 +3364,10 @@ function emitBChain(step, depth, body, appOnly) {
       appOnly.push(r2.opId);
       continue;
     }
+    if (r2.opId === "pass_fail") { // ค่าไม่ข้ามสาย: สาย B ไม่มี snapshot ของตัวเอง — ข้ามพร้อมคำเตือน
+      body.push("# (Pass / Fail ในสาย B ยังไม่รองรับการ export เป็น Python — ข้ามขั้นนี้)", `print("WARNING: skipped 'pass_fail' in line B (not supported in the Python export)")`);
+      continue;
+    }
     const g2 = GEN[r2.opId];
     if (!g2) { body.push(`# (ข้าม: ยังไม่รองรับการ gen โค้ดของ '${r2.opId}')`); continue; }
     let second = bImageVar(depth + 2); // ภาพที่สองของ op สองภาพในสาย B (เฉพาะเมื่อ s2 เป็น op สองภาพ)
@@ -3312,16 +3395,22 @@ function buildPythonCode2Image(pipeline, opts = {}) {
   const ctxA = { gray: false };
   let stepNo = 0;
   const appOnly = []; // 18d — op app-only จากทั้งสายหลักและสาย B (ใช้ทำหมายเหตุใต้หัวไฟล์)
+  const hasPf = hasPassFail(activeSteps(pipeline));
   for (const step of activeSteps(pipeline)) {
     const { opId, local } = resolveOp(step);
     if (APP_ONLY_OPS[opId]) { // 18d: เช็คก่อน GEN[opId] เหมือนสายเดี่ยว
       stepNo++;
       bodyA.push(...appOnlyLines(opId, `ขั้นที่ ${stepNo}`), "");
       appOnly.push(opId);
+      if (hasPf && PF_VALUE_OPS.has(opId)) ctxA.pfSource = opId;
       continue;
     }
     const g = GEN[opId];
-    if (!g) { bodyA.push(`# (ข้าม: ยังไม่รองรับการ gen โค้ดของ '${opId}')`); continue; }
+    if (!g) {
+      bodyA.push(`# (ข้าม: ยังไม่รองรับการ gen โค้ดของ '${opId}')`);
+      if (hasPf && PF_VALUE_OPS.has(opId)) ctxA.pfSource = opId;
+      continue;
+    }
     stepNo++;
     if (FILTERS[step.id] && FILTERS[step.id].inputs === 2) {
       if (!step.src2 || !step.src2.pipeline) {
@@ -3339,6 +3428,7 @@ function buildPythonCode2Image(pipeline, opts = {}) {
     bodyA.push(`# ── ขั้นที่ ${stepNo}: ${thaiName(opId)} (${opId}) ──`);
     if (TEACH[opId]) bodyA.push(`# ${TEACH[opId]}`);
     for (const line of g.gen(local, ctxA)) bodyA.push(line);
+    if (hasPf) bodyA.push(...pfSnapshotLines(opId, local, ctxA));
     const out = g.outOf ? g.outOf(local) : g.out;
     if (out === "gray") ctxA.gray = true;
     else if (out === "color") ctxA.gray = false;

@@ -588,8 +588,8 @@ for (const [variant, what] of [['A', 'the old params'], ['B', 'every new param p
 // ===================================================================
 // ip4b-S — static structure / text / clamps / codegen
 // ===================================================================
-test('ip4b-S1. (static structure) the 8 new ops exist with the right needs and host groups; OPS = 95, FILTERS stays 33; Morphology has 19 operations (the old 14 first, in order); no select key is "mode"; defaultParams() == the OPS defaults (prefixed); legacy groups untouched; the category groups = the palette sections in order', () => {
-  assert.equal(Object.keys(OPS).length, 95);
+test('ip4b-S1. (static structure) the 8 new ops exist with the right needs and host groups; OPS = 96 (95 + pass_fail from P-8), FILTERS stays 33; Morphology has 19 operations (the old 14 first, in order); no select key is "mode"; defaultParams() == the OPS defaults (prefixed); legacy groups untouched; the category groups = the palette sections in order', () => {
+  assert.equal(Object.keys(OPS).length, 96); // 95 + pass_fail (P-8, 2026-10-17)
   assert.equal(Object.keys(FILTERS).length, 33);
   for (const id of NEW_OPS) {
     assert.ok(OPS[id], id); assert.equal(OPS[id].needs, NEEDS[id], `${id}.needs`);
