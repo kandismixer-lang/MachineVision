@@ -1,19 +1,13 @@
-• เพิ่มเครื่องมือแก้ภาพเบลอ: Wiener และ Lucy-Richardson Deconvolution (เลือกรูปแบบการเบลอได้ เช่น เบลอจากการเคลื่อนที่)
+• Morphology แยกเป็นเครื่องมือของตัวเองครบ 19 ตัว (Erosion, Dilation, Opening, Closing, Fill Holes, Skeleton ฯลฯ) หยิบจาก palette ได้ตรง ๆ และแต่ละตัวแสดงเฉพาะค่าที่ใช้จริง เช่น รูปร่าง/ขนาด kernel
 
-• เพิ่มเครื่องมือวิเคราะห์ลวดลายพื้นผิว: Gabor Filter และ GLCM (วัดค่า contrast, energy, homogeneity, correlation)
+• แผงปรับค่าซ่อนช่องที่ไม่มีผลกับวิธีที่เลือกอยู่ ตัวเลือกยาว ๆ จัดเป็นกลุ่ม และจัดให้ตัวควบคุมหลักอยู่ด้านบน
 
-• เพิ่ม Image Registration (ECC) จัดภาพสองภาพให้ทับกันตรงก่อนนำไปเทียบหาจุดต่าง
+• เพิ่มกล่อง Pass / Fail ตัดสิน OK / NG จากค่าที่วัดได้ พร้อมแสดงป้ายผลบนภาพ
 
-• เพิ่มตัวลด noise แบบ Non-Local Means, Dehaze (ลดหมอก), และ DCT / จำลองการบีบอัดแบบ JPEG
+• คัดลอกค่าที่วัดได้ หรือบันทึกเป็นไฟล์ CSV ได้ และตอนบันทึกภาพทั้งโฟลเดอร์ เลือกให้สร้าง CSV รวมค่าที่วัดของทุกภาพได้
 
-• Morphology มีโหมดใหม่: Hit-or-Miss, Regional Max / Min, H-Maxima และ Extended Max
+• ค้นหาเครื่องมือด้วยชื่อหมวดได้ เช่น พิมพ์ "morphology" หรือ "segmentation"
 
-• เพิ่ม Quantize (ลดจำนวนระดับสี), กรองวัตถุตามรูปร่าง, และค่าวัดใหม่ใน Region Properties (Solidity, Eccentricity, แกนยาว/สั้น, Extent, เส้นผ่านศูนย์กลางเทียบเท่า, ความสว่างเฉลี่ย)
+• Region Properties อธิบายว่าเมื่อไหร่มุมเอียงจะไม่มีค่าหรือไม่มีความหมาย (เช่น วัตถุกลม)
 
-• Resize / Rotate เลือกวิธีประมาณค่าพิกเซลได้ (Nearest / Bilinear / Bicubic)
-
-• เพิ่มตัวเลือกในเครื่องมือเดิมอีกหลายอย่าง: Guided Filter, Speckle Noise, Log Transform, Triangle Threshold, Butterworth Filter, Pseudocolor, White Balance แบบอื่น, วัดความต่างสี ΔE, ปริภูมิสี XYZ / Luv / YUV, วัดความคมชัด (Focus), ใช้ฟิลเตอร์เฉพาะใน ROI และแปลงพิกเซลเป็นมิลลิเมตร
-
-• แก้ชื่อคลาสภาษาไทยจากโมเดล ONNX ให้แสดงถูกต้อง
-
-• โค้ดเทรน RF-DETR เทรนจากไฟล์ dataset แบบ YOLO ที่ export จากแอปได้โดยตรง
+• แก้บั๊กหลายจุด: โค้ด Python ที่ export ได้ผลตรงกับในแอปมากขึ้น, เครื่องมือบางตัวไม่ error กับภาพขนาดเล็กมากแล้ว, อ่านค่าพารามิเตอร์ที่พิมพ์เองได้ถูกต้อง
