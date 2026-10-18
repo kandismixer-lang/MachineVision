@@ -7,7 +7,7 @@
 //
 // หมายเหตุ: โค้ดที่ gen ใช้ BGR (cv2.imread) ตามธรรมเนียม OpenCV — ต่างจากในแอปที่ทำงานบน RGB
 // ผลลัพธ์เชิงหลักการเหมือนกัน (ค่าเนื้อสี H, threshold ฯลฯ เท่ากัน)
-import { OPS, FILTERS, passFailParams, PASS_FAIL_METRICS, NLM_MAX_SIDE, LUCY_MAX_ITERS, LUCY_WORK_BUDGET, ECC_DEFAULT_SIDE, finiteOr, boolOr, HITMISS_PATTERNS } from "./filters/registry.js";
+import { OPS, FILTERS, MORPH_OP_IDS, passFailParams, PASS_FAIL_METRICS, NLM_MAX_SIDE, LUCY_MAX_ITERS, LUCY_WORK_BUDGET, ECC_DEFAULT_SIDE, finiteOr, boolOr, HITMISS_PATTERNS } from "./filters/registry.js";
 
 // ชื่อไทยของ op (โยงกับที่ผู้เรียนเห็นบนจอ) + teaching note สั้น ๆ ต่อ op คลาสสิก
 const TEACH = {
@@ -3186,6 +3186,18 @@ const GEN = {
     ];
   } },
 };
+
+// Morphology แยกเครื่องมือ (2026-10-18): morph_<op> ใช้ gen/needs/outOf ของ GEN.morphology ด้วย op ตายตัว → Python เท่าเดิมทุกบรรทัด
+// (ต่างแค่คอมเมนต์หัวขั้นที่ขึ้นชื่อ/id ของตัวใหม่) · ไม่ copy โค้ด gen
+for (const id of MORPH_OP_IDS) {
+  const op = id.slice("morph_".length);
+  GEN[id] = {
+    needs: GEN.morphology.needs,
+    outOf: (p) => GEN.morphology.outOf({ ...p, op }),
+    gen: (p, ctx) => GEN.morphology.gen({ ...p, op }, ctx),
+  };
+  TEACH[id] = TEACH.morphology;
+}
 
 // Tier 2, 18d — ผู้ใช้เลือก "ใช้ในแอปอย่างเดียว" (D-8 ข้อ 5): op ที่ต้องใช้หลายเฟรมต่อเนื่อง export เป็น
 // process(path) ภาพเดี่ยวไม่ได้ — ห้ามเพิ่ม GEN ของ 3 ตัวนี้ (ถ้าเพิ่ม ต้องออกแบบ process_video ใหม่ทั้งหมด)

@@ -994,7 +994,7 @@ const OPSTEP = (opId, extra = {}) => {
 test('ipE-20. (static structure) the 2 ops exist with needs any / gray (no "mode" param key), FILTERS is still 26, colour = color_inrange, kmeans_segment, white_balance, invert, slic (default color_inrange) and frequency = fft_magnitude, fft_filter, bandpass_notch (default fft_magnitude); defaultParams() = OPS defaults (prefixed); the merged nodes dispatch to the new ops; needsOf follows the mode; the legacy groups do not offer them; select options / defaults match the spec', () => {
   assert.deepEqual(NEW_OPS.map((id) => OPS[id] && OPS[id].needs), ['any', 'gray']);
   for (const id of NEW_OPS) for (const p of OPS[id].params) assert.notEqual(p.key, 'mode');
-  assert.equal(Object.keys(FILTERS).length, 33); // 26 + 7 กลุ่มระดับหมวด (2026-10-07)
+  assert.equal(Object.keys(FILTERS).length, 34); // 26 + 7 กลุ่มระดับหมวด (2026-10-07) + morph_tools (2026-10-18)
   const modes = (f) => FILTERS[f].params.find((p) => p.key === 'mode').options.map((o) => o.value);
   assert.deepEqual(modes('colour'), ['color_inrange', 'kmeans_segment', 'white_balance', 'invert', 'slic']);
   // op ใหม่ batch 4 ต่อท้าย — ห้ามสลับลำดับเดิม

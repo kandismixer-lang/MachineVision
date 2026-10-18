@@ -1,5 +1,5 @@
 // UI metadata — เพิ่มความสวย/สื่อความ โดยไม่แตะ backend algorithm
-import { OPS, passFailParams, pfNum, boolOr, fixed2, signedText, quantizeBits, SHAPE_FILTER_PROP_TH, HITMISS_PATTERNS } from "./registry.js";
+import { OPS, MORPH_OP_IDS, passFailParams, pfNum, boolOr, fixed2, signedText, quantizeBits, SHAPE_FILTER_PROP_TH, HITMISS_PATTERNS } from "./registry.js";
 
 // ไอคอนประจำการ์ดเครื่องมือ (Design §7.1 — ภาพ mockup มี icon chip หน้าแต่ละเครื่องมือ)
 export const GROUP_ICON = {
@@ -41,6 +41,8 @@ export const GROUP_ICON = {
   analysis_detect: "🧮",
   image_quality: "🏅",
   motion: "🏃",
+  // ใหม่ (2026-10-18) — Morphology แยกเป็นเครื่องมือรายตัว · เช็คแล้วไม่ชนกับ glyph ใน GROUP_ICON/OP_ICON/src ใด ๆ (morphology 🔲 เดิมคงไว้เป็น legacy)
+  morph_tools: "⬓",
 };
 
 // ค่าตัวเลขที่การ์ดโชว์ ต้องเป็น "ค่าที่ op ใช้จริง" ไม่ใช่ค่าดิบใน properties — ไฟล์โปรเจกต์ที่แก้มือ
@@ -271,6 +273,12 @@ export const OP_PRIMARY = {
   pyrlk_optical_flow: (p) => `${pnum("pyrlk_optical_flow", "maxPoints", p.maxPoints, { int: true })} จุด · เส้นทาง ${pnum("pyrlk_optical_flow", "trailLength", p.trailLength, { int: true })} เฟรม`,
 };
 
+// Morphology แยกเครื่องมือ (2026-10-18): การ์ดของ morph_<op> ใช้ข้อความเดียวกับ morphology เดิมที่เลือก op นั้น (เรียกตัวเดิมด้วย op ตายตัว)
+for (const id of MORPH_OP_IDS) {
+  const op = id.slice("morph_".length);
+  OP_PRIMARY[id] = (p) => OP_PRIMARY.morphology({ ...p, op });
+}
+
 // ดึง op id ปัจจุบันของ node จาก properties (merged group มี "mode", กลุ่มเดี่ยว เช่น morphology ไม่มี)
 export function currentOpId(filterId, properties) {
   return (properties && properties.mode) || filterId;
@@ -308,6 +316,13 @@ export function hexA(hex, a) {
 // ---------------------------------------------------------------------------
 export const OPTION_GROUPS_OTHER = "อื่น ๆ";
 export const OPTION_GROUPS = {
+  // Morphology แยกเครื่องมือ (2026-10-18) — 4 กลุ่ม ลำดับกลุ่ม/ตัวเลือก = ลำดับใน dropdown จริง (morph_tools)
+  "morph_tools.mode": [
+    ["พื้นฐาน", ["morph_erode", "morph_dilate", "morph_open", "morph_close", "morph_gradient", "morph_tophat", "morph_blackhat"]],
+    ["ทำความสะอาด", ["morph_fill_holes", "morph_clear_border", "morph_remove_small"]],
+    ["รูปร่าง", ["morph_skeleton", "morph_reconstruct_open", "morph_convex_hull", "morph_endpoints_branchpoints", "morph_hit_or_miss"]],
+    ["ยอด/หุบ", ["morph_regional_max", "morph_regional_min", "morph_h_maxima", "morph_extended_max"]],
+  ],
   "morphology.op": [
     ["พื้นฐาน — กัด / พอก", ["erode", "dilate", "open", "close"]],
     ["ดึงขอบ / ส่วนสว่าง-มืดเฉพาะที่", ["gradient", "tophat", "blackhat"]],

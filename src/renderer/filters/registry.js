@@ -8129,6 +8129,111 @@ function farnebackValues(mean, max, pct, dx, dy, frame) {
   ] };
 }
 
+// ---- Morphology แยกเป็นเครื่องมือรายตัว (2026-10-18) — 1 operation = 1 เครื่องมือ (เหมือนหมวดอื่น) ----
+// OPS.morphology (ด้านบน) ยังเป็นที่เก็บโค้ดประมวลผลเพียงที่เดียว: แต่ละตัวใหม่เรียก OPS.morphology.apply ด้วย op ตายตัว
+// → พิกเซล + ctx.info เท่าเดิมทุกบิต · params ของแต่ละตัวคัดจาก OPS.morphology.params ตาม visibleWhen เดิม (ไม่เขียนซ้ำ)
+// ตัวเก่า (FILTERS.morphology) ยังลงทะเบียนเป็น legacy ให้เทมเพลต/undo เก่า + migrateLegacyStep ย้ายมาตัวใหม่
+const MORPH_SPLIT = [
+  { op: "erode", name: "Erosion (กัดให้เล็กลง)",
+    modeHint: "กัดขอบวัตถุขาวให้ผอมลง ลบจุดจิ๋วรบกวน",
+    desc: "กัดขอบวัตถุขาวให้ผอมลง: ตัวแปรง (kernel) ไล่ทาบทั่วภาพ จุดไหนที่แปรงทาบแล้วมีพิกเซลดำปนอยู่ก็กลายเป็นดำ — ลบจุดขาวจิ๋วที่เป็น noise ได้ แต่วัตถุจริงก็ผอมลงด้วย ใช้กับภาพขาว-ดำหลัง threshold" },
+  { op: "dilate", name: "Dilation (ขยายให้ใหญ่ขึ้น)",
+    modeHint: "พอกขอบวัตถุขาวให้อ้วนขึ้น อุดรูโหว่เล็ก ๆ",
+    desc: "พอกขอบวัตถุขาวให้อ้วนขึ้น: จุดไหนที่แปรงทาบแล้วเจอพิกเซลขาวแม้แต่จุดเดียวก็กลายเป็นขาว — อุดรูโหว่/รอยขาดเล็ก ๆ ได้ แต่วัตถุก็ใหญ่ขึ้นด้วย (ตรงข้ามกับ Erosion) ใช้กับภาพขาว-ดำหลัง threshold" },
+  { op: "open", name: "Opening (ลบจุดเล็ก)",
+    modeHint: "Erode แล้ว Dilate — ลบจุดรบกวนเล็กโดยไม่เปลี่ยนขนาดวัตถุใหญ่",
+    desc: "Erode แล้ว Dilate ต่อกัน: จุดรบกวนเล็ก ๆ หายไปตั้งแต่ขั้นกัด ส่วนวัตถุใหญ่ที่รอดมาถูกพอกกลับเป็นขนาดเดิม — ลบ noise โดยไม่ทำให้วัตถุหลักผอมลง" },
+  { op: "close", name: "Closing (อุดรู)",
+    modeHint: "Dilate แล้ว Erode — อุดรูเล็ก ๆ ในตัววัตถุ",
+    desc: "Dilate แล้ว Erode ต่อกัน: รูเล็ก ๆ/รอยขาดในตัววัตถุถูกอุดตั้งแต่ขั้นพอก แล้วกัดกลับให้ขนาดนอกเท่าเดิม — ใช้ซ่อมวัตถุที่แหว่งเป็นรูพรุน" },
+  { op: "gradient", name: "Gradient (ขอบวัตถุ)",
+    modeHint: "Dilate ลบ Erode — ดึงเฉพาะเส้นขอบของวัตถุ",
+    desc: "ภาพที่ Dilate แล้ว ลบด้วยภาพที่ Erode แล้ว — เหลือเฉพาะแถบขอบของวัตถุ (ความหนาแถบขึ้นกับขนาด kernel) ใช้ดึงเส้นรอบวัตถุจากภาพขาว-ดำ" },
+  { op: "tophat", name: "Top Hat",
+    modeHint: "ภาพเดิม ลบ Opening — ดึงส่วนที่สว่างกว่ารอบข้าง",
+    desc: "ภาพเดิม ลบ Opening — เหลือเฉพาะส่วนที่สว่างกว่ารอบข้างและเล็กกว่า kernel (เช่น จุดสว่างบนพื้นไม่เรียบ) มักใช้ปรับแสงพื้นหลังก่อน threshold" },
+  { op: "blackhat", name: "Black Hat",
+    modeHint: "Closing ลบภาพเดิม — ดึงส่วนที่มืดกว่ารอบข้าง",
+    desc: "Closing ลบภาพเดิม — เหลือเฉพาะส่วนที่มืดกว่ารอบข้างและเล็กกว่า kernel (เช่น รอยขีดข่วนสีเข้ม ตัวหนังสือบนพื้นสว่าง)" },
+  { op: "fill_holes", name: "Fill Holes (อุดรูในวัตถุ)",
+    modeHint: "เติมรูปิดสนิทภายในวัตถุขาว โดยไม่กระทบขนาดรอบนอก",
+    desc: "เติมรูปิดสนิทภายในวัตถุขาว โดยไม่กระทบขนาดรอบนอก (รูที่ต่อกับขอบภาพไม่ถูกเติม) — ภาพที่ไม่ใช่ขาว-ดำล้วนจะถูก binarize ที่ค่ากึ่งกลาง 127 ก่อนเสมอ ไม่มีพารามิเตอร์ให้ปรับ" },
+  { op: "clear_border", name: "Clear Border (ลบวัตถุติดขอบ)",
+    modeHint: "ลบวัตถุขาวที่มีพิกเซลติดขอบภาพ เหลือแต่วัตถุที่อยู่เต็มตัวในเฟรม",
+    desc: "ลบวัตถุขาวที่มีพิกเซลแม้แต่จุดเดียวติดขอบภาพทั้ง 4 ด้าน — เหลือแต่วัตถุที่อยู่เต็มตัวในเฟรม (วัตถุที่ถูกตัดครึ่งโดยขอบภาพวัดขนาดจริงไม่ได้ จึงมักตัดทิ้งก่อนนับ/วัด) ภาพที่ไม่ใช่ขาว-ดำล้วนจะถูก binarize ที่ 127 ก่อน ไม่มีพารามิเตอร์ให้ปรับ" },
+  { op: "remove_small", name: "Remove Small (ลบวัตถุเล็ก)",
+    modeHint: "ลบวัตถุขาวที่มีพื้นที่น้อยกว่าเกณฑ์ทิ้ง",
+    desc: "ลบวัตถุขาวที่มีพื้นที่น้อยกว่าเกณฑ์ 'พื้นที่ขั้นต่ำ' ทิ้ง — ต่างจาก Opening ตรงที่ไม่ทำให้วัตถุที่เหลือเปลี่ยนรูป ใช้ล้างจุด noise ก่อนนับวัตถุ" },
+  { op: "skeleton", name: "Skeleton (เส้นแกนกลาง)",
+    modeHint: "ลดวัตถุขาวให้เหลือเส้นแกนกลางหนา 1 พิกเซล",
+    desc: "ลดวัตถุขาวให้เหลือเส้นแกนกลางหนา 1 พิกเซล — ช้ากว่า operation อื่นในหมวดนี้ วิเคราะห์บนภาพย่อ ≤240px เสมอ (เหมาะกับภาพนิ่ง มากกว่ากล้องสดความละเอียดสูง) ไม่มีพารามิเตอร์ให้ปรับ · ถ้าได้ภาพขาวล้วนไม่มีเส้นแกนกลางเลย ลองสลับขาว-ดำ (Invert) มาก่อน เพราะ op นี้คิดว่าพิกเซลขาวคือ 'วัตถุ' เสมอ" },
+  { op: "reconstruct_open", name: "Recon. Opening (คงรูปร่าง)",
+    modeHint: "เหมือน Opening แต่รักษาขอบวัตถุที่รอดไว้แม่นกว่า (ไม่มุมมน)",
+    desc: "เหมือน Opening แต่รักษาขอบวัตถุที่รอดไว้แม่นกว่า (ไม่มุมมน): กัดภาพเป็น marker แล้วคืนรูปร่างเดิมให้ทุกวัตถุที่ยังเหลือ marker อยู่ — ขนาด kernel/จำนวนรอบ คือขนาดกัดตอนสร้าง marker (ใช้ kernel สี่เหลี่ยมเสมอ จึงไม่มีตัวเลือกรูปร่าง)" },
+  { op: "convex_hull", name: "Convex Hull (ห่อด้วยรูปนูน)",
+    modeHint: "ห่อแต่ละวัตถุด้วยรูปนูนที่เล็กที่สุดที่ครอบได้พอดี + ค่า solidity",
+    desc: "ห่อแต่ละวัตถุด้วยรูปนูนที่เล็กที่สุดที่ครอบวัตถุไว้ได้พอดี (เหมือนรัดหนังยางรอบวัตถุ) แล้วเทียบพื้นที่เดิมกับพื้นที่รูปนูนเป็นค่า solidity (รวมทุกชิ้น ชิ้นใหญ่มีน้ำหนักมากกว่า) เส้นบาง/จุดเดี่ยวก็ถูกห่อและนับเป็นหนึ่งชิ้นด้วย — ใช้หารอยบิ่น/รอยเว้าของวัตถุ (solidity ยิ่งต่ำ ยิ่งเว้าแหว่งมาก) ไม่มีพารามิเตอร์ให้ปรับ" },
+  { op: "endpoints_branchpoints", name: "Endpoints (จุดปลาย/จุดแยก)",
+    modeHint: "ใช้ต่อจาก Skeleton เสมอ — วงเขียว = จุดปลาย, วงแดง = จุดแยก",
+    desc: "⚠️ ใช้ต่อจาก Skeleton เสมอ — ถ้าวัตถุยังหนาอยู่ (ไม่ใช่เส้นบาง 1 พิกเซล) การนับจะไม่มีความหมาย นับเพื่อนบ้านสีขาว 8 ทิศรอบแต่ละพิกเซลเส้น: มีเพื่อนบ้าน 1 จุด = จุดปลาย (วาดวงเขียว), ส่วนจุดแยก (วาดวงแดง) ใช้ Crossing Number (นับจำนวนช่วงที่ขาว-ดำสลับกันรอบวงแหวนเพื่อนบ้าน หาร 2) ≥3 — ไม่ใช่แค่นับจำนวนเพื่อนบ้านตรง ๆ เพราะพิกเซลข้างจุดตัดจริงก็มีเพื่อนบ้าน ≥3 ได้เหมือนกันแต่ไม่ใช่จุดแยกจริง เป็นค่าประมาณ ไม่ใช่ lookup table แบบที่ MATLAB ใช้จริง ใช้นับจำนวนกิ่ง/ปลายของรอยร้าวหรือเส้นลายเส้นได้ ไม่มีพารามิเตอร์ให้ปรับ" },
+  { op: "hit_or_miss", name: "Hit-or-Miss (หาลายแม่แบบ)",
+    modeHint: "หาตำแหน่งที่ลายรอบพิกเซลตรงแม่แบบ: บางช่องต้องขาว บางช่องต้องดำ",
+    desc: "หาตำแหน่งที่ลายรอบพิกเซลตรงแม่แบบ 3×3: บางช่องต้องขาว บางช่องต้องดำ บางช่องไม่สน — ทำโดย erode ภาพขาวด้วยช่อง 'ต้องขาว' แล้ว AND กับ erode ภาพกลับด้านด้วยช่อง 'ต้องดำ' · ภาพที่ไม่ใช่ขาว-ดำล้วนจะถูกตัดที่ 127 ก่อน · นอกขอบภาพ OpenCV นับเป็น 'ไม่สน' ส่วน MATLAB bwhitmiss นับเป็นดำ จุดที่ติดขอบภาพจึงอาจนับต่างกัน · กรณีหาปลายเส้นทั่วไป Endpoints & Branchpoints สะดวกกว่า" },
+  { op: "regional_max", name: "Regional Max (ยอดเฉพาะที่)",
+    modeHint: "บริเวณที่สว่างกว่าทุกพิกเซลรอบตัว (ใช้ภาพเทา)",
+    desc: "บริเวณที่สว่างกว่าทุกพิกเซลรอบตัว (ใช้ภาพเทา ไม่ตัด 127) — ผลเป็นภาพขาว-ดำ ใช้หา 'ยอด' ในภาพเทาหรือภาพ Distance Transform เพื่อทำ marker แยกวัตถุที่ติดกัน · noise ทำให้เกิดยอดเล็กจำนวนมาก ลอง blur ก่อน หรือใช้ H-maxima / Extended Maxima · นับแบบ 8-connected เหมือนค่าเริ่มต้นของ MATLAB ไม่มีพารามิเตอร์ให้ปรับ" },
+  { op: "regional_min", name: "Regional Min (หุบเฉพาะที่)",
+    modeHint: "บริเวณที่มืดกว่าทุกพิกเซลรอบตัว (ใช้ภาพเทา)",
+    desc: "บริเวณที่มืดกว่าทุกพิกเซลรอบตัว (ใช้ภาพเทา ไม่ตัด 127) — ผลเป็นภาพขาว-ดำ ใช้หา 'หุบ' ในภาพเทา · noise ทำให้เกิดหุบเล็กจำนวนมาก ลอง blur ก่อน · นับแบบ 8-connected ไม่มีพารามิเตอร์ให้ปรับ" },
+  { op: "h_maxima", name: "H-maxima (ตัดยอดต่ำกว่า h)",
+    modeHint: "ผลเป็นภาพเทา: ยอดทุกยอดถูกกดลง h ระดับ ยอดที่สูงไม่ถึง h หายไป",
+    desc: "ผลเป็นภาพเทา: ยอดทุกยอดถูกกดลง h ระดับ ยอดที่สูงไม่ถึง h หายไป — ใช้ค่า 'ความสูง h' กรอง noise เล็ก ๆ ออกจากยอด · นับแบบ 8-connected" },
+  { op: "extended_max", name: "Extended Max (ยอดสูง ≥ h)",
+    modeHint: "= Regional Maxima ของ H-maxima · ใช้ทำ marker ให้ Watershed",
+    desc: "= Regional Maxima ของ H-maxima: เก็บเฉพาะยอดที่สูงกว่ารอบข้างอย่างน้อย h ระดับ ผลเป็นภาพขาว-ดำ ใช้ทำ marker ให้ Watershed แยกวัตถุที่ติดกัน — เพิ่ม h เมื่อภาพมี noise มาก · นับแบบ 8-connected" },
+];
+export const MORPH_OP_IDS = MORPH_SPLIT.map((m) => "morph_" + m.op);
+// ข้อความ param ของตัวใหม่ (ตัดวลี "ใช้กับ X เท่านั้น/ไม่มีผลกับ Y" ที่ใช้แยกตัวในแผงเดิมออก เพราะตอนนี้ param แสดงเฉพาะตัวที่ใช้จริง)
+const MORPH_PARAM_TWEAK = {
+  shape: { label: "รูปร่าง kernel" },
+  minArea: { label: "พื้นที่ขั้นต่ำ (px)", desc: "วัตถุขาวที่มีพื้นที่น้อยกว่านี้ (พิกเซล) จะถูกลบทิ้ง" },
+  lineAngle: { label: "มุมของเส้น (องศา)", desc: "0° = แนวนอน, 90° = แนวตั้ง" },
+  hmPattern: { label: "แม่แบบ Hit-or-Miss" },
+  hmRotate: { label: "รวมทั้ง 4 ทิศ (หมุนทีละ 90°)" },
+  iterations: { desc: "ทำ operation ซ้ำกี่รอบ — มาก = ผลยิ่งเข้มขึ้น" },
+  hHeight: { label: "ความสูง h", desc: "ยอดที่สูงกว่ารอบข้างไม่ถึง h ระดับ (0–255) จะถูกตัดทิ้ง — เพิ่ม h เมื่อภาพมี noise มาก" },
+};
+// reconstruct_open ใช้ ksize/iterations เหมือนกัน แต่ความหมายคือขนาด/จำนวนรอบกัดตอนสร้าง marker → label ต่างจากตัวอื่น
+const MORPH_PARAM_TWEAK_BY_OP = {
+  reconstruct_open: {
+    ksize: { label: "ขนาด kernel (กัด marker)", desc: "ขนาดตัวแปรงที่ใช้กัดตอนสร้าง marker — ใหญ่ = วัตถุเล็กถูกตัดทิ้งมากขึ้น" },
+    iterations: { label: "จำนวนรอบกัด marker", desc: "จำนวนรอบกัดตอนสร้าง marker — มาก = วัตถุบาง/เล็กยิ่งถูกตัดทิ้ง" },
+  },
+};
+for (const m of MORPH_SPLIT) {
+  const id = "morph_" + m.op;
+  const params = [];
+  for (const q of OPS.morphology.params) {
+    if (q.key === "op") continue;
+    const own = (q.visibleWhen || []).find((c) => c.key === "op");
+    if (!own || !own.in.includes(m.op)) continue; // param นี้ไม่ใช่ของ op นี้
+    const rest = q.visibleWhen.filter((c) => c !== own); // เหลือเงื่อนไขภายใน (เช่น lineAngle ต้อง shape=line)
+    const { visibleWhen, ...base } = q;
+    params.push({ ...base, ...MORPH_PARAM_TWEAK[q.key], ...((MORPH_PARAM_TWEAK_BY_OP[m.op] || {})[q.key]), ...(rest.length ? { visibleWhen: rest } : {}) });
+  }
+  OPS[id] = {
+    name: m.name,
+    modeHint: m.modeHint,
+    needs: "gray",
+    desc: m.desc,
+    params,
+    // เรียกตัวเดิมด้วย op ตายตัว (ไม่ copy โค้ดประมวลผล) — ค่า param อื่นผ่านตรง ๆ
+    apply(cv, src, p, ctx) {
+      return OPS.morphology.apply(cv, src, { ...p, op: m.op }, ctx);
+    },
+  };
+}
+
 // ===================================================================
 // รวม op หลายตัวในกลุ่มเดียว → node เดียว (มี select "เลือกวิธี")
 // ===================================================================
@@ -8244,7 +8349,8 @@ export const FILTERS = {
   blur: mergeGroup("Blur", "Blur",
     ["median_blur", "gaussian_blur", "box_blur", "bilateral", "wiener_filter"], "gaussian_blur"),
 
-  // กลุ่มนี้มี op เดียว — ใช้ตรง ๆ (ไม่ต้องมี select เลือกวิธี)
+  // legacy (2026-10-18): morphology แยกเป็น 19 เครื่องมือแล้ว (morph_tools ด้านล่าง) — ตัวเดิมที่มี select "Operation" คงไว้ให้เทมเพลต/undo เก่า
+  // + migrateLegacyStep ย้ายมา morph_tools · ไม่อยู่บน palette
   morphology: { ...OPS.morphology, group: "Morphology" },
 
   threshold: mergeGroup("Threshold", "Threshold",
@@ -8336,6 +8442,10 @@ export const FILTERS = {
   // Motion ทั้งสามจำ state ข้ามเฟรม → stateful:true · เปลี่ยนวิธี = params เปลี่ยน → getNodeState (fingerprint) reset+dispose state เก่าเอง
   motion: mergeGroup("Motion", "Motion",
     ["mog2", "farneback_optical_flow", "pyrlk_optical_flow"], "mog2", [], { stateful: true }),
+
+  // Morphology (2026-10-18) — 1 operation = 1 เครื่องมือ · ลำดับ dropdown = ลำดับ TOOL_SECTIONS.MORPHOLOGY · default = Erosion (เหมือนค่าเริ่มต้นเดิม)
+  // ไม่อยู่ใน CATEGORY_FILTER_IDS (ที่มี OLD_HOST ให้เทียบ) — ย้ายจาก morphology ด้วย migrateMorphologyStep ด้านล่างแทน
+  morph_tools: mergeGroup("Morphology", "Morphology", MORPH_OP_IDS, "morph_erode"),
 
   // Legacy groups are kept for saved templates/projects created by earlier versions.
   // They are registered and executable, but the palette no longer exposes them.
@@ -8452,9 +8562,10 @@ const OP_TO_CATEGORY_FILTER = {};
 for (const gid of CATEGORY_FILTER_IDS) {
   for (const o of FILTERS[gid].params[0].options) OP_TO_CATEGORY_FILTER[o.value] = gid;
 }
-// คืน step ใหม่ (ไม่แก้ของเดิม) · step ที่ไม่ต้องย้าย (กลุ่มใหม่อยู่แล้ว / morphology / id ไม่รู้จัก / mode ไม่รู้จัก) → คืนตัวเดิม
+// คืน step ใหม่ (ไม่แก้ของเดิม) · step ที่ไม่ต้องย้าย (กลุ่มใหม่อยู่แล้ว / id ไม่รู้จัก / mode ไม่รู้จัก) → คืนตัวเดิม · morphology เดิม → morph_tools (migrateMorphologyStep ท้ายไฟล์)
 export function migrateLegacyStep(step) {
   if (!step || !Object.hasOwn(FILTERS, step.id) || CATEGORY_FILTER_IDS.includes(step.id)) return step;
+  if (step.id === "morphology") return migrateMorphologyStep(step);
   const params = step.params || {};
   const merged = FILTERS[step.id].params.some((q) => q.key === MODE_KEY);
   const op = merged ? (params[MODE_KEY] != null ? params[MODE_KEY] : defaultParams(step.id)[MODE_KEY]) : step.id;
@@ -8465,4 +8576,18 @@ export function migrateLegacyStep(step) {
     out[merged ? k : op + "__" + k] = params[k];
   }
   return { ...step, id: OP_TO_CATEGORY_FILTER[op], params: out };
+}
+
+// morphology เดิม (select "op" + params รวม) → morph_tools (mode = morph_<op> + params ของ op นั้นพร้อม prefix "morph_<op>__")
+// op ไม่มี → "erode" (default เดิม) · op ไม่รู้จัก → คืน step เดิม (legacy morphology ยังรันได้) · คัดเฉพาะ key ที่ตัวใหม่ใช้จริง ไม่ mutate input
+function migrateMorphologyStep(step) {
+  const params = step.params || {};
+  const op = params.op != null ? params.op : "erode";
+  const newId = "morph_" + op;
+  if (typeof op !== "string" || !MORPH_OP_IDS.includes(newId)) return step;
+  const out = { [MODE_KEY]: newId };
+  for (const q of OPS[newId].params) {
+    if (Object.hasOwn(params, q.key)) out[newId + "__" + q.key] = params[q.key];
+  }
+  return { ...step, id: "morph_tools", params: out };
 }

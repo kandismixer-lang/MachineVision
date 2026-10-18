@@ -588,9 +588,9 @@ for (const [variant, what] of [['A', 'the old params'], ['B', 'every new param p
 // ===================================================================
 // ip4b-S — static structure / text / clamps / codegen
 // ===================================================================
-test('ip4b-S1. (static structure) the 8 new ops exist with the right needs and host groups; OPS = 96 (95 + pass_fail from P-8), FILTERS stays 33; Morphology has 19 operations (the old 14 first, in order); no select key is "mode"; defaultParams() == the OPS defaults (prefixed); legacy groups untouched; the category groups = the palette sections in order', () => {
-  assert.equal(Object.keys(OPS).length, 96); // 95 + pass_fail (P-8, 2026-10-17)
-  assert.equal(Object.keys(FILTERS).length, 33);
+test('ip4b-S1. (static structure) the 8 new ops exist with the right needs and host groups; OPS = 115 (96 + 19 morph_* from 2026-10-18), FILTERS = 34 (33 + morph_tools); Morphology has 19 operations (the old 14 first, in order); no select key is "mode"; defaultParams() == the OPS defaults (prefixed); legacy groups untouched; the category groups = the palette sections in order', () => {
+  assert.equal(Object.keys(OPS).length, 115); // 96 + 19 morph_* (Morphology แยกเครื่องมือ, 2026-10-18)
+  assert.equal(Object.keys(FILTERS).length, 34); // +morph_tools (2026-10-18)
   for (const id of NEW_OPS) {
     assert.ok(OPS[id], id); assert.equal(OPS[id].needs, NEEDS[id], `${id}.needs`);
     assert.equal(OP_TO_FILTER[id], HOST[id], `${id} host`);
@@ -632,7 +632,9 @@ test('ip4b-S1. (static structure) the 8 new ops exist with the right needs and h
   assert.deepEqual(ad.slice(ad.indexOf('local_entropy_filter'), ad.indexOf('local_entropy_filter') + 5), ['local_entropy_filter', 'gabor_filter', 'glcm', 'focus_score', 'regionprops']);
   assert.deepEqual(sec('FREQUENCY DOMAIN').slice(-2), ['bandpass_notch', 'dct_jpeg']);
   assert.deepEqual(sec('IMAGE ARITHMETIC').slice(-2), ['roi_apply', 'ecc_register']);
-  assert.deepEqual(sec('MORPHOLOGY'), ['morphology']);
+  // 2026-10-18: MORPHOLOGY = 19 เครื่องมือ morph_* (ลำดับ/ความหมายล็อกใน tests/morph-split.test.mjs) · ตัวเก่า 'morphology' เป็น legacy ไม่อยู่บน palette
+  assert.deepEqual(sec('MORPHOLOGY'), modes('morph_tools'));
+  assert.equal(sec('MORPHOLOGY').length, 19);
   for (const id of NEW_OPS) assert.equal(TOOL_SECTIONS.filter((s) => s.ops.includes(id)).length, 1, `${id} in exactly one section`);
   // slow-mode hint only on nlm_denoise and deconv_lucy, and it lands in the mode dropdown
   for (const id of Object.keys(OPS)) {

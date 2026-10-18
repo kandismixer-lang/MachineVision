@@ -837,7 +837,7 @@ test('ipA-12b. morphology endpoints_branchpoints: the same "threshold at 127" co
 test('ipA-13. (static structure) OPS contains contrast_stretch/flatfield_correction and has >= 68 entries (later batches add more -- the exact total is no longer pinned) and FILTERS is unchanged at 26 -- both new ops are reachable through FILTERS.image_adjust\'s mode select, and the two new morphology modes are reachable through FILTERS.morphology\'s "op" select; defaultParams() matches the OPS defaults exactly', () => {
   for (const id of NEW_ENHANCE_OPS) assert.ok(OPS[id], `OPS must contain "${id}"`);
   assert.ok(Object.keys(OPS).length >= 68, `OPS must have at least 68 entries (66 + the 2 from batch A), got ${Object.keys(OPS).length}`);
-  assert.equal(Object.keys(FILTERS).length, 33, 'FILTERS = 26 legacy/host groups + 7 category-level groups (2026-10-07) -- both new ops still live inside existing nodes');
+  assert.equal(Object.keys(FILTERS).length, 34, 'FILTERS = 26 legacy/host groups + 7 category-level groups (2026-10-07) + morph_tools (2026-10-18) -- both new ops still live inside existing nodes');
 
   const modeParam = FILTERS.image_adjust.params.find((p) => p.key === 'mode');
   const modeValues = modeParam.options.map((o) => o.value);
@@ -908,7 +908,9 @@ test('ipA-16. palette-panel.js: both new ENHANCE ops are listed in the ENHANCE s
   for (const id of NEW_ENHANCE_OPS) assert.equal(OP_TO_FILTER[id], 'enhance_tools'); // 2026-10-07: palette ชี้กลุ่มระดับหมวด (image_adjust เป็น legacy)
 
   const morph = TOOL_SECTIONS.find((s) => s.title === 'MORPHOLOGY');
-  assert.deepEqual(morph.ops, ['morphology'], 'MORPHOLOGY section must stay a single node (sub-modes live in the dropdown, not the palette)');
+  // 2026-10-18: Morphology แยกเป็น 19 เครื่องมือ (morph_*) — op "ใหม่" ของ batch นี้ (fill_holes/clear_border ฯลฯ) จึงมีแถวบน palette ของตัวเองแล้ว (ดู tests/morph-split.test.mjs)
+  assert.deepEqual(morph.ops.map((o) => OP_TO_FILTER[o]), morph.ops.map(() => 'morph_tools'), 'MORPHOLOGY section = one node (morph_tools) with the 19 operations as tools');
+  assert.equal(morph.ops.length, 19);
 });
 
 // ===================================================================

@@ -102,7 +102,7 @@ test('cm-3. new groups: flags (psnr/ssim group inputs:2, motion stateful:true, n
 
 test('cm-4. legacy: all 26 old FILTERS still registered with their ORIGINAL op list/default (saved templates stay valid)', () => {
   for (const id of LEGACY_IDS) assert.ok(FILTERS[id], `${id} must stay registered`);
-  assert.equal(Object.keys(FILTERS).length, LEGACY_IDS.length + CATEGORY_FILTER_IDS.length);
+  assert.equal(Object.keys(FILTERS).length, LEGACY_IDS.length + CATEGORY_FILTER_IDS.length + 1); // +1 = morph_tools (2026-10-18, ไม่อยู่ใน CATEGORY_FILTER_IDS)
   const ORIG = {
     color_space: ['grayscale', 'colorspace', 'channel_split', 'rgb_adjust', 'color_inrange', 'invert'],
     colour: ['color_inrange', 'kmeans_segment', 'white_balance', 'invert', 'slic'],
@@ -279,7 +279,7 @@ test('cm-10. migrateLegacyStep: single-op legacy node gets mode + "op__" prefix 
 
 test('cm-11. migrateLegacyStep: leaves alone steps that need no change (new groups, morphology/geometry/template_matching, unknown id/mode, null)', () => {
   const same = [
-    { id: 'color_tools', params: { mode: 'invert' } }, { id: 'morphology', params: { op: 'open' } },
+    { id: 'color_tools', params: { mode: 'invert' } }, { id: 'morph_tools', params: { mode: 'morph_open' } }, // 2026-10-18: morphology เดิมถูกย้ายไป morph_tools แล้ว (tests/morph-split.test.mjs mp-6)
     { id: 'geometry', params: { mode: 'resize' } }, { id: 'template_matching', params: {} },
     { id: 'frequency', params: { mode: 'fft_magnitude' } }, { id: 'image_arithmetic', params: { mode: 'imabsdiff' } },
     { id: 'nope', params: {} }, { id: 'toString', params: {} }, { id: 'segmentation', params: { mode: 'not_an_op' } },
@@ -299,10 +299,12 @@ test('cm-12. migration preserves behaviour: for EVERY legacy node x every op, ol
       const oldParams = paramsFor(id, op);
       const mig = migrateLegacyStep({ id, params: oldParams });
       if (mig.id === id) {
-        // morphology/geometry/frequency/image_arithmetic/template_matching = ไม่ย้าย (ตรงกับหมวด palette อยู่แล้ว)
-        assert.ok(['morphology', 'geometry', 'frequency', 'image_arithmetic', 'template_matching'].includes(id), `${id}/${op} unexpectedly not migrated`);
+        // geometry/frequency/image_arithmetic/template_matching = ไม่ย้าย (ตรงกับหมวด palette อยู่แล้ว)
+        assert.ok(['geometry', 'frequency', 'image_arithmetic', 'template_matching'].includes(id), `${id}/${op} unexpectedly not migrated`);
         continue;
       }
+      // 2026-10-18: morphology → morph_tools (ไม่อยู่ใน CATEGORY_FILTER_IDS) — พฤติกรรมเท่าเดิมทุก op ล็อกใน tests/morph-split.test.mjs mp-6
+      if (id === 'morphology') { assert.equal(mig.id, 'morph_tools'); continue; }
       assert.ok(CATEGORY_FILTER_IDS.includes(mig.id), `${id}/${op} → ${mig.id}`);
       assert.equal(mig.params.mode, op);
       assert.ok(modeOptions(mig.id).includes(op), `${op} must be in ${mig.id} dropdown`);

@@ -7,7 +7,7 @@ export const TOOL_SECTIONS = [
   { title: "ENHANCE", ops: ["brightness_contrast", "gamma", "hist_equalize", "clahe", "contrast_stretch", "flatfield_correction", "quantize", "unsharp", "laplacian_sharpen", "custom_kernel", "dehaze"] },
   { title: "GEOMETRY", ops: ["crop", "roi_polygon", "resize", "rotate", "flip", "perspective_warp", "undistort", "translate_shear"] },
   { title: "FILTER & DENOISE", ops: ["salt_pepper_noise", "gaussian_noise", "median_blur", "gaussian_blur", "box_blur", "bilateral", "wiener_filter", "guided_filter", "nlm_denoise", "deconv_wiener", "deconv_lucy"] },
-  { title: "MORPHOLOGY", ops: ["morphology"] },
+  { title: "MORPHOLOGY", ops: ["morph_erode", "morph_dilate", "morph_open", "morph_close", "morph_gradient", "morph_tophat", "morph_blackhat", "morph_fill_holes", "morph_clear_border", "morph_remove_small", "morph_skeleton", "morph_reconstruct_open", "morph_convex_hull", "morph_endpoints_branchpoints", "morph_hit_or_miss", "morph_regional_max", "morph_regional_min", "morph_h_maxima", "morph_extended_max"] },
   { title: "SEGMENTATION & EDGE", ops: ["binary_threshold", "otsu_threshold", "adaptive_threshold", "multi_otsu_threshold", "canny", "sobel", "laplacian_edge", "scharr_edge", "prewitt_edge", "roberts_edge", "log_edge", "watershed", "grabcut", "region_growing"] },
   { title: "ANALYSIS & DETECTION", ops: ["find_contours", "connected_components", "distance_transform", "local_std_filter", "local_entropy_filter", "gabor_filter", "glcm", "focus_score", "regionprops", "feret", "line_profile", "shape_filter", "bounding_boxes", "hough_circles", "hough_lines", "harris_corners", "shi_tomasi_corners", "orb_keypoints", "akaze_keypoints", "fast_keypoints", "pass_fail"] },
   { title: "FREQUENCY DOMAIN", ops: ["fft_magnitude", "fft_filter", "bandpass_notch", "dct_jpeg"] },
@@ -21,7 +21,7 @@ export const TOOL_SECTIONS = [
 // ครบทุก op ของหมวดตามลำดับ TOOL_SECTIONS) · กลุ่มเก่า (color_space, colour, blur, watershed, psnr, mog2 ...) ยังลงทะเบียนใน
 // FILTERS เป็น legacy แต่ไม่อยู่ในลิสต์นี้ → ไม่โผล่บน palette · tests/category-merge.test.mjs ล็อกให้ทุกหมวดตรงกัน
 const VISIBLE_FILTER_IDS = [
-  "color_tools", "enhance_tools", "geometry", "filter_denoise", "morphology",
+  "color_tools", "enhance_tools", "geometry", "filter_denoise", "morph_tools",
   "segment_edge", "analysis_detect",
   "frequency", "image_arithmetic",
   "template_matching", "image_quality", "motion",
@@ -40,7 +40,7 @@ const OP_ICON = {
   shape_filter: "⛛", // กรวยกรอง สื่อ "คัดวัตถุ"
   crop: "⛝", resize: "⤢", rotate: "↻", flip: "⇋", perspective_warp: "⏢", undistort: "⊙",
   salt_pepper_noise: "⁙", median_blur: "●", gaussian_blur: "✺", box_blur: "▧", bilateral: "◎",
-  morphology: "▣", binary_threshold: "◩", otsu_threshold: "◧", adaptive_threshold: "◨", multi_otsu_threshold: "◪",
+  binary_threshold: "◩", otsu_threshold: "◧", adaptive_threshold: "◨", multi_otsu_threshold: "◪",
   canny: "⌁", sobel: "∿", laplacian_edge: "◈", scharr_edge: "∾",
   watershed: "≋", grabcut: "✂", find_contours: "⌬", connected_components: "⠿", distance_transform: "◔",
   // ใหม่ (2026-09-30) — เช็คทุก glyph กับของเดิมทั้งไฟล์และกับ GROUP_ICON ใน ui-meta.js แล้วไม่ชนกันเลย
@@ -84,6 +84,12 @@ const OP_ICON = {
   deconv_wiener: "⟲", deconv_lucy: "⌾", ecc_register: "⧉", gabor_filter: "⋈", glcm: "⧈", nlm_denoise: "✣", dehaze: "🌫", dct_jpeg: "⬗",
   // ใหม่ (2026-10-17, P-8) — ✔ สื่อ "ผ่าน" · เช็คแล้วไม่ชนกับ OP_ICON / GROUP_ICON / NC_ICON_FALLBACK (🧩)
   pass_fail: "✔",
+  // ใหม่ (2026-10-18, Morphology แยกเครื่องมือ) — เช็คแล้วไม่ชนกับ OP_ICON / GROUP_ICON / NC_ICON_FALLBACK (🧩) / 📊 / 📌 และไม่มีใน src ที่อื่น
+  // (morphology "▣" เดิมถูกเอาออก: ตัว legacy ไม่อยู่บน palette แล้ว)
+  morph_erode: "⊖", morph_dilate: "◼", morph_open: "◌", morph_close: "▣", morph_gradient: "◭", morph_tophat: "⌃", morph_blackhat: "⌄",
+  morph_fill_holes: "⬤", morph_clear_border: "⊠", morph_remove_small: "∴",
+  morph_skeleton: "🦴", morph_reconstruct_open: "⥀", morph_convex_hull: "⬣", morph_endpoints_branchpoints: "⋔", morph_hit_or_miss: "⊘",
+  morph_regional_max: "▲", morph_regional_min: "▽", morph_h_maxima: "△", morph_extended_max: "⌂",
   // ใหม่ (Tier 2, 18d) — เช็คทุกตัวกับ glyph เดิมทั้งหมดด้านบน และกับ GROUP_ICON ใน ui-meta.js แล้วไม่ชนกันเลย
   mog2: "🎞", // ฟิล์มหลายเฟรม สื่อ "ต้องดูหลายเฟรมต่อเนื่อง"
   farneback_optical_flow: "⇶", // ลูกศรสามเส้นขนานกัน สื่อ "การไหลทั้งภาพ" (dense flow)
@@ -155,10 +161,20 @@ export function pushRecent(list, opId, max = PALETTE_RECENT_MAX) {
   return [opId, ...list.filter((x) => x !== opId)].slice(0, max);
 }
 
+// ประวัติ "ใช้ล่าสุด" เก่าที่เก็บ "morphology" → "morph_erode" (ไม่ซ้ำ) · ค่าพัง/ไม่ใช่ JSON array คืนตามเดิมให้ resolveRecent จัดการ
+export function migrateRecentIds(raw) {
+  if (typeof raw !== "string") return raw;
+  try {
+    const a = JSON.parse(raw);
+    if (!Array.isArray(a)) return raw;
+    return JSON.stringify(a.map((id) => (id === "morphology" ? "morph_erode" : id)));
+  } catch { return raw; }
+}
 function loadRecent() {
   let raw = null;
   try { raw = localStorage.getItem(PALETTE_RECENT_KEY); } catch { /* ไม่มีรายการ */ }
-  return resolveRecent(raw, (id) => !!OP_TO_FILTER[id] && !!OPS[id]);
+  // "morphology" (เครื่องมือเดี่ยวเดิมก่อน 2026-10-18) → morph_erode (ค่าเริ่มต้นเดิม) ไม่ทิ้งประวัติ
+  return resolveRecent(migrateRecentIds(raw), (id) => !!OP_TO_FILTER[id] && !!OPS[id]);
 }
 function saveRecent(list) {
   try { localStorage.setItem(PALETTE_RECENT_KEY, JSON.stringify(list)); } catch { /* ไม่บันทึกก็ไม่เป็นไร */ }
@@ -191,7 +207,7 @@ export function createPalettePanel(container, cb) {
     for (const s of sections) {
       let n = 0;
       for (const r of s.rows) {
-        const m = toolMatches(r.name, r.opId, query);
+        const m = toolMatches(r.name + " " + s.title, r.opId, query); // รวมชื่อหมวด: ค้น "morphology" เจอทั้งหมวด
         r.el.hidden = !m;
         if (m) n++;
       }

@@ -1567,7 +1567,7 @@ test('ip4a-mm2. detail panel: switching mmPerPx 0 -> 0.25 -> 0 rebuilds the Regi
 // ===================================================================
 test('ip4a-S1. (static structure) the 5 new ops exist with the right needs and host groups; OPS = 87, FILTERS stays 33; no select key is "mode"; defaultParams() == the OPS defaults (prefixed); legacy groups are untouched and FILTERS.psnr has no params', () => {
   assert.ok(Object.keys(OPS).length >= 87, 'batch 4B adds 8 more (95 — pinned in ip4b-S1)');
-  assert.equal(Object.keys(FILTERS).length, 33);
+  assert.equal(Object.keys(FILTERS).length, 34); // +morph_tools (2026-10-18)
   const NEEDS = { guided_filter: 'any', focus_score: 'gray', pseudocolor: 'gray', delta_e: 'any', roi_apply: 'any' };
   for (const id of NEW_OPS) {
     assert.ok(OPS[id], id); assert.equal(OPS[id].needs, NEEDS[id], `${id}.needs`);

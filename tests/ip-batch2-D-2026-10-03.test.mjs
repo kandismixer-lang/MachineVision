@@ -1096,7 +1096,7 @@ const OPSTEP = (opId, extra = {}) => {
 test('ipD-19. (static structure) the 3 ops exist with needs gray / any / any (no "mode" param key), FILTERS is still 26, shape_analysis keeps its 6 modes + default find_contours (+ legacy watershed) and appends feret, line_profile; geometry keeps its 7 modes + default resize and appends roi_polygon; defaultParams() = OPS defaults (prefixed); the merged nodes dispatch to the new ops; the legacy segmentation group does not offer them', () => {
   assert.deepEqual(NEW_OPS.map((id) => OPS[id] && OPS[id].needs), ['gray', 'any', 'any']);
   for (const id of NEW_OPS) for (const p of OPS[id].params) assert.notEqual(p.key, 'mode');
-  assert.equal(Object.keys(FILTERS).length, 33); // 26 + 7 กลุ่มระดับหมวด (2026-10-07)
+  assert.equal(Object.keys(FILTERS).length, 34); // 26 + 7 กลุ่มระดับหมวด (2026-10-07) + morph_tools (2026-10-18)
   const modes = (f) => FILTERS[f].params.find((p) => p.key === 'mode').options.map((o) => o.value);
   assert.deepEqual(modes('shape_analysis').slice(0, 6), ['find_contours', 'connected_components', 'distance_transform', 'local_std_filter', 'local_entropy_filter', 'regionprops']);
   assert.deepEqual(modes('shape_analysis').filter((m) => NEW_OPS.includes(m)), ['feret', 'line_profile']);
