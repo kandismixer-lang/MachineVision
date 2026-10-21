@@ -516,8 +516,11 @@ const GEN = {
   } },
 
   // ---- ปรับปรุงภาพ ----
-  brightness_contrast: { needs: "any", out: "same", gen: (p) =>
-    [`img = cv2.convertScaleAbs(img, alpha=${num(p.alpha)}, beta=${int(p.beta)})`] },
+  brightness_contrast: { needs: "any", out: "same", gen: (p) => [
+    // ไม่ใช้ cv2.convertScaleAbs — มันหาค่าสัมบูรณ์ก่อนตัด β ติดลบจึงทำให้จุดมืดสุดสว่างขึ้น · LUT ปัดครึ่งขึ้นเหมือนแอป
+    `lut = np.clip(np.floor(np.arange(256) * ${num(p.alpha)} + ${num(p.beta)} + 0.5), 0, 255).astype(np.uint8)`,
+    "img = cv2.LUT(img, lut)",
+  ] },
 
   gamma: { needs: "any", out: "same", gen: (p) => p.curve === "log" ? [
     // IP batch 4A — Log transform: ปัดครึ่งขึ้นด้วย np.floor(x + 0.5) เหมือน Math.floor(... + 0.5) ของแอป
@@ -629,9 +632,9 @@ const GEN = {
   } },
 
   laplacian_sharpen: { needs: "any", out: "same", gen: (p) => [
-    "lap = cv2.Laplacian(img, cv2.CV_16S, ksize=3)",
-    "lap = cv2.convertScaleAbs(lap)",
-    `img = cv2.addWeighted(img, 1, lap, ${-num(p.strength)}, 0)`,
+    // g = f − strength·∇²f แบบมีเครื่องหมาย · ksize=1 = kernel 4 ทิศ [0 1 0;1 -4 1;0 1 0] เหมือนแอป
+    "lap = cv2.Laplacian(img.astype(np.float32), cv2.CV_32F, ksize=1).astype(np.float64)",
+    `img = np.clip(np.floor(img - ${num(p.strength)} * lap + 0.5), 0, 255).astype(np.uint8)  # ปัดครึ่งขึ้นเหมือนแอป`,
   ] },
 
   custom_kernel: { needs: "any", out: "same", gen: (p) => {
@@ -841,64 +844,45 @@ const GEN = {
       ];
     }
     if (p.op === "skeleton") {
-      // Zhang-Suen thinning — พอร์ตจาก JS ตรง ๆ (ไม่ vectorize ต่าง จากเหตุผลเดียวกับ multi_otsu_threshold)
-      // ย่อภาพวิเคราะห์ ≤240px เหมือนแอปตัวจริงเสมอ (int(x+0.5) ไม่ใช่ round() — กติกาการปัดเลขรันไทม์)
-      //
-      // สำคัญ: ทดสอบเปรียบเทียบกับ JS จริงแล้วพบว่า np.roll-based vectorization (ตามที่เคยลองร่างไว้)
-      // มี 2 บั๊กที่ทำให้ผลต่างจาก JS มาก ไม่ใช่แค่ผลกระทบเล็ก ๆ ที่ขอบภาพ: (1) np.roll wrap-around ทำให้
-      // พิกเซลที่ขอบภาพ "เห็น" พิกเซลจากขอบตรงข้ามเป็นเพื่อนบ้าน (ต้อง zero ค่าที่ wrap เข้ามาในทุกทิศ)
-      // (2) JS วน y=1..h-2, x=1..w-2 เท่านั้น (ไม่แตะพิกเซลที่ขอบภาพนอกสุด 1px เลย) แต่เวอร์ชัน vectorized
-      // เดิมคำนวณทั้งภาพรวมขอบ ทำให้ลบพิกเซลขอบภาพที่ JS ไม่ลบ — ยืนยันด้วย diff เป็น 0 พิกเซลบนภาพทดสอบ
-      // 3 แบบ (สี่เหลี่ยมแตะขอบ, สี่เหลี่ยมไม่แตะขอบ, กากบาทแตะขอบทั้ง 4 ด้าน) หลังแก้ 2 จุดนี้แล้วเท่านั้น
-      // จึงพอร์ตแบบ direct loop (ไม่ vectorize) แทน เพื่อความถูกต้อง ไม่ใช่ความเร็ว (เหมือน multi-Otsu)
+      // Zhang-Suen thinning ที่ความละเอียดเต็ม — พอร์ตวิธีเดียวกับแอป: เติมขอบดำ 1 px (np.pad) แล้วตรวจเฉพาะ "พิกเซลที่ยังอาจถูกลบได้"
+      // (active) แทนการไล่ทั้งภาพทุกรอบ (ภาพ 1080p ไล่ทั้งภาพใช้เวลาเป็นนาที) · ตัดสินผ่าน/ไม่ผ่านจากรหัสเพื่อนบ้าน 8 บิต + ตาราง 256 ค่า
+      // ผลตรงกับแอปและกับการไล่ทั้งภาพทุกพิกเซล (ตัดสินทั้ง step พร้อมกันแล้วค่อยลบ)
       return [
         "_, bin_img = cv2.threshold(img, 127, 255, cv2.THRESH_BINARY)",
-        "rows, cols = bin_img.shape",
-        "scale = min(1.0, 240 / max(rows, cols))",
-        "if scale < 1:",
-        "    analysis = cv2.resize(bin_img, (max(1, int(cols * scale + 0.5)), max(1, int(rows * scale + 0.5))), interpolation=cv2.INTER_NEAREST)",
-        "else:",
-        "    analysis = bin_img",
-        "sk = (analysis > 0).astype(np.uint8)",
-        "a_h, a_w = sk.shape",
-        "def _p(x, y, dx, dy):",
-        "    xx, yy = x + dx, y + dy",
-        "    if xx < 0 or xx >= a_w or yy < 0 or yy >= a_h:",
-        "        return 0",
-        "    return int(sk[yy, xx])",
-        "changed = True",
+        "h, w = bin_img.shape",
+        "W = w + 2",
+        "sk = np.pad((bin_img > 0).astype(np.uint8), 1).ravel()",
+        "off = np.array([-W, -W + 1, 1, W + 1, W, W - 1, -1, -W - 1])  # เพื่อนบ้าน p2..p9 ตามเข็มนาฬิกาเริ่มจากบน",
+        "bits = (np.arange(256)[:, None] >> np.arange(8)) & 1",
+        "p2, p3, p4, p5, p6, p7, p8, p9 = bits.T",
+        "nb_b = bits.sum(1)",
+        "nb_a = ((bits == 0) & (np.roll(bits, -1, axis=1) == 1)).sum(1)",
+        "base = (nb_b >= 2) & (nb_b <= 6) & (nb_a == 1)",
+        "can_delete = {1: base & (p2 * p4 * p6 == 0) & (p4 * p6 * p8 == 0), 2: base & (p2 * p4 * p8 == 0) & (p2 * p6 * p8 == 0)}",
+        "weights = 1 << np.arange(8)",
+        "active = np.flatnonzero(sk)",
+        "fail = np.zeros(sk.size, np.uint8)  # bit 1/2 = ตรวจ step นั้นแล้วไม่ผ่าน (ล้างเมื่อเพื่อนบ้านถูกลบ)",
         "iterations = 0",
-        "while changed and iterations < 100:",
-        "    changed = False",
+        "while True:",
         "    iterations += 1",
+        "    changed = False",
         "    for step in (1, 2):",
-        "        to_delete = []",
-        "        for y in range(1, a_h - 1):",
-        "            for x in range(1, a_w - 1):",
-        "                if sk[y, x] != 1:",
-        "                    continue",
-        "                p2, p3, p4, p5 = _p(x, y, 0, -1), _p(x, y, 1, -1), _p(x, y, 1, 0), _p(x, y, 1, 1)",
-        "                p6, p7, p8, p9 = _p(x, y, 0, 1), _p(x, y, -1, 1), _p(x, y, -1, 0), _p(x, y, -1, -1)",
-        "                neigh = [p2, p3, p4, p5, p6, p7, p8, p9]",
-        "                b = sum(neigh)",
-        "                if b < 2 or b > 6:",
-        "                    continue",
-        "                a = sum(1 for i in range(8) if neigh[i] == 0 and neigh[(i + 1) % 8] == 1)",
-        "                if a != 1:",
-        "                    continue",
-        "                if step == 1:",
-        "                    if p2 * p4 * p6 != 0 or p4 * p6 * p8 != 0:",
-        "                        continue",
-        "                else:",
-        "                    if p2 * p4 * p8 != 0 or p2 * p6 * p8 != 0:",
-        "                        continue",
-        "                to_delete.append((y, x))",
-        "        if to_delete:",
-        "            changed = True",
-        "            for (y, x) in to_delete:",
-        "                sk[y, x] = 0",
-        "sk = (sk * 255).astype(np.uint8)",
-        "img = cv2.resize(sk, (cols, rows), interpolation=cv2.INTER_NEAREST) if scale < 1 else sk",
+        "        d = can_delete[step][sk[active[:, None] + off] @ weights]",
+        "        fail[active[~d]] |= step",
+        "        gone = active[d]",
+        "        if gone.size == 0:",
+        "            continue",
+        "        changed = True",
+        "        sk[gone] = 0",
+        "        touched = np.unique((gone[:, None] + off).ravel())",
+        "        touched = touched[sk[touched] == 1]",
+        "        fail[touched] = 0",
+        "        active = np.union1d(active, touched)",
+        "        active = active[(sk[active] == 1) & (fail[active] != 3)]",
+        "    if not changed:",
+        "        break",
+        "img = (sk.reshape(h + 2, W)[1:-1, 1:-1] * 255).astype(np.uint8)",
+        "print(f'Skeleton (thinning) — {iterations} รอบ')",
       ];
     }
     if (p.op === "reconstruct_open") {
@@ -2110,19 +2094,28 @@ const GEN = {
       "    analysis = img",
       "gray_f = np.float32(analysis)",
       `resp = cv2.cornerHarris(gray_f, ${int(p.blockSize)}, ${ksize}, ${num(p.k)})`,
-      "resp = cv2.normalize(resp, None, 0, 255, cv2.NORM_MINMAX)",
+      // เกณฑ์ = thresh% ของ R สูงสุด (แบบ MinQuality ของ MATLAB) + non-max suppression 3x3 → 1 จุดต่อ 1 มุม เหมือนแอป
+      "dil = cv2.dilate(resp, np.ones((3, 3), np.uint8))",
+      "max_r = float(resp.max())",
+      "pts = []",
+      "if max_r > 0:",
+      `    thr = ${num(p.thresh)} / 100 * max_r`,
+      "    cand = (resp.astype(np.float64) >= thr) & (resp >= dil)  # เทียบแบบ float64 เหมือน JS",
+      "    taken = np.zeros(resp.shape, dtype=bool)  # ค่าเท่ากันติดกัน (plateau) เก็บแค่ตัวแรกตามลำดับแถว",
+      "    for y, x in zip(*np.nonzero(cand)):",
+      "        if taken[y, x]:",
+      "            continue",
+      "        pts.append((x, y))",
+      "        if len(pts) > 3000:",
+      "            break",
+      "        taken[max(0, y - 1):y + 2, max(0, x - 1):x + 2] = True",
       "img = cv2.cvtColor(img, cv2.COLOR_GRAY2BGR)",
-      // B5 (backlog 2026-10-17): ทำเหมือนแอปเป๊ะ — ปัดเป็น uint8 → threshold → dilate วงรี 3x3 (กากบาท 5 พิกเซล: ขยายจุด ไม่ได้รวมมุมเป็นจุดเดียว) แล้วนับพิกเซลของมาสก์ที่ขยายแล้ว (ตัวเลขอาจมากกว่าจำนวนมุมจริงราว 5 เท่า)
-      "mask8 = cv2.convertScaleAbs(resp)  # float -> uint8 ปัดเศษเหมือน convertTo ของแอป",
-      `_, mask8 = cv2.threshold(mask8, ${num(p.thresh)} / 100 * 255, 255, cv2.THRESH_BINARY)`,
-      "mask8 = cv2.dilate(mask8, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3)))  # ขยายจุด (กากบาท 5 px) แล้วนับพิกเซล เหมือนแอป",
-      "ys, xs = np.where(mask8 > 0)",
       "inv_scale = 1 / scale",
-      "if len(xs) > 3000:  # เหมือนแอป: มุมเยอะเกินไม่วาดอะไร",
+      "if len(pts) > 3000:  # เหมือนแอป: มุมเยอะเกินไม่วาดอะไร",
       "    print('จุดมุมเยอะเกิน (>3000) — เพิ่มค่า \"ความไวจับมุม\" ขึ้น')",
       "else:",
-      "    print(f'พบมุม {len(xs)} จุด')",
-      "    for x, y in zip(xs, ys):",
+      "    print(f'พบมุม {len(pts)} จุด')",
+      "    for x, y in pts:",
       "        cv2.circle(img, (int(x * inv_scale), int(y * inv_scale)), 3, (0, 255, 0), 1)",
     ];
   } },

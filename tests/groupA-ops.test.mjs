@@ -805,7 +805,16 @@ test('groupA-17. Opening by Reconstruction vs plain Opening: a >300px-long thin 
   src.delete();
 });
 
-test('groupA-18. Skeleton downscale-for-analysis guard: for a >240px input, the analysis resolution stays <=240px on the longest side (regression if the mandatory downscale is ever removed)', () => {
+test('groupA-18. Skeleton runs at full resolution (2026-10-21): a 40px-thick bar in a 640x480 image thins to a 1px line, and a 500x300 blob stays fast', () => {
+  const bar = new cv.Mat.zeros(480, 640, cv.CV_8UC1);
+  cv.rectangle(bar, new cv.Point(40, 220), new cv.Point(600, 259), new cv.Scalar(255), -1);
+  const barOut = OPS.morph_skeleton.apply(cv, bar, {}, {});
+  let thick = 0;
+  for (let y = 0; y < 480; y++) if (barOut.ucharAt(y, 320) > 0) thick++;
+  assert.equal(thick, 1, `skeleton line must be 1px thick at full resolution, got ${thick}px`);
+  barOut.delete();
+  bar.delete();
+
   const w = 500, h = 300;
   const src = new cv.Mat.zeros(h, w, cv.CV_8UC1);
   cv.rectangle(src, new cv.Point(20, 20), new cv.Point(450, 280), new cv.Scalar(255), -1);
@@ -813,11 +822,10 @@ test('groupA-18. Skeleton downscale-for-analysis guard: for a >240px input, the 
   const started = performance.now();
   const out = OPS.morphology.apply(cv, src, { op: 'skeleton', shape: 'rect', ksize: 5, iterations: 1 }, ctx);
   const elapsed = performance.now() - started;
-  const m = /วิเคราะห์ที่ (\d+)x(\d+)px/.exec(ctx.info || '');
-  assert.ok(m, `expected ctx.info to report the analysis resolution, got: ${ctx.info}`);
-  const analysisMax = Math.max(Number(m[1]), Number(m[2]));
-  assert.ok(analysisMax <= 240, `analysis resolution must stay <=240px on the longest side, got ${m[1]}x${m[2]}`);
-  assert.ok(elapsed < 500, `expected skeleton on a 500x300 input to stay fast thanks to the downscale, took ${elapsed}ms`);
+  assert.match(ctx.info || '', /ที่ 500x300px/);
+  assert.equal(out.cols, w);
+  assert.equal(out.rows, h);
+  assert.ok(elapsed < 500, `expected skeleton on a 500x300 input to stay fast, took ${elapsed}ms`);
   out.delete();
   src.delete();
 });
@@ -898,13 +906,13 @@ test('qa-Q2. Skeleton hint tells the learner to try Invert if the result is all-
   const skeletonOption = opParam.options.find((o) => o.value === 'skeleton');
   assert.match(skeletonOption.hint, /Invert/, 'skeleton hint should mention trying Invert first if the result looks all-white');
 
-  // Empirical proof of the underlying behavior this hint explains: an all-white input has no
-  // background at all, so skeleton (which erodes from the background inward) cannot thin it.
+  // Empirical proof of the behavior this hint explains: outside the image counts as background (like bwmorph),
+  // so a white background is thinned like an object — an all-white input collapses to a thin line, not a blank result.
   const allWhite = new cv.Mat(40, 40, cv.CV_8UC1, new cv.Scalar(255));
   const ctx = {};
   const out = OPS.morphology.apply(cv, allWhite, { op: 'skeleton' }, ctx);
-  const allStillWhite = cv.countNonZero(out) === out.rows * out.cols;
-  assert.ok(allStillWhite, 'an all-white image should stay all-white after skeleton (no background to erode from) — this is exactly why the hint matters');
+  const n = cv.countNonZero(out);
+  assert.ok(n > 0 && n < 40 * 3, `an all-white image should thin to a line (white = object), got ${n} white pixels`);
   allWhite.delete();
   out.delete();
 });

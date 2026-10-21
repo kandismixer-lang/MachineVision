@@ -377,10 +377,10 @@ test('mp-9. node card text: OP_PRIMARY[morph_<op>] == legacy OP_PRIMARY.morpholo
   assert.equal(OP_PRIMARY.morph_remove_small({ minArea: 60 }), 'ลบวัตถุ < 60px');
 });
 
-test('mp-10. guidance kept: Endpoints & Branchpoints says "use after Skeleton"; Hit-or-Miss keeps the OpenCV/MATLAB border note; Skeleton mentions Invert', () => {
+test('mp-10. guidance kept: Endpoints & Branchpoints says "use after Skeleton"; Hit-or-Miss keeps the out-of-image border note; Skeleton mentions Invert', () => {
   assert.match(OPS.morph_endpoints_branchpoints.desc, /ใช้ต่อจาก Skeleton/);
   assert.match(OPS.morph_endpoints_branchpoints.modeHint, /Skeleton/);
-  assert.match(OPS.morph_hit_or_miss.desc, /MATLAB/);
+  assert.match(OPS.morph_hit_or_miss.desc, /นอกขอบภาพ/);
   assert.match(OPS.morph_skeleton.desc, /Invert/);
   assert.match(OPS.morph_remove_small.desc, /พื้นที่ขั้นต่ำ/);
 });

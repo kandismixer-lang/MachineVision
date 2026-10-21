@@ -1712,9 +1712,22 @@ export const OPS = {
       { key: "beta", type: "number", label: "ความสว่าง (β)", min: -100, max: 100, step: 1, default: 0, desc: "บวก/ลบความสว่างทั้งภาพเท่า ๆ กันทุกจุด" },
     ],
     apply(cv, src, p) {
+      // α·x+β แล้วปัดครึ่งขึ้นและตัด 0–255 (เหมือน imlincomb ของ MATLAB) — เดิมใช้ convertScaleAbs ซึ่งหาค่าสัมบูรณ์ก่อนตัด
+      // β ติดลบจึง "สะท้อนค่ากลับ" (จุดมืดสุดกลับสว่างขึ้น) · ทำเป็น LUT 256 ค่าด้วย double ให้ตรงกับ Python ที่ export ทุกค่า
+      const a = Number(p.alpha) || 0, b = Number(p.beta) || 0; // = num() ของ codegen (โปรเจกต์ที่แก้มือเก็บเป็นสตริงได้)
+      const lutArr = new Array(256);
+      for (let i = 0; i < 256; i++) lutArr[i] = Math.min(255, Math.max(0, Math.floor(i * a + b + 0.5)));
+      const lut = cv.matFromArray(1, 256, cv.CV_8UC1, lutArr);
       const dst = new cv.Mat();
-      cv.convertScaleAbs(src, dst, p.alpha, p.beta);
-      return dst;
+      try {
+        cv.LUT(src, lut, dst);
+        return dst;
+      } catch (err) {
+        dst.delete();
+        throw err;
+      } finally {
+        lut.delete();
+      }
     },
   },
 
@@ -1872,7 +1885,7 @@ export const OPS = {
     needs: "any",
     desc: "แก้ปัญหาแสงไม่สม่ำเสมอทั่วภาพ (เช่น ขอบภาพมืดกว่ากลางภาพ) โดยประมาณ 'พื้นหลังของแสง' ด้วยการเบลอภาพแรงมาก (เบลอจนไม่เหลือรายละเอียดวัตถุ เหลือแต่แนวโน้มความสว่างกว้าง ๆ) แล้วหารภาพต้นทางด้วยพื้นหลังนั้น — บริเวณที่สว่างเกินจริงเพราะแสงจะถูกลดลง บริเวณที่มืดเกินจริงจะถูกดึงขึ้น ทำให้ Threshold ขั้นตอนถัดไปทำงานแม่นยำขึ้นมาก (ต่างจาก Top-hat ที่ลบพื้นหลังทิ้งทั้งหมดเหลือวัตถุสว่างบนพื้นดำ เหมาะก่อน threshold และต้องให้วัตถุเล็กกว่าขนาด kernel — ตัวนี้แค่หารแสงที่ไม่สม่ำเสมอออก แต่ยังคงความสว่างโดยรวมของพื้นหลังไว้ ภาพจึงยังดูเป็นภาพปกติ) ขนาดเบลอต้องใหญ่กว่าวัตถุที่สนใจมาก ๆ ไม่งั้นจะ 'กิน' รายละเอียดของวัตถุไปด้วยไม่ใช่แค่แสง — ถ้าวัตถุเริ่มจางหายไป ให้เพิ่มขนาดเบลอขึ้น",
     params: [
-      { key: "blurSize", type: "number", label: "ขนาดเบลอพื้นหลัง (px)", min: 15, max: 401, step: 2, default: 121, hint: "เลขคี่ — ต้องใหญ่กว่าวัตถุมาก ๆ ไม่งั้นจะกินรายละเอียดวัตถุไปด้วย · ประมาณพื้นหลังบนภาพย่อ ≤240px เสมอก่อนขยายกลับ (เหมือน Skeleton) จึงเร็วแม้ที่ความละเอียดสูง (1080p ที่ค่าเริ่มต้น ~0.05 วินาที/เฟรม)", desc: "ขนาดตัวกรอง Gaussian Blur ที่ใช้ประมาณพื้นหลังของแสง — ยิ่งใหญ่ยิ่งได้เฉพาะแนวโน้มแสงกว้าง ๆ" },
+      { key: "blurSize", type: "number", label: "ขนาดเบลอพื้นหลัง (px)", min: 15, max: 401, step: 2, default: 121, hint: "เลขคี่ — ต้องใหญ่กว่าวัตถุมาก ๆ ไม่งั้นจะกินรายละเอียดวัตถุไปด้วย · ประมาณพื้นหลังบนภาพย่อ ≤240px เสมอก่อนขยายกลับ จึงเร็วแม้ที่ความละเอียดสูง (1080p ที่ค่าเริ่มต้น ~0.05 วินาที/เฟรม)", desc: "ขนาดตัวกรอง Gaussian Blur ที่ใช้ประมาณพื้นหลังของแสง — ยิ่งใหญ่ยิ่งได้เฉพาะแนวโน้มแสงกว้าง ๆ" },
     ],
     apply(cv, src, p, ctx) {
       if (isEmptyMat(src)) { if (ctx) ctx.info = "ภาพว่าง"; return src.clone(); }
@@ -1922,7 +1935,7 @@ export const OPS = {
         // multiply ตรง ๆ (ด้วยเหตุผลเดียวกับ epsMat ด้านบน: cv.multiply ก็ไม่รับ Scalar ตรง ๆ เช่นกัน)
         // ภาพ 4 ช่อง (RGBA): meanVal[3] คือค่าเฉลี่ย alpha ด้วย → alpha channel ถูกปรับตามสูตรเดียวกับช่องสี
         // (ratio*mean) แทนที่จะคงค่าเดิมหรือบังคับ opaque — เป็นไปตามธรรมเนียมเดิมของไฟล์นี้ที่ op อื่น เช่น
-        // brightness_contrast (convertScaleAbs) ก็ประมวลผล alpha เหมือนทุกช่องเช่นกัน ไม่ใช่บั๊ก
+        // brightness_contrast (LUT) ก็ประมวลผล alpha เหมือนทุกช่องเช่นกัน ไม่ใช่บั๊ก
         meanMat = new cv.Mat(ratio.rows, ratio.cols, ratio.type(), new cv.Scalar(meanVal[0], meanVal[1], meanVal[2], meanVal[3]));
         scaled = new cv.Mat();
         cv.multiply(ratio, meanMat, scaled);
@@ -2018,15 +2031,30 @@ export const OPS = {
       { key: "strength", type: "number", label: "ความแรง", min: 0, max: 3, step: 0.1, default: 1, desc: "น้ำหนักที่หักเส้นขอบ (Laplacian) ออกจากภาพเดิม — มาก = ขอบเด่นขึ้น" },
     ],
     apply(cv, src, p) {
+      // g = f − strength·∇²f ตามตำรา — ต้องลบแบบมีเครื่องหมาย (เดิมใส่ค่าสัมบูรณ์ก่อนลบ ขอบเลยกลายเป็นร่องดำทั้งสองฝั่ง)
+      // ksize 1 = kernel 4 ทิศ [0 1 0;1 −4 1;0 1 0] (= fspecial('laplacian',0) ของ MATLAB) · ksize 3 ของ OpenCV เป็นแบบแนวทแยง
+      // ∇² ของภาพ 8 bit ด้วย kernel จำนวนเต็มเป็นจำนวนเต็มเสมอ (float32 เก็บได้เป๊ะ) แล้วคิด f − s·∇²f ด้วย double
+      // ปัดครึ่งขึ้นเอง — ไม่ใช้ addWeighted/convertTo เพราะการปัดของ float32 ต่างกันได้ตาม build ของ OpenCV (แอปกับ Python ไม่ตรงกัน)
+      const f = new cv.Mat();
       const lap = new cv.Mat();
-      const lapAbs = new cv.Mat();
-      cv.Laplacian(src, lap, cv.CV_16S, 3);
-      cv.convertScaleAbs(lap, lapAbs);
-      const dst = new cv.Mat();
-      cv.addWeighted(src, 1, lapAbs, -p.strength, 0, dst);
-      lap.delete();
-      lapAbs.delete();
-      return dst;
+      let dst = null;
+      try {
+        src.convertTo(f, cv.CV_32F);
+        cv.Laplacian(f, lap, cv.CV_32F, 1);
+        dst = new cv.Mat(src.rows, src.cols, src.type());
+        const S = src.data, L = lap.data32F, D = dst.data, s = p.strength;
+        for (let i = 0; i < D.length; i++) {
+          const v = Math.floor(S[i] - s * L[i] + 0.5);
+          D[i] = v < 0 ? 0 : v > 255 ? 255 : v;
+        }
+        return dst;
+      } catch (err) {
+        if (dst) dst.delete();
+        throw err;
+      } finally {
+        f.delete();
+        lap.delete();
+      }
     },
   },
 
@@ -2189,7 +2217,7 @@ export const OPS = {
   morphology: {
     name: "Morphological Operation",
     needs: "gray",
-    desc: "จัดการ 'รูปทรง' ของวัตถุขาวในภาพขาว-ดำ ด้วยการเอาตัวแปรง (kernel) ไล่ทาบทั่วภาพ: Erode กัดวัตถุให้ผอมลง/ลบจุดจิ๋วรบกวน, Dilate พอกให้อ้วนขึ้น/อุดรูโหว่, Opening ลบจุดเล็กแต่คงขนาดเดิม, Closing อุดรูข้างในวัตถุ, Gradient ดึงเฉพาะเส้นขอบ ส่วน TopHat/BlackHat ดึงส่วนที่สว่าง/มืดกว่ารอบข้าง มักใช้ต่อหลัง threshold · Hit-or-Miss หาลายแม่แบบ 3×3 (บางช่องต้องขาว บางช่องต้องดำ) โดย erode ภาพขาวด้วยช่อง 'ต้องขาว' แล้ว AND กับ erode ภาพกลับด้านด้วยช่อง 'ต้องดำ' — นอกขอบภาพ OpenCV นับเป็น 'ไม่สน' ส่วน MATLAB bwhitmiss นับเป็นดำ จุดที่ติดขอบภาพจึงอาจนับต่างกัน · กรณีหาปลายเส้นทั่วไป Endpoints & Branchpoints สะดวกกว่า · Regional Maxima / H-maxima / Extended Maxima ใช้หา 'ยอด' ในภาพเทาหรือภาพ Distance Transform เพื่อทำ marker แยกวัตถุที่ติดกัน — noise ทำให้เกิดยอดเล็กจำนวนมาก เพิ่ม h หรือ blur ก่อน · นับแบบ 8-connected เหมือนค่าเริ่มต้นของ MATLAB",
+    desc: "จัดการ 'รูปทรง' ของวัตถุขาวในภาพขาว-ดำ ด้วยการเอาตัวแปรง (kernel) ไล่ทาบทั่วภาพ: Erode กัดวัตถุให้ผอมลง/ลบจุดจิ๋วรบกวน, Dilate พอกให้อ้วนขึ้น/อุดรูโหว่, Opening ลบจุดเล็กแต่คงขนาดเดิม, Closing อุดรูข้างในวัตถุ, Gradient ดึงเฉพาะเส้นขอบ ส่วน TopHat/BlackHat ดึงส่วนที่สว่าง/มืดกว่ารอบข้าง มักใช้ต่อหลัง threshold · Hit-or-Miss หาลายแม่แบบ 3×3 (บางช่องต้องขาว บางช่องต้องดำ) โดย erode ภาพขาวด้วยช่อง 'ต้องขาว' แล้ว AND กับ erode ภาพกลับด้านด้วยช่อง 'ต้องดำ' — นอกขอบภาพนับเป็น 'ไม่สน' (ตามเอกสาร bwhitmiss ของ MATLAB สร้างจาก imerode ซึ่งถือว่านอกภาพเป็น +∞ จึงน่าจะนับแบบเดียวกัน แต่ยังไม่ได้ทดสอบกับ MATLAB จริง)  · กรณีหาปลายเส้นทั่วไป Endpoints & Branchpoints สะดวกกว่า · Regional Maxima / H-maxima / Extended Maxima ใช้หา 'ยอด' ในภาพเทาหรือภาพ Distance Transform เพื่อทำ marker แยกวัตถุที่ติดกัน — noise ทำให้เกิดยอดเล็กจำนวนมาก เพิ่ม h หรือ blur ก่อน · นับแบบ 8-connected เหมือนค่าเริ่มต้นของ MATLAB",
     params: [
       { key: "op", type: "select", label: "Operation", options: [
         { value: "erode", label: "Erosion (กัดให้เล็กลง)", hint: "กัดขอบวัตถุขาวให้ผอมลง ลบจุดจิ๋วรบกวน" },
@@ -2202,7 +2230,7 @@ export const OPS = {
         { value: "fill_holes", label: "Fill Holes (อุดรูในวัตถุ)", hint: "เติมรูปิดสนิทภายในวัตถุขาว โดยไม่กระทบขนาดรอบนอก — ภาพที่ไม่ใช่ขาว-ดำล้วนจะถูก binarize ที่ค่ากึ่งกลาง 127 ก่อนเสมอ" },
         { value: "clear_border", label: "Clear Border (ลบวัตถุที่แตะขอบภาพ)", hint: "ลบวัตถุขาวที่มีพิกเซลแม้แต่จุดเดียวติดขอบภาพทั้ง 4 ด้าน — เหลือแต่วัตถุที่อยู่เต็มตัวในเฟรม" },
         { value: "remove_small", label: "Remove Small Objects (ลบวัตถุเล็ก)", hint: "ลบวัตถุขาวที่มีพื้นที่น้อยกว่าเกณฑ์ทิ้ง — ใช้ค่า 'พื้นที่ขั้นต่ำ' ด้านล่างเป็นเกณฑ์" },
-        { value: "skeleton", label: "Skeleton / Thinning (เส้นแกนกลาง)", hint: "ลดวัตถุขาวให้เหลือเส้นแกนกลางหนา 1 พิกเซล — ช้ากว่า operation อื่นในกลุ่มนี้ วิเคราะห์บนภาพย่อ ≤240px เสมอ (เหมาะกับภาพนิ่ง มากกว่ากล้องสดความละเอียดสูง) ไม่ใช้ค่า 'รูปร่าง kernel'/'ขนาด kernel'/'จำนวนรอบ' ด้านล่างเลย — ถ้าได้ภาพขาวล้วนไม่มีเส้นแกนกลางเลย ลองสลับขาว-ดำ (Invert) มาก่อน เพราะ op นี้คิดว่าพิกเซลขาวคือ 'วัตถุ' เสมอ" },
+        { value: "skeleton", label: "Skeleton / Thinning (เส้นแกนกลาง)", hint: "ลดวัตถุขาวให้เหลือเส้นแกนกลางหนา 1 พิกเซล (Zhang-Suen) ที่ความละเอียดเต็ม — ช้ากว่า operation อื่นในกลุ่มนี้ (วัตถุยิ่งหนายิ่งช้า ภาพ 1080p ที่มีก้อนใหญ่ราว 0.3 วินาที เหมาะกับภาพนิ่งมากกว่ากล้องสด) ไม่ใช้ค่า 'รูปร่าง kernel'/'ขนาด kernel'/'จำนวนรอบ' ด้านล่างเลย — ถ้าเส้นแกนกลางไปวิ่งอยู่ในพื้นหลังแทนที่จะอยู่ในวัตถุ แปลว่าพื้นหลังเป็นสีขาว ให้สลับขาว-ดำ (Invert) มาก่อน เพราะ op นี้คิดว่าพิกเซลขาวคือ 'วัตถุ' เสมอ (นอกขอบภาพนับเป็นพื้นหลัง)" },
         { value: "reconstruct_open", label: "Opening by Reconstruction (คงรูปร่างเดิม)", hint: "เหมือน Opening แต่รักษาขอบวัตถุที่รอดไว้แม่นกว่า (ไม่มุมมน) — ใช้ ksize/จำนวนรอบ ด้านล่างเป็นขนาดกัดตอนสร้าง marker แต่ 'รูปร่าง kernel' ด้านล่างไม่มีผล (ใช้ Rect เสมอตอนกัด marker)" },
         { value: "convex_hull", label: "Convex Hull (ห่อด้วยรูปนูน)", hint: "ห่อแต่ละวัตถุด้วยรูปนูนที่เล็กที่สุดที่ครอบวัตถุไว้ได้พอดี (เหมือนรัดหนังยางรอบวัตถุ) แล้วเทียบพื้นที่เดิมกับพื้นที่รูปนูนเป็นค่า solidity (รวมทุกชิ้น ชิ้นใหญ่มีน้ำหนักมากกว่า) เส้นบาง/จุดเดี่ยวก็ถูกห่อและนับเป็นหนึ่งชิ้นด้วย — ใช้หารอยบิ่น/รอยเว้าของวัตถุ (solidity ยิ่งต่ำ ยิ่งเว้าแหว่งมาก) ไม่ใช้ค่า 'รูปร่าง kernel'/'ขนาด kernel'/'จำนวนรอบ' ด้านล่างเลย" },
         { value: "endpoints_branchpoints", label: "Endpoints & Branchpoints (จุดปลาย/จุดแยก)", hint: "⚠️ ใช้ต่อจาก Skeleton เสมอ — ถ้าวัตถุยังหนาอยู่ (ไม่ใช่เส้นบาง 1 พิกเซล) การนับจะไม่มีความหมาย นับเพื่อนบ้านสีขาว 8 ทิศรอบแต่ละพิกเซลเส้น: มีเพื่อนบ้าน 1 จุด = จุดปลาย (วาดวงเขียว), ส่วนจุดแยก (วาดวงแดง) ใช้ Crossing Number (นับจำนวนช่วงที่ขาว-ดำสลับกันรอบวงแหวนเพื่อนบ้าน หาร 2) ≥3 — ไม่ใช่แค่นับจำนวนเพื่อนบ้านตรง ๆ เพราะพิกเซลข้างจุดตัดจริงก็มีเพื่อนบ้าน ≥3 ได้เหมือนกันแต่ไม่ใช่จุดแยกจริง เป็นค่าประมาณ ไม่ใช่ lookup table แบบที่ MATLAB ใช้จริง ใช้นับจำนวนกิ่ง/ปลายของรอยร้าวหรือเส้นลายเส้นได้ ไม่ใช้ค่า 'รูปร่าง kernel'/'ขนาด kernel'/'จำนวนรอบ' ด้านล่างเลย" },
@@ -2214,7 +2242,7 @@ export const OPS = {
       ], default: "erode" },
       { key: "shape", visibleWhen: [{key:"op",in:["erode","dilate","open","close","gradient","tophat","blackhat"]}], type: "select", label: "รูปร่าง kernel (ไม่มีผลกับ Skeleton และ Opening by Reconstruction)", options: [
         { value: "rect", label: "สี่เหลี่ยม (Rect)" },
-        { value: "ellipse", label: "วงรี (Ellipse, ksize เป็นสี่เหลี่ยมจัตุรัส = เท่ากับรูปทรงจาน/disk)" },
+        { value: "ellipse", label: "วงรี (Ellipse — คล้าย disk แต่อ้วนกว่า strel('disk') ของ MATLAB เล็กน้อย)" },
         { value: "cross", label: "กากบาท (Cross)" },
         { value: "diamond", label: "ข้าวหลามตัด (Diamond)", hint: "ระยะ Manhattan (|Δx|+|Δy|) ≤ รัศมี — มุมแหลมกว่า Ellipse" },
         { value: "octagon", label: "แปดเหลี่ยม (Octagon)", hint: "สี่เหลี่ยมตัดมุม — ใกล้เคียงวงกลมกว่า Diamond แต่ไม่กลมเท่า Ellipse" },
@@ -2358,70 +2386,82 @@ export const OPS = {
       }
       if (p.op === "skeleton") {
         // Zhang-Suen thinning — ไม่มี cv.ximgproc.thinning ใน build นี้ (ยืนยันแล้ว) จึงเขียนเอง
-        // เพื่อความเร็วบนกล้องสด ย่อภาพก่อนวิเคราะห์ไม่เกิน 240px (เล็กกว่า op อื่นเพราะจำนวนรอบวนซ้ำ
-        // แปรผันตาม "ความหนา" ของก้อนที่ใหญ่ที่สุดในภาพ — วัดจริงแล้ว 640x480 ช้าเกิน, 240x180 ใช้ได้)
-        const maxAnalysisSide = 240;
-        const scale = Math.min(1, maxAnalysisSide / Math.max(src.cols, src.rows));
-        let bin = null, analysis = null, small = null, dst = null;
+        // ทำที่ความละเอียดเต็มเสมอ (เดิมย่อ ≤240px แล้วขยายกลับ → เส้นหนาหลาย px ไม่ใช่ 1 px) และเติมขอบดำ 1 px รอบภาพ
+        // ให้พิกเซลแถวขอบภาพถูกบางลงได้ด้วย (นอกภาพ = พื้นหลัง เหมือน bwmorph ของ MATLAB)
+        // เร็วพอเพราะแต่ละรอบตรวจเฉพาะ "พิกเซลที่ยังอาจถูกลบได้": จุดที่ตรวจแล้วไม่ผ่านทั้ง step 1 และ 2
+        // โดยเพื่อนบ้านไม่เปลี่ยน จะไม่มีวันผ่าน จึงตัดออกจนกว่าเพื่อนบ้านจะถูกลบ — ผลเท่ากับไล่ตรวจทั้งภาพทุกรอบ
+        let bin = null, dst = null;
         try {
           bin = new cv.Mat();
           cv.threshold(src, bin, 127, 255, cv.THRESH_BINARY);
-          analysis = new cv.Mat();
-          const aw = Math.max(1, Math.round(bin.cols * scale));
-          const ah = Math.max(1, Math.round(bin.rows * scale));
-          if (scale < 1) cv.resize(bin, analysis, new cv.Size(aw, ah), 0, 0, cv.INTER_NEAREST);
-          else bin.copyTo(analysis);
-
-          const w = analysis.cols, h = analysis.rows;
-          const img = new Uint8Array(w * h);
-          const src8 = analysis.data;
-          for (let i = 0; i < img.length; i++) img[i] = src8[i] ? 1 : 0;
-          const P = (x, y, dx, dy) => {
-            const xx = x + dx, yy = y + dy;
-            if (xx < 0 || xx >= w || yy < 0 || yy >= h) return 0;
-            return img[yy * w + xx];
-          };
-          let changed = true;
-          let iterations = 0;
-          const MAX_ITER = 100;
-          while (changed && iterations < MAX_ITER) {
-            changed = false;
-            iterations++;
-            for (const step of [1, 2]) {
-              const toDelete = [];
-              for (let y = 1; y < h - 1; y++) {
-                for (let x = 1; x < w - 1; x++) {
-                  if (img[y * w + x] !== 1) continue;
-                  const p2 = P(x, y, 0, -1), p3 = P(x, y, 1, -1), p4 = P(x, y, 1, 0), p5 = P(x, y, 1, 1);
-                  const p6 = P(x, y, 0, 1), p7 = P(x, y, -1, 1), p8 = P(x, y, -1, 0), p9 = P(x, y, -1, -1);
-                  const neighbors = [p2, p3, p4, p5, p6, p7, p8, p9];
-                  const B = neighbors.reduce((a, b) => a + b, 0);
-                  if (B < 2 || B > 6) continue;
-                  let A = 0;
-                  for (let i = 0; i < 8; i++) if (neighbors[i] === 0 && neighbors[(i + 1) % 8] === 1) A++;
-                  if (A !== 1) continue;
-                  if (step === 1) { if (p2 * p4 * p6 !== 0 || p4 * p6 * p8 !== 0) continue; }
-                  else { if (p2 * p4 * p8 !== 0 || p2 * p6 * p8 !== 0) continue; }
-                  toDelete.push(y * w + x);
-                }
-              }
-              if (toDelete.length > 0) { changed = true; for (const idx of toDelete) img[idx] = 0; }
+          const w = bin.cols, h = bin.rows;
+          const W = w + 2;
+          const img = new Uint8Array(W * (h + 2));
+          const fail = new Uint8Array(img.length); // bit 1 = ตรวจที่ step 1 แล้วไม่ผ่าน, bit 2 = step 2
+          const inList = new Uint8Array(img.length);
+          let active = [];
+          const b8 = bin.data;
+          for (let y = 0; y < h; y++) {
+            for (let x = 0; x < w; x++) {
+              if (!b8[y * w + x]) continue;
+              const i = (y + 1) * W + x + 1;
+              img[i] = 1;
+              inList[i] = 1;
+              active.push(i);
             }
           }
-          small = new cv.Mat(h, w, cv.CV_8UC1);
-          for (let i = 0; i < img.length; i++) small.data[i] = img[i] ? 255 : 0;
-          dst = new cv.Mat();
-          if (scale < 1) cv.resize(small, dst, new cv.Size(src.cols, src.rows), 0, 0, cv.INTER_NEAREST);
-          else small.copyTo(dst);
-          if (ctx) ctx.info = `Skeleton (thinning) — ${iterations} รอบ (วิเคราะห์ที่ ${w}x${h}px แล้วขยายกลับ)`;
+          // ลำดับเพื่อนบ้าน p2..p9 ตามเข็มนาฬิกาเริ่มจากบน
+          const OFF = [-W, -W + 1, 1, W + 1, W, W - 1, -1, -W - 1];
+          let iterations = 0;
+          for (;;) {
+            iterations++;
+            let changed = false;
+            for (const step of [1, 2]) {
+              const toDelete = [];
+              for (const i of active) {
+                if (!img[i]) continue;
+                const p2 = img[i - W], p3 = img[i - W + 1], p4 = img[i + 1], p5 = img[i + W + 1];
+                const p6 = img[i + W], p7 = img[i + W - 1], p8 = img[i - 1], p9 = img[i - W - 1];
+                const B = p2 + p3 + p4 + p5 + p6 + p7 + p8 + p9;
+                const A = (!p2 && p3) + (!p3 && p4) + (!p4 && p5) + (!p5 && p6)
+                  + (!p6 && p7) + (!p7 && p8) + (!p8 && p9) + (!p9 && p2);
+                let ok = B >= 2 && B <= 6 && A === 1;
+                if (ok) ok = step === 1 ? (p2 * p4 * p6 === 0 && p4 * p6 * p8 === 0) : (p2 * p4 * p8 === 0 && p2 * p6 * p8 === 0);
+                if (ok) toDelete.push(i);
+                else fail[i] |= step;
+              }
+              if (toDelete.length === 0) continue;
+              changed = true;
+              for (const i of toDelete) img[i] = 0;
+              for (const i of toDelete) {
+                for (const o of OFF) {
+                  const j = i + o;
+                  if (!img[j]) continue;
+                  fail[j] = 0; // เพื่อนบ้านเปลี่ยน → ต้องตรวจใหม่ทั้งสอง step
+                  if (!inList[j]) { inList[j] = 1; active.push(j); }
+                }
+              }
+              const next = [];
+              for (const i of active) {
+                if (img[i] && fail[i] !== 3) next.push(i);
+                else inList[i] = 0;
+              }
+              active = next;
+            }
+            if (!changed) break;
+          }
+          dst = new cv.Mat(h, w, cv.CV_8UC1);
+          const out = dst.data;
+          for (let y = 0; y < h; y++) {
+            for (let x = 0; x < w; x++) out[y * w + x] = img[(y + 1) * W + x + 1] ? 255 : 0;
+          }
+          if (ctx) ctx.info = `Skeleton (thinning) — ${iterations} รอบ ที่ ${w}x${h}px`;
           return dst;
         } catch (err) {
           if (dst) dst.delete();
           throw err;
         } finally {
           if (bin) bin.delete();
-          if (analysis) analysis.delete();
-          if (small) small.delete();
         }
       }
       if (p.op === "reconstruct_open") {
@@ -3762,7 +3802,7 @@ export const OPS = {
       { key: "blockSize", type: "number", label: "ขนาดพื้นที่รอบจุด", min: 2, max: 15, step: 1, default: 2, hint: "① พื้นที่ (px) ที่ใช้ดูรอบแต่ละพิกเซล" },
       { key: "ksize", type: "number", label: "ขนาด Sobel kernel", min: 1, max: 7, step: 2, default: 3, hint: "② ต้องเป็นเลขคี่เสมอ — ปรับความคมของขอบที่ใช้วิเคราะห์" },
       { key: "k", type: "number", label: "ค่า k (Harris)", min: 0.01, max: 0.3, step: 0.01, default: 0.04, hint: "③ ปกติ 0.04–0.06" },
-      { key: "thresh", type: "number", label: "ความไวจับมุม (%)", min: 1, max: 100, step: 1, default: 1, hint: "④ ต่ำ=เจอมุมเยอะ(มีของปลอมปน), สูง=เฉพาะมุมชัด" },
+      { key: "thresh", type: "number", label: "ความไวจับมุม (%)", min: 1, max: 100, step: 1, default: 1, hint: "④ เกณฑ์ = กี่ % ของค่าตอบสนองสูงสุดในภาพ (1% = MinQuality 0.01 ค่าเริ่มต้นของ MATLAB) · ต่ำ=เจอมุมเยอะ(มีของปลอมปน), สูง=เฉพาะมุมชัด" },
     ],
     apply(cv, src, p, ctx) {
       // ภาพใหญ่วิ่ง cornerHarris เต็มความละเอียดจะช้า — วิเคราะห์บนภาพย่อไม่เกิน 480px แล้วคูณพิกัดกลับ
@@ -3770,9 +3810,8 @@ export const OPS = {
       const scale = Math.min(1, maxAnalysisSide / Math.max(src.cols, src.rows));
       const analysis = new cv.Mat();
       const resp = new cv.Mat();
-      const norm = new cv.Mat();
-      const mask8 = new cv.Mat();
-      const kern = cv.getStructuringElement(cv.MORPH_ELLIPSE, new cv.Size(3, 3));
+      const dil = new cv.Mat();
+      const kern = cv.Mat.ones(3, 3, cv.CV_8U);
       let out = null;
       try {
         if (scale < 1) {
@@ -3784,21 +3823,29 @@ export const OPS = {
         }
         const ksize = p.ksize % 2 === 0 ? p.ksize + 1 : p.ksize; // Sobel kernel ต้องเป็นเลขคี่
         cv.cornerHarris(analysis, resp, p.blockSize, ksize, p.k, cv.BORDER_DEFAULT);
-        cv.normalize(resp, norm, 0, 255, cv.NORM_MINMAX, cv.CV_32FC1);
-        norm.convertTo(mask8, cv.CV_8UC1);
-        cv.threshold(mask8, mask8, (p.thresh / 100) * 255, 255, cv.THRESH_BINARY);
-        // ขยายจุด (dilate วงรี 3x3 = กากบาท 5 พิกเซล) แล้วนับ "พิกเซลของมาสก์ที่ขยายแล้ว" — ไม่ได้รวมมุมเป็นจุดเดียว: ตัวเลขจึงอาจมากกว่าจำนวนมุมจริงราว 5 เท่า (คงพฤติกรรมเดิม — ผู้ใช้เป็นคนตัดสินใจว่าจะเปลี่ยนวิธีนับหรือไม่)
-        cv.dilate(mask8, mask8, kern);
-
-        // build นี้ไม่ผูก cv.findNonZero มาให้ (มีแค่ใน type declaration) — อ่าน mask8.data (Uint8Array)
-        // ตรงๆ แทน ได้ทั้งเร็วกว่า (ไม่เรียก WASM ทีละพิกเซล) และไม่พึ่งฟังก์ชันที่ไม่มีจริง
-        const data = mask8.data;
-        const cols = mask8.cols;
+        // เกณฑ์ = thresh% ของค่า R สูงสุด (แบบ MinQuality ของ MATLAB corner/detectHarrisFeatures) — เดิม normalize
+        // min-max ก่อน ซึ่ง R ของขอบติดลบ ทำให้พื้นเรียบ (R≈0) กลายเป็น ~70–85/255 และผ่านเกณฑ์ต่ำ ๆ ทั้งภาพ
+        // แล้วเก็บเฉพาะจุดที่เป็นค่าสูงสุดในหน้าต่าง 3x3 (non-max suppression) → 1 จุดต่อ 1 มุม ไม่ใช่นับพิกเซล
+        cv.dilate(resp, dil, kern);
+        const maxR = cv.minMaxLoc(resp).maxVal;
+        const R = resp.data32F;
+        const D = dil.data32F;
+        const cols = resp.cols;
+        const taken = new Uint8Array(R.length); // ค่าเท่ากันติดกัน (plateau) เก็บแค่ตัวแรกตามลำดับแถว
         const points = [];
-        for (let idx = 0; idx < data.length; idx++) {
-          if (data[idx]) {
-            points.push(idx % cols, (idx / cols) | 0);
+        if (maxR > 0) {
+          const thr = (p.thresh / 100) * maxR;
+          for (let idx = 0; idx < R.length; idx++) {
+            if (R[idx] < thr || R[idx] < D[idx] || taken[idx]) continue; // >= เกณฑ์ → 100% ยังได้จุดสูงสุด
+            const x = idx % cols, y = (idx / cols) | 0;
+            points.push(x, y);
             if (points.length / 2 > 3000) break; // threshold ต่ำเกินไป → เจอเป็นพัน หยุดก่อนค้าง
+            for (let dy = -1; dy <= 1; dy++) {
+              for (let dx = -1; dx <= 1; dx++) {
+                const xx = x + dx, yy = y + dy;
+                if (xx >= 0 && xx < cols && yy >= 0 && yy < resp.rows) taken[yy * cols + xx] = 1;
+              }
+            }
           }
         }
 
@@ -3823,8 +3870,7 @@ export const OPS = {
       } finally {
         analysis.delete();
         resp.delete();
-        norm.delete();
-        mask8.delete();
+        dil.delete();
         kern.delete();
       }
     },
@@ -5169,7 +5215,7 @@ export const OPS = {
   imarith: {
     name: "Add / Subtract / Multiply / Divide (A ∘ B)",
     needs: "any",
-    desc: "คำนวณเลขคณิตระหว่างภาพสองใบทีละพิกเซล (เหมือน imadd/imsubtract/immultiply/imdivide ของ MATLAB) — ผลเป็นภาพ 8 บิต ค่าที่เกิน 255 ถูกตัดที่ 255 และค่าที่ติดลบถูกตัดเป็น 0 (ไม่วนกลับ) · บวก: รวมความสว่างสองภาพ · ลบ: A − B ตรงที่ B สว่างกว่า A จะได้ 0 (ถ้าต้องการความต่างทั้งสองทางให้ใช้ Absolute Difference) · คูณ: A × B ÷ 255 ตรงที่ B ขาว (255) ได้ค่า A เดิม ตรงที่ B ดำได้ 0 จึงใช้ B เป็นหน้ากากแบบนุ่มได้ · หาร: A ÷ B × 255 ตรงที่ B = 0 ได้ 0 (พฤติกรรมของ OpenCV) · ถ้าภาพหนึ่งเป็นสีอีกภาพเป็นขาวดำ จะแปลงทั้งคู่เป็นภาพสีก่อน ต่อสาย 'เข้า B' เพื่อกำหนดภาพที่สอง",
+    desc: "คำนวณเลขคณิตระหว่างภาพสองใบทีละพิกเซล — ผลเป็นภาพ 8 บิต ค่าที่เกิน 255 ถูกตัดที่ 255 และค่าที่ติดลบถูกตัดเป็น 0 (ไม่วนกลับ) · บวก: รวมความสว่างสองภาพ · ลบ: A − B ตรงที่ B สว่างกว่า A จะได้ 0 (ถ้าต้องการความต่างทั้งสองทางให้ใช้ Absolute Difference) · คูณ: A × B ÷ 255 ตรงที่ B ขาว (255) ได้ค่า A เดิม ตรงที่ B ดำได้ 0 จึงใช้ B เป็นหน้ากากแบบนุ่มได้ · หาร: A ÷ B × 255 ตรงที่ B = 0 ได้ 0 (พฤติกรรมของ OpenCV) · บวก/ลบให้ผลเท่า imadd/imsubtract ของ MATLAB แต่คูณ/หารต่างกัน: immultiply คิด A × B แล้วตัดที่ 255, imdivide คิด A ÷ B (A > 0 กับ B = 0 ได้ 255) — ของแอปสเกลด้วย 255 ให้ใช้ B เป็นหน้ากากได้ · ถ้าภาพหนึ่งเป็นสีอีกภาพเป็นขาวดำ จะแปลงทั้งคู่เป็นภาพสีก่อน ต่อสาย 'เข้า B' เพื่อกำหนดภาพที่สอง",
     params: [
       { key: "operation", type: "select", label: "การคำนวณ", options: [
         { value: "add", label: "บวก (A + B)", hint: "เกิน 255 ตัดที่ 255" },
@@ -6924,7 +6970,7 @@ export const OPS = {
   guided_filter: {
     name: "Guided Filter (เกลี่ยแบบรักษาขอบ)",
     needs: "any",
-    desc: "เกลี่ยภาพให้เรียบแต่คงขอบไว้: ใช้ 'ภาพนำทาง' (guide) บอกว่าขอบอยู่ตรงไหน แล้วเกลี่ยเฉพาะบริเวณเรียบ — กล่องนี้ใช้ภาพตัวเองเป็นภาพนำทาง (self-guided แบบค่าเริ่มต้นของ imguidedfilter ใน MATLAB) · ผลคล้าย Bilateral แต่คำนวณด้วย box filter ล้วน ความเร็วจึงไม่ขึ้นกับขนาดหน้าต่าง · ภาพสีทำทีละช่อง R/G/B — MATLAB กับภาพสีใช้ทั้ง 3 ช่องร่วมกันเป็นภาพนำทาง ขอบสีจึงต่างจาก MATLAB เล็กน้อย · ขอบภาพใช้การสะท้อนค่า · เป็นตัวช่วยของ Dehaze ในชุดถัดไป (ปรับแผนที่ความโปร่งใสให้ตามขอบวัตถุ)",
+    desc: "เกลี่ยภาพให้เรียบแต่คงขอบไว้: ใช้ 'ภาพนำทาง' (guide) บอกว่าขอบอยู่ตรงไหน แล้วเกลี่ยเฉพาะบริเวณเรียบ — กล่องนี้ใช้ภาพตัวเองเป็นภาพนำทาง (self-guided แบบค่าเริ่มต้นของ imguidedfilter ใน MATLAB) · ผลคล้าย Bilateral แต่คำนวณด้วย box filter ล้วน ความเร็วจึงไม่ขึ้นกับขนาดหน้าต่าง · ภาพสีทำทีละช่อง R/G/B (เหมือน imguidedfilter ของ MATLAB เมื่อภาพและภาพนำทางเป็นภาพสีทั้งคู่) · ขอบภาพใช้การสะท้อนค่า · เป็นตัวช่วยของ Dehaze ในชุดถัดไป (ปรับแผนที่ความโปร่งใสให้ตามขอบวัตถุ)",
     params: [
       { key: "radius", type: "number", label: "รัศมีหน้าต่าง r", min: 1, max: 20, step: 1, default: 2, desc: "หน้าต่าง (2r+1)×(2r+1) — MATLAB ค่าเริ่มต้น 5×5 (r = 2)" },
       { key: "eps", type: "number", label: "ความเรียบ ε", min: 0.001, max: 1, step: 0.001, default: 0.01, hint: "MATLAB ค่าเริ่มต้น 0.01", desc: "ขอบที่ต่างกันน้อยกว่าราว √ε × 255 ระดับจะถูกเกลี่ย ขอบที่ต่างกว่านั้นถูกรักษาไว้" },
@@ -7118,7 +7164,7 @@ export const OPS = {
   delta_e: {
     name: "Color Difference ΔE (ความต่างสี)",
     needs: "any",
-    desc: "วัดความต่างของสีสองภาพเป็นตัวเลขเดียวต่อพิกเซล (ΔE) · แปลงเป็น Lab ก่อน เพราะระยะใน Lab ใกล้การรับรู้ของคนกว่า RGB · ตัวเลขช่วยอ่าน: ต่ำกว่า 1 แทบมองไม่ออก · ราว 2–3 เริ่มเห็นเมื่อวางคู่กัน · เกิน 5 เห็นชัด · เกิน 10 คนละสี (ค่าประมาณ ขึ้นกับสีและแสง) · CIEDE2000 แก้ข้อที่ CIE76 ให้ค่าสูงเกินในสีอิ่มจัด ใช้ในงานตรวจสีสินค้าปัจจุบัน · \"สีเฉลี่ยของ B\" ใช้ตรวจว่าชิ้นงานสีตรงกับชิ้นตัวอย่างไหม: ตัดชิ้นตัวอย่างด้วย Crop แล้วต่อเข้า B · กล้องที่ปรับแสง/White Balance อัตโนมัติทำให้ ΔE เปลี่ยนเองแม้ของจริงไม่เปลี่ยน — ล็อกการตั้งค่ากล้องก่อนวัดจริง · เทียบ imcolordiff ของ MATLAB (ค่าเริ่มต้นของ MATLAB คือ CIE76) · ภาพ Lab 8 bit ใน Color Space Convert ใช้วัดแบบนี้ไม่ได้เพราะถูกบีบสเกล",
+    desc: "วัดความต่างของสีสองภาพเป็นตัวเลขเดียวต่อพิกเซล (ΔE) · แปลงเป็น Lab ก่อน เพราะระยะใน Lab ใกล้การรับรู้ของคนกว่า RGB · ตัวเลขช่วยอ่าน: ต่ำกว่า 1 แทบมองไม่ออก · ราว 2–3 เริ่มเห็นเมื่อวางคู่กัน · เกิน 5 เห็นชัด · เกิน 10 คนละสี (ค่าประมาณ ขึ้นกับสีและแสง) · CIEDE2000 แก้ข้อที่ CIE76 ให้ค่าสูงเกินในสีอิ่มจัด ใช้ในงานตรวจสีสินค้าปัจจุบัน · \"สีเฉลี่ยของ B\" ใช้ตรวจว่าชิ้นงานสีตรงกับชิ้นตัวอย่างไหม: ตัดชิ้นตัวอย่างด้วย Crop แล้วต่อเข้า B · กล้องที่ปรับแสง/White Balance อัตโนมัติทำให้ ΔE เปลี่ยนเองแม้ของจริงไม่เปลี่ยน — ล็อกการตั้งค่ากล้องก่อนวัดจริง · เทียบ deltaE (CIE76) ของ MATLAB · imcolordiff ของ MATLAB ค่าเริ่มต้นเป็น CIE94 ซึ่งแอปไม่มี ต้องตั้ง \"ciede2000\" ถึงจะเทียบกับโหมด CIEDE2000 ได้ · ภาพ Lab 8 bit ใน Color Space Convert ใช้วัดแบบนี้ไม่ได้เพราะถูกบีบสเกล",
     params: [
       { key: "formula", type: "select", label: "สูตร", options: [
         { value: "cie76", label: "CIE76 (ระยะตรงใน Lab)" },
@@ -7668,7 +7714,7 @@ export const OPS = {
     needs: "any",
     desc: "สมมติฐาน dark channel: ภาพกลางแจ้งที่ไม่มีหมอก ในหน้าต่างเล็ก ๆ จะมีช่องสีใดช่องหนึ่งที่มืดเกือบ 0 — หมอกทำให้ค่านี้สูงขึ้น จึงใช้ประมาณความหนาของหมอก · A = สีของหมอก (จากจุดที่หมอกหนา) · t = สัดส่วนแสงจากวัตถุที่ทะลุหมอกมาถึงกล้อง · ท้องฟ้าและวัตถุสีขาวขัดกับสมมติฐาน → อาจสีเพี้ยน/คล้ำเกินจริง · guided filter ทำให้แผนที่หมอกตามขอบวัตถุ ไม่เป็นบล็อก · เทียบ imreducehaze ของ MATLAB (หลักการเดียวกัน รายละเอียดต่าง) · พบไม่บ่อยในงาน Machine Vision ในโรงงาน แต่เห็นผลชัดกับภาพกลางแจ้ง",
     params: [
-      { key: "amount", type: "number", label: "ปริมาณการลดหมอก ω", min: 0.1, max: 1, step: 0.05, default: 0.95, hint: "MATLAB imreducehaze ค่าเริ่มต้น 0.95" },
+      { key: "amount", type: "number", label: "ปริมาณการลดหมอก ω", min: 0.1, max: 1, step: 0.05, default: 0.95, hint: "ค่าเริ่มต้นของแอป 0.95 (ตามบทความ dark channel ของ He et al.) · imreducehaze ของ MATLAB ใช้ Amount เริ่มต้น 1 และวิธีต่างกัน ผลจึงไม่เท่ากัน" },
       { key: "patch", type: "number", label: "ขนาดหน้าต่าง dark channel (px)", min: 3, max: 31, step: 2, default: 15 },
       { key: "refine", type: "boolean", label: "เกลี่ยแผนที่หมอกตามขอบวัตถุ (guided filter)", default: true },
       { key: "view", type: "select", label: "แสดงผลเป็น", options: [
@@ -8166,7 +8212,7 @@ const MORPH_SPLIT = [
     desc: "ลบวัตถุขาวที่มีพื้นที่น้อยกว่าเกณฑ์ 'พื้นที่ขั้นต่ำ' ทิ้ง — ต่างจาก Opening ตรงที่ไม่ทำให้วัตถุที่เหลือเปลี่ยนรูป ใช้ล้างจุด noise ก่อนนับวัตถุ" },
   { op: "skeleton", name: "Skeleton (เส้นแกนกลาง)",
     modeHint: "ลดวัตถุขาวให้เหลือเส้นแกนกลางหนา 1 พิกเซล",
-    desc: "ลดวัตถุขาวให้เหลือเส้นแกนกลางหนา 1 พิกเซล — ช้ากว่า operation อื่นในหมวดนี้ วิเคราะห์บนภาพย่อ ≤240px เสมอ (เหมาะกับภาพนิ่ง มากกว่ากล้องสดความละเอียดสูง) ไม่มีพารามิเตอร์ให้ปรับ · ถ้าได้ภาพขาวล้วนไม่มีเส้นแกนกลางเลย ลองสลับขาว-ดำ (Invert) มาก่อน เพราะ op นี้คิดว่าพิกเซลขาวคือ 'วัตถุ' เสมอ" },
+    desc: "ลดวัตถุขาวให้เหลือเส้นแกนกลางหนา 1 พิกเซล (Zhang-Suen) ที่ความละเอียดเต็ม — ช้ากว่า operation อื่นในหมวดนี้ (วัตถุยิ่งหนายิ่งช้า ภาพ 1080p ที่มีก้อนใหญ่ราว 0.3 วินาที เหมาะกับภาพนิ่งมากกว่ากล้องสด) ไม่มีพารามิเตอร์ให้ปรับ · ถ้าเส้นแกนกลางไปวิ่งอยู่ในพื้นหลังแทนที่จะอยู่ในวัตถุ แปลว่าพื้นหลังเป็นสีขาว ให้สลับขาว-ดำ (Invert) มาก่อน เพราะ op นี้คิดว่าพิกเซลขาวคือ 'วัตถุ' เสมอ (นอกขอบภาพนับเป็นพื้นหลัง)" },
   { op: "reconstruct_open", name: "Recon. Opening (คงรูปร่าง)",
     modeHint: "เหมือน Opening แต่รักษาขอบวัตถุที่รอดไว้แม่นกว่า (ไม่มุมมน)",
     desc: "เหมือน Opening แต่รักษาขอบวัตถุที่รอดไว้แม่นกว่า (ไม่มุมมน): กัดภาพเป็น marker แล้วคืนรูปร่างเดิมให้ทุกวัตถุที่ยังเหลือ marker อยู่ — ขนาด kernel/จำนวนรอบ คือขนาดกัดตอนสร้าง marker (ใช้ kernel สี่เหลี่ยมเสมอ จึงไม่มีตัวเลือกรูปร่าง)" },
@@ -8178,7 +8224,7 @@ const MORPH_SPLIT = [
     desc: "⚠️ ใช้ต่อจาก Skeleton เสมอ — ถ้าวัตถุยังหนาอยู่ (ไม่ใช่เส้นบาง 1 พิกเซล) การนับจะไม่มีความหมาย นับเพื่อนบ้านสีขาว 8 ทิศรอบแต่ละพิกเซลเส้น: มีเพื่อนบ้าน 1 จุด = จุดปลาย (วาดวงเขียว), ส่วนจุดแยก (วาดวงแดง) ใช้ Crossing Number (นับจำนวนช่วงที่ขาว-ดำสลับกันรอบวงแหวนเพื่อนบ้าน หาร 2) ≥3 — ไม่ใช่แค่นับจำนวนเพื่อนบ้านตรง ๆ เพราะพิกเซลข้างจุดตัดจริงก็มีเพื่อนบ้าน ≥3 ได้เหมือนกันแต่ไม่ใช่จุดแยกจริง เป็นค่าประมาณ ไม่ใช่ lookup table แบบที่ MATLAB ใช้จริง ใช้นับจำนวนกิ่ง/ปลายของรอยร้าวหรือเส้นลายเส้นได้ ไม่มีพารามิเตอร์ให้ปรับ" },
   { op: "hit_or_miss", name: "Hit-or-Miss (หาลายแม่แบบ)",
     modeHint: "หาตำแหน่งที่ลายรอบพิกเซลตรงแม่แบบ: บางช่องต้องขาว บางช่องต้องดำ",
-    desc: "หาตำแหน่งที่ลายรอบพิกเซลตรงแม่แบบ 3×3: บางช่องต้องขาว บางช่องต้องดำ บางช่องไม่สน — ทำโดย erode ภาพขาวด้วยช่อง 'ต้องขาว' แล้ว AND กับ erode ภาพกลับด้านด้วยช่อง 'ต้องดำ' · ภาพที่ไม่ใช่ขาว-ดำล้วนจะถูกตัดที่ 127 ก่อน · นอกขอบภาพ OpenCV นับเป็น 'ไม่สน' ส่วน MATLAB bwhitmiss นับเป็นดำ จุดที่ติดขอบภาพจึงอาจนับต่างกัน · กรณีหาปลายเส้นทั่วไป Endpoints & Branchpoints สะดวกกว่า" },
+    desc: "หาตำแหน่งที่ลายรอบพิกเซลตรงแม่แบบ 3×3: บางช่องต้องขาว บางช่องต้องดำ บางช่องไม่สน — ทำโดย erode ภาพขาวด้วยช่อง 'ต้องขาว' แล้ว AND กับ erode ภาพกลับด้านด้วยช่อง 'ต้องดำ' · ภาพที่ไม่ใช่ขาว-ดำล้วนจะถูกตัดที่ 127 ก่อน · นอกขอบภาพนับเป็น 'ไม่สน' (ตามเอกสาร bwhitmiss ของ MATLAB สร้างจาก imerode ซึ่งถือว่านอกภาพเป็น +∞ จึงน่าจะนับแบบเดียวกัน แต่ยังไม่ได้ทดสอบกับ MATLAB จริง)  · กรณีหาปลายเส้นทั่วไป Endpoints & Branchpoints สะดวกกว่า" },
   { op: "regional_max", name: "Regional Max (ยอดเฉพาะที่)",
     modeHint: "บริเวณที่สว่างกว่าทุกพิกเซลรอบตัว (ใช้ภาพเทา)",
     desc: "บริเวณที่สว่างกว่าทุกพิกเซลรอบตัว (ใช้ภาพเทา ไม่ตัด 127) — ผลเป็นภาพขาว-ดำ ใช้หา 'ยอด' ในภาพเทาหรือภาพ Distance Transform เพื่อทำ marker แยกวัตถุที่ติดกัน · noise ทำให้เกิดยอดเล็กจำนวนมาก ลอง blur ก่อน หรือใช้ H-maxima / Extended Maxima · นับแบบ 8-connected เหมือนค่าเริ่มต้นของ MATLAB ไม่มีพารามิเตอร์ให้ปรับ" },

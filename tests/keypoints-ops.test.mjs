@@ -921,7 +921,7 @@ function harrisCornerPositions(pipeline, inputRaw) {
   const returnIdx = patched.lastIndexOf('    return img');
   assert.ok(returnIdx > 0, 'harris_corners codegen must end with "    return img" inside process()');
   patched = patched.slice(0, returnIdx)
-    + `    with open(sys.argv[2], 'w') as _f:\n        json.dump([[float(x*inv_scale), float(y*inv_scale)] for x, y in zip(xs, ys)], _f)\n    return img\n`
+    + `    with open(sys.argv[2], 'w') as _f:\n        json.dump([[float(x*inv_scale), float(y*inv_scale)] for x, y in pts], _f)\n    return img\n`
     + patched.slice(returnIdx + '    return img'.length);
   const mainIdx = patched.indexOf('if __name__ == "__main__":');
   patched = patched.slice(0, mainIdx) + '\nimport sys, json\nprocess(sys.argv[1])\n';
@@ -1032,7 +1032,7 @@ test('keypoints-21. qa delta #17 MAJOR-A fix: Shi-Tomasi JS-vs-Python parity at 
 
 // B5 (backlog 2026-10-17): เดิมเป็น `todo` เพราะ Python นับพิกเซลดิบ ส่วนแอปรวมพิกเซลติดกันด้วย dilate ก่อนนับ —
 // ตัดสินใจคงพฤติกรรมของแอป แล้วให้ Python ที่ export ทำ dilate-then-count เหมือนกัน → ตอนนี้เป็นเทสต์จริง (ไม่มี todo)
-test('keypoints-22. harris_corners count matches between JS and Python (B5, backlog 2026-10-17: the exported Python now does the same convert -> threshold -> 3x3 ellipse dilate -> count-nonzero as the app, instead of counting raw thresholded pixels)', () => {
+test('keypoints-22. harris_corners count matches between JS and Python (2026-10-21: both threshold at thresh% of max R + 3x3 non-max suppression, one point per corner)', () => {
   const w = 400, h = 350; // <=480px -- isolates the divergence from the downscale question entirely
   const src = parityTestImage(w, h);
   const c = new cv.Mat(); cv.cvtColor(src, c, cv.COLOR_GRAY2RGB);
@@ -1047,7 +1047,6 @@ test('keypoints-22. harris_corners count matches between JS and Python (B5, back
   const jsCount = Number(jsCountMatch[1]);
 
   const pyPts = harrisCornerPositions([{ id: 'harris_corners', params }], raw);
-  // JS counts the pixels of a dilated/merged mask; the exported Python does the same dilate-then-count (B5).
   assert.ok(jsCount > 0);
   assert.equal(jsCount, pyPts.length, `Harris corner count parity: JS=${jsCount} Python=${pyPts.length}`);
 

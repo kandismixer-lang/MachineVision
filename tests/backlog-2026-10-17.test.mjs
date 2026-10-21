@@ -211,17 +211,18 @@ test('bl-B4b. harris_corners / shi_tomasi_corners: the analysis size goes throug
 // ===================================================================
 // B5 (P-10) Harris: Python ทำ dilate-then-count เหมือนแอป
 // ===================================================================
-test('bl-B5a. harris_corners Python does the app\'s convert -> threshold -> 3x3 ellipse dilate -> count-nonzero (no raw "resp > thresh" counting), and the 3000-corner cap like the app', () => {
+test('bl-B5a. harris_corners Python mirrors the app (2026-10-21): threshold = thresh% of max R (no min-max normalize), 3x3 non-max suppression, 3000-corner cap', () => {
   const py = code([step('harris_corners', { thresh: 60 })]);
-  assert.ok(py.includes('mask8 = cv2.convertScaleAbs(resp)'));
-  assert.ok(py.includes('cv2.threshold(mask8, 60 / 100 * 255, 255, cv2.THRESH_BINARY)'));
-  assert.ok(py.includes('cv2.dilate(mask8, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3)))'));
-  assert.ok(py.includes('ys, xs = np.where(mask8 > 0)'));
-  assert.ok(py.includes('if len(xs) > 3000:'));
-  assert.ok(!py.includes('np.where(resp > thresh)'));
-  // app side keeps the dilate (what learners see)
-  assert.ok(/cv\.dilate\(mask8, mask8, kern\)/.test(readSrc('filters/registry.js')));
+  assert.ok(py.includes('dil = cv2.dilate(resp, np.ones((3, 3), np.uint8))'));
+  assert.ok(py.includes('thr = 60 / 100 * max_r'));
+  assert.ok(py.includes('(resp >= dil)'));
+  assert.ok(py.includes('if len(pts) > 3000:'));
+  assert.ok(!py.includes('NORM_MINMAX'));
+  const app = readSrc('filters/registry.js');
+  const harris = app.slice(app.indexOf('  harris_corners: {'), app.indexOf('  shi_tomasi_corners: {'));
+  assert.ok(!harris.includes('NORM_MINMAX'), 'app must not min-max normalize the Harris response (flat areas would pass the threshold)');
 });
+
 test('bl-B5b. harris_corners: exported Python image == app image (<= 40 px of circle-edge noise) and the printed count == the app info count, at 200x150 / 400x350 / 700x500 (downscale), blockSize 2 and 5, thresh 20 / 60', PY_SKIP, () => {
   for (const [w, h] of [[200, 150], [400, 350], [700, 500]]) {
     const src = cornerRGB(w, h);
