@@ -72,9 +72,14 @@
             <div id="ann-toolbar" class="annotate-toolbar hidden"></div>
             <div id="ann-empty-classes" class="annotate-empty hidden"></div>
             <div id="camera-error" class="camera-error hidden"></div>
-            <!-- โหมดวิดีโอ: เล่นวิดีโอปกติในแหล่งภาพ + ปุ่มแยกเฟรม -->
+            <!-- โหมดวิดีโอ: ต่อกล่องผลลัพธ์แล้ว → จอใหญ่โชว์ผล + แถบล่างนี้ (ภาพต้นฉบับย่อ + ปุ่มเล่น/เลื่อนเวลา) · ยังไม่ต่อ → เล่นวิดีโอเต็มจอแบบเดิม -->
             <div id="video-source" class="video-source hidden">
               <video id="source-video" class="source-video" controls playsinline></video>
+              <div class="vs-ctl">
+                <button id="vs-play" class="btn vs-play" type="button" title="เล่น / หยุดวิดีโอ" aria-label="เล่นหรือหยุดวิดีโอ">⏸</button>
+                <input id="vs-seek" class="vs-seek" type="range" min="0" max="1000" step="1" value="0" aria-label="ตำแหน่งในวิดีโอ" title="ลากเพื่อเลื่อนเวลาในวิดีโอ">
+                <span id="vs-time" class="vs-time mono">0:00 / 0:00</span>
+              </div>
               <div class="vs-bar">
                 <button id="vs-split" class="btn btn-primary">🎬 แยกเฟรมจากวิดีโอนี้</button>
                 <button id="vs-close" class="btn">✕ ปิดวิดีโอ</button>

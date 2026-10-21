@@ -2544,6 +2544,7 @@ function playVideoSource(file) {
   videoSourceEl.classList.remove("hidden");
   sourceVideoEl.src = videoURL;
   sourceVideoEl.play().catch(() => {});
+  syncVideoLayout();
   sourceBar.render();
 }
 function closeVideoSource() {
@@ -2553,6 +2554,73 @@ function closeVideoSource() {
   if (videoURL) { URL.revokeObjectURL(videoURL); videoURL = null; }
   videoFile = null;
   videoSourceEl.classList.add("hidden");
+  stageBodyEl.classList.remove("video-mode");
+  sourceVideoEl.controls = true;
+}
+
+// ต่อกล่องผลลัพธ์อยู่ → จอใหญ่โชว์ผล (มีกรอบ detect) + แถบวิดีโอย่อด้านล่าง
+// ยังไม่ต่อ → เล่นวิดีโอเต็มจอแบบเดิม (จอผลลัพธ์ว่างเปล่า ไม่มีอะไรให้ดู)
+const stageBodyEl = gridEl.parentElement;
+function syncVideoLayout() {
+  const docked = state.source === "video" && !!videoURL && connectedDisplayIds().length > 0;
+  if (stageBodyEl.classList.contains("video-mode") === docked) return;
+  stageBodyEl.classList.toggle("video-mode", docked);
+  gridEl.classList.toggle("hidden", !docked);
+  sourceVideoEl.controls = !docked; // ตอนย่อใช้ปุ่มของแถบเราเอง (ปุ่มในตัววิดีโอเล็กเกินกดได้)
+  if (docked) processVideoFrame(); // ไม่รอเฟรมถัดไป — เผื่อวิดีโอหยุดอยู่
+}
+
+// ส่งเฟรมปัจจุบันของวิดีโอเข้า pipeline + DL (ใช้ทั้งตอนเล่นและตอนหยุด/เลื่อนเวลา)
+function processVideoFrame() {
+  if (state.source !== "video" || sourceVideoEl.readyState < 2) return;
+  const nw = sourceVideoEl.videoWidth;
+  const nh = sourceVideoEl.videoHeight;
+  if (!(nw > 0 && nh > 0)) return;
+  ensureGrid(connectedDisplayIds());
+  updateCaptions();
+  const { w, h } = processDims(nw, nh);
+  scratchCanvas.width = w;
+  scratchCanvas.height = h;
+  const ctx = scratchCanvas.getContext("2d", { willReadFrequently: true });
+  ctx.drawImage(sourceVideoEl, 0, 0, w, h);
+  sendFrame(ctx.getImageData(0, 0, w, h));
+  renderDLDisplays(sourceVideoEl, nw, nh); // กล่องที่ต่อผ่าน DL → detect บนเฟรมวิดีโอ
+}
+
+// แถบควบคุมวิดีโอ (โชว์เฉพาะตอนย่อ)
+const vsPlayBtn = document.getElementById("vs-play");
+const vsSeek = document.getElementById("vs-seek");
+const vsTime = document.getElementById("vs-time");
+let vsSeeking = false;
+function fmtVideoTime(t) {
+  if (!Number.isFinite(t) || t < 0) t = 0;
+  const m = Math.floor(t / 60);
+  const s = Math.floor(t % 60);
+  return `${m}:${String(s).padStart(2, "0")}`;
+}
+function syncVideoControls() {
+  const v = sourceVideoEl;
+  vsPlayBtn.textContent = v.paused || v.ended ? "▶" : "⏸";
+  const dur = Number.isFinite(v.duration) ? v.duration : 0;
+  if (!vsSeeking) vsSeek.value = dur > 0 ? String(Math.round((v.currentTime / dur) * 1000)) : "0";
+  vsTime.textContent = `${fmtVideoTime(v.currentTime)} / ${fmtVideoTime(dur)}`;
+}
+vsPlayBtn.addEventListener("click", () => {
+  if (sourceVideoEl.paused || sourceVideoEl.ended) sourceVideoEl.play().catch(() => {});
+  else sourceVideoEl.pause();
+});
+vsSeek.addEventListener("input", () => {
+  vsSeeking = true;
+  const dur = sourceVideoEl.duration;
+  if (Number.isFinite(dur) && dur > 0) sourceVideoEl.currentTime = (Number(vsSeek.value) / 1000) * dur;
+});
+vsSeek.addEventListener("change", () => { vsSeeking = false; syncVideoControls(); });
+for (const ev of ["play", "pause", "ended", "timeupdate", "durationchange", "loadedmetadata"]) {
+  sourceVideoEl.addEventListener(ev, syncVideoControls);
+}
+// หยุด/เลื่อนเวลาอยู่ → pump ไม่ส่งเฟรม จึงต้องสั่งประมวลผลเฟรมที่ค้างอยู่เอง
+for (const ev of ["seeked", "loadeddata", "pause"]) {
+  sourceVideoEl.addEventListener(ev, () => { if (sourceVideoEl.paused) processVideoFrame(); });
 }
 document.getElementById("vs-split").addEventListener("click", () => {
   if (videoFile) { sourceVideoEl.pause(); openVideoFramesDialog(videoFile); }
@@ -2606,6 +2674,8 @@ function workerPipelines() {
 }
 
 async function requestProcess() {
+  // วิดีโอหยุดอยู่ + ปรับค่า filter → ประมวลผลเฟรมที่ค้างอยู่ใหม่ (ตอนเล่น pump ส่งเฟรมเองทุกรอบ)
+  if (state.source === "video") { if (sourceVideoEl.paused) processVideoFrame(); return; }
   if (state.source !== "image" || state.images.length === 0) return;
   const idx = state.imageIndex;
   const im = await ensureDecoded(idx);
@@ -2641,21 +2711,10 @@ function pump() {
       sendFrame(ctx.getImageData(0, 0, w, h));
       renderDLDisplays(videoEl, nw, nh); // กล่องที่ต่อผ่าน DL → YOLO บนเฟรมสด
     }
-  } else if (state.source === "video" && sourceVideoEl.readyState >= 2 && !sourceVideoEl.paused && !sourceVideoEl.ended) {
+  } else if (state.source === "video") {
+    syncVideoLayout(); // ต่อ/ถอดกล่องผลลัพธ์ระหว่างเล่น → สลับจอใหญ่ตาม
     // โหมดวิดีโอ: ป้อนเฟรมที่กำลังเล่นเข้า pipeline + DL detect เหมือนกล้องสด
-    const nw = sourceVideoEl.videoWidth;
-    const nh = sourceVideoEl.videoHeight;
-    if (nw > 0 && nh > 0) {
-      ensureGrid(connectedDisplayIds());
-      updateCaptions();
-      const { w, h } = processDims(nw, nh);
-      scratchCanvas.width = w;
-      scratchCanvas.height = h;
-      const ctx = scratchCanvas.getContext("2d", { willReadFrequently: true });
-      ctx.drawImage(sourceVideoEl, 0, 0, w, h);
-      sendFrame(ctx.getImageData(0, 0, w, h));
-      renderDLDisplays(sourceVideoEl, nw, nh); // กล่องที่ต่อผ่าน DL → detect บนเฟรมวิดีโอ
-    }
+    if (!sourceVideoEl.paused && !sourceVideoEl.ended) processVideoFrame();
   }
   requestAnimationFrame(pump);
 }

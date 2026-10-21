@@ -776,6 +776,32 @@ textarea {
   gap: 8px;
   flex: 0 0 auto;
 }
+.vs-ctl { display: none; }
+/* โหมดวิดีโอที่ต่อกล่องผลลัพธ์แล้ว: จอผลลัพธ์อยู่บน แถบวิดีโอย่ออยู่ล่าง */
+.stage-body.video-mode { flex-direction: column; }
+.stage-body.video-mode > .stage-grid { flex: 1 1 0; min-height: 0; height: auto; }
+.stage-body.video-mode > .video-source {
+  position: static;
+  inset: auto;
+  flex: 0 0 auto;
+  flex-direction: row;
+  flex-wrap: wrap; /* จอแคบ → ปุ่มแยกเฟรม/ปิดลงบรรทัดใหม่ ไม่ทับแถบเวลา */
+  justify-content: flex-start;
+  padding: 8px 10px;
+  background: var(--panel);
+  border-top: 1px solid var(--border);
+}
+.stage-body.video-mode .source-video { height: 64px; width: auto; max-height: none; border-radius: 6px; }
+.stage-body.video-mode .vs-ctl {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 1 1 240px;
+  min-width: 240px;
+}
+.vs-play { min-width: 36px; }
+.vs-seek { flex: 1 1 auto; min-width: 80px; }
+.vs-time { font-size: 12px; color: var(--muted); white-space: nowrap; }
 
 /* ถาดภาพที่แคปไว้ — แถบล่างใต้จอผลลัพธ์ */
 .capture-tray {
