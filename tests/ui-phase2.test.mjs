@@ -8,7 +8,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { createDetailPanel, splitReadout, selectStyle, differsFromDefault, SEG_MAX_LABEL } from '../src/renderer/ui/detail-panel.js';
-import { createPalettePanel, resolveOpenState, toolMatches, TOOL_SECTIONS, OP_TO_FILTER, PALETTE_OPEN_KEY } from '../src/renderer/ui/palette-panel.js';
+import { createPalettePanel, toolMatches, TOOL_SECTIONS, OP_TO_FILTER } from '../src/renderer/ui/palette-panel.js';
 import { STAGE_PRESETS, WIDTH_PRESETS } from '../src/renderer/ui/layout-resize.js';
 import { planInsert, formatZoom, statusLevel, sourceChipLabel } from '../src/renderer/graph/layout-math.js';
 import { FILTERS, defaultParams } from '../src/renderer/filters/registry.js';
@@ -65,14 +65,15 @@ class El {
   one(cls) { return this.all(cls)[0] || null; }
 }
 
-const env = { focused: null };
+const env = { focused: null, docListeners: [] };
 
 // เรียกฟังก์ชันภายใต้ document/localStorage ปลอม แล้วคืนของจริงเสมอ
 function withDom(fn, store) {
   const had = { doc: Object.prototype.hasOwnProperty.call(globalThis, 'document'), ls: Object.prototype.hasOwnProperty.call(globalThis, 'localStorage') };
   const prev = { doc: globalThis.document, ls: globalThis.localStorage, now: Date.now };
   env.focused = null;
-  globalThis.document = { createElement: (t) => new El(t), get activeElement() { return env.focused; } };
+  env.docListeners = [];
+  globalThis.document = { createElement: (t) => new El(t), addEventListener: (t, fn) => { env.docListeners.push([t, fn]); }, get activeElement() { return env.focused; } };
   if (store) globalThis.localStorage = store;
   // เวลาเดินหน้าเอง 1 วินาทีต่อการเรียก → throttle ของ detail-panel ทาสีทันที ไม่ทิ้ง setTimeout จริงค้าง
   let t = 5_000_000;
@@ -87,7 +88,7 @@ function withDom(fn, store) {
 }
 
 function makeStore(initial) {
-  const m = new Map(initial ? [[PALETTE_OPEN_KEY, initial]] : []);
+  const m = new Map(initial || []);
   return { getItem: (k) => (m.has(k) ? m.get(k) : null), setItem: (k, v) => { m.set(k, String(v)); }, _m: m };
 }
 
@@ -323,26 +324,6 @@ test('p2-c7 empty state: มีปุ่ม "เริ่มจากเทม�
 // ===================================================================
 const TITLES = TOOL_SECTIONS.map((s) => s.title);
 
-test('p2-d1 resolveOpenState: ครั้งแรก (null/พัง/ผิดชนิด) → เปิดเฉพาะ COLOR', () => {
-  for (const raw of [null, undefined, '', '{bad json', '[]', '"x"', '5', 'null']) {
-    const s = resolveOpenState(raw, TITLES);
-    assert.deepEqual(Object.keys(s), TITLES);
-    assert.equal(s.COLOR, true, `raw=${raw}`);
-    assert.equal(TITLES.filter((t) => s[t]).length, 1, `raw=${raw}: ต้องเปิดแค่หมวดเดียว`);
-  }
-  assert.equal(TOOL_SECTIONS[0].title, 'COLOR');
-});
-
-test('p2-d2 resolveOpenState: ครั้งต่อไปใช้ค่าที่บันทึก (รวมกรณีพับ COLOR) · หมวดที่ไม่เคยบันทึก = พับ', () => {
-  const s = resolveOpenState(JSON.stringify({ COLOR: false, ENHANCE: true, MOTION: true, 'ของเก่าที่ไม่มีแล้ว': true }), TITLES);
-  assert.equal(s.COLOR, false, 'ผู้ใช้พับ COLOR แล้ว ต้องไม่เด้งกลับมาเปิด');
-  assert.equal(s.ENHANCE, true);
-  assert.equal(s.MOTION, true);
-  assert.equal(s.GEOMETRY, false);
-  assert.ok(!('ของเก่าที่ไม่มีแล้ว' in s));
-  assert.equal(resolveOpenState('{}', TITLES).COLOR, false, 'มีค่าที่บันทึกไว้แต่ว่าง ≠ ครั้งแรก');
-});
-
 test('p2-d3 toolMatches: ไม่สนตัวพิมพ์ · ค้นจากชื่อและรหัส · ว่าง = ตรงทั้งหมด', () => {
   assert.equal(toolMatches('Otsu Threshold', 'otsu_threshold', ''), true);
   assert.equal(toolMatches('Otsu Threshold', 'otsu_threshold', '  '), true);
@@ -352,79 +333,164 @@ test('p2-d3 toolMatches: ไม่สนตัวพิมพ์ · ค้นจ
   assert.equal(toolMatches('Canny Edge', 'canny', 'otsu'), false);
 });
 
-test('p2-d4 palette DOM: เริ่มเปิดแค่ COLOR · คลิกหัวหมวดสลับ + บันทึก localStorage · ค้นหากางหมวดที่ตรง/ไม่พบ', () => {
-  const store = makeStore(null);
+// ---- palette แบบ popup (แทน accordion เดิม) ----
+const DOC_ESC = { key: 'Escape' };
+function mkPal() {
+  const container = new El('div');
+  const added = [];
+  const pal = createPalettePanel(container, { onAdd: (f, o) => added.push([f, o]), onAddDisplay() {}, onTemplates() {}, onSaveTemplate() {}, onAddDL() {} });
+  pal.render();
+  const secs = container.all('pal-section');
+  const popup = () => container.one('pal-popover'); // ไม่มี document.body ใน DOM ปลอม → popup อยู่ใต้ container
+  const popRows = () => popup().one('pal-list').all('tool-row');
+  const popNames = () => popRows().map((r) => r.one('af-name').textContent);
+  const fireDoc = (type, ev) => env.docListeners.filter(([t]) => t === type).forEach(([, fn]) => fn(ev));
+  return { container, added, pal, secs, popup, popRows, popNames, fireDoc };
+}
+// จำนวนเครื่องมือจริงของหมวด (op ที่ resolve ได้บน palette)
+const toolCount = (sec) => sec.ops.filter((id) => OP_TO_FILTER[id]).length;
+
+test('p2-d4 palette DOM: เริ่มเหลือแต่หัวหมวด (ไม่มี popup/รายการ inline) · คลิกหัวหมวดเปิด popup ของหมวดนั้นพร้อมเครื่องมือครบทุกตัว · คลิกซ้ำปิด', () => {
   withDom(() => {
-    const container = new El('div');
-    const added = [];
-    const pal = createPalettePanel(container, { onAdd: (f, o) => added.push([f, o]), onAddDisplay() {}, onTemplates() {}, onSaveTemplate() {}, onAddDL() {} });
-    pal.render();
-    const secs = container.all('pal-section');
-    assert.equal(secs.length, TITLES.length);
-    const openOf = (s) => !s.one('pal-list').hidden;
-    assert.deepEqual(secs.map(openOf), TITLES.map((t) => t === 'COLOR'));
-    assert.equal(secs[0].one('pal-head').getAttribute('aria-expanded'), 'true');
-    assert.equal(secs[1].one('pal-head').getAttribute('aria-expanded'), 'false');
-    // จำนวนในหมวด (mono)
-    assert.equal(secs[0].one('pal-count').textContent, String(secs[0].all('tool-row').length));
+    const t = mkPal();
+    assert.equal(t.secs.length, TITLES.length);
+    assert.ok(t.secs.every((s) => s.one('pal-list').hidden), 'ไม่ค้น → ไม่มีรายการ inline');
+    assert.equal(t.popup().hidden, true, 'popup เริ่มปิด (ไม่จำข้ามการเปิดแอป)');
+    assert.ok(t.secs.every((s) => s.one('pal-head').getAttribute('aria-expanded') === 'false'));
+    // จำนวนในหัวหมวด = จำนวนเครื่องมือของหมวด
+    TOOL_SECTIONS.forEach((sec, i) => assert.equal(t.secs[i].one('pal-count').textContent, String(toolCount(sec))));
 
-    // คลิกหมวด ENHANCE → เปิด + บันทึก
-    secs[1].one('pal-head').click();
-    assert.equal(openOf(secs[1]), true);
-    assert.equal(JSON.parse(store.getItem(PALETTE_OPEN_KEY)).ENHANCE, true);
-    secs[0].one('pal-head').click(); // พับ COLOR
-    assert.equal(openOf(secs[0]), false);
-    assert.equal(JSON.parse(store.getItem(PALETTE_OPEN_KEY)).COLOR, false);
+    t.secs[1].one('pal-head').click(); // ENHANCE
+    assert.equal(t.popup().hidden, false);
+    assert.equal(t.popup().one('pal-pop-title').textContent, 'ENHANCE');
+    assert.equal(t.popup().one('pal-pop-count').textContent, String(toolCount(TOOL_SECTIONS[1])));
+    assert.equal(t.popRows().length, toolCount(TOOL_SECTIONS[1]), 'ครบทุกตัว ไม่มี Show all');
+    assert.equal(t.popup().all('tool-more').length, 0);
+    assert.equal(t.secs[1].one('pal-head').getAttribute('aria-expanded'), 'true');
+    assert.equal(t.secs[0].one('pal-head').getAttribute('aria-expanded'), 'false');
 
-    // ค้นหา "otsu" → เหลือหมวด SEGMENTATION ที่กางอัตโนมัติ (ทั้งที่ไม่ได้เปิดไว้) · หมวดอื่นซ่อน
-    const input = container.one('palette-search');
+    t.secs[1].one('pal-head').click(); // คลิกซ้ำ → ปิด
+    assert.equal(t.popup().hidden, true);
+    assert.equal(t.secs[1].one('pal-head').getAttribute('aria-expanded'), 'false');
+  }, makeStore());
+});
+
+test('p2-d4b popup: เปิดทีละหมวด (คลิกหมวดอื่น = สลับ) · Esc / กดนอก popup+palette / ปุ่ม × ปิด · กดใน palette ไม่ปิด', () => {
+  withDom(() => {
+    const t = mkPal();
+    t.secs[0].one('pal-head').click();
+    t.secs[3].one('pal-head').click(); // สลับไป FILTER & DENOISE
+    assert.equal(t.popup().hidden, false);
+    assert.equal(t.popup().one('pal-pop-title').textContent, 'FILTER & DENOISE');
+    assert.equal(t.popRows().length, toolCount(TOOL_SECTIONS[3]));
+    assert.deepEqual(t.secs.map((s) => s.one('pal-head').getAttribute('aria-expanded')), TOOL_SECTIONS.map((s) => String(s.title === 'FILTER & DENOISE')));
+
+    t.fireDoc('keydown', { key: 'a' }); // ปุ่มอื่นไม่ปิด
+    assert.equal(t.popup().hidden, false);
+    t.fireDoc('keydown', DOC_ESC);
+    assert.equal(t.popup().hidden, true, 'Esc ปิด');
+
+    t.secs[2].one('pal-head').click();
+    t.fireDoc('pointerdown', { target: t.secs[5].one('pal-head') }); // กดในพื้นที่ palette → ไม่ปิด
+    t.fireDoc('pointerdown', { target: t.popup().one('af-name') }); // กดใน popup → ไม่ปิด
+    assert.equal(t.popup().hidden, false);
+    t.fireDoc('pointerdown', { target: new El('canvas') }); // กดนอก → ปิด
+    assert.equal(t.popup().hidden, true);
+
+    t.secs[2].one('pal-head').click();
+    t.popup().one('pal-pop-close').click();
+    assert.equal(t.popup().hidden, true, 'ปุ่ม × ปิด');
+  }, makeStore());
+});
+
+test('p2-d4c popup: คลิก tile = onAdd(filterId, opId) แล้ว popup ยังเปิด เพิ่มได้หลายตัว', () => {
+  withDom(() => {
+    const t = mkPal();
+    t.secs[1].one('pal-head').click();
+    t.popRows()[0].click();
+    t.popRows()[1].click();
+    assert.deepEqual(t.added, [['enhance_tools', 'brightness_contrast'], ['enhance_tools', 'gamma']]);
+    assert.equal(t.popup().hidden, false, 'เพิ่มแล้วต้องไม่ปิด');
+  }, makeStore());
+});
+
+test('p2-d4d popup: เปิดด้วยคีย์บอร์ด → โฟกัสไปที่ tile แรกใน popup · Esc กลับไปที่หัวหมวด · เมาส์ไม่ย้ายโฟกัส · aria ครบ', () => {
+  withDom(() => {
+    const t = mkPal();
+    const head = t.secs[1].one('pal-head');
+    assert.equal(head.getAttribute('aria-haspopup'), 'dialog');
+    assert.equal(head.getAttribute('aria-controls'), t.popup().id);
+    head.click(); // เมาส์ (ไม่มี detail 0)
+    assert.equal(env.focused, null);
+    head.click(); // ปิด
+    head.fire('click', { detail: 0 }); // คีย์บอร์ด
+    assert.equal(env.focused, t.popRows()[0]);
+    t.popup().fire('keydown', DOC_ESC);
+    assert.equal(t.popup().hidden, true);
+    assert.equal(env.focused, head, 'Esc คืนโฟกัสให้หัวหมวด');
+  }, makeStore());
+});
+
+test('p2-d4e ค้นหา: ปิด popup แล้วแสดงเครื่องมือที่ตรง inline ใต้หัวหมวด · หัวหมวดคลิกไม่เปิด popup · ล้างคำค้น → กลับเหลือแต่หัวหมวด · pal-count = จำนวนที่ตรง', () => {
+  withDom(() => {
+    const t = mkPal();
+    t.secs[0].one('pal-head').click(); // เปิด popup ก่อนค้น
+    assert.equal(t.popup().hidden, false);
+
+    const input = t.container.one('palette-search');
     input.value = 'otsu';
     input.fire('input');
-    const seg = secs[TITLES.indexOf('SEGMENTATION & EDGE')];
+    assert.equal(t.popup().hidden, true, 'เริ่มค้น → ปิด popup');
+    const segIdx = TITLES.indexOf('SEGMENTATION & EDGE');
+    const seg = t.secs[segIdx];
     assert.equal(seg.hidden, false);
-    assert.equal(openOf(seg), true, 'หมวดที่มีผลตรงต้องกางอัตโนมัติ');
-    const visibleRows = seg.all('tool-row').filter((r) => !r.hidden);
-    assert.ok(visibleRows.length >= 1 && visibleRows.length < seg.all('tool-row').length);
-    assert.ok(visibleRows.every((r) => r.one('af-name').textContent.toLowerCase().includes('otsu')));
-    assert.ok(secs.filter((s) => s !== seg).every((s) => s.hidden), 'หมวดที่ไม่ตรงต้องซ่อน');
-    assert.equal(container.one('palette-empty').hidden, true);
-    // ค้นอยู่ → คลิกหัวหมวดไม่บันทึกทับ
-    assert.equal(seg.one('pal-head').getAttribute('aria-disabled'), 'true', 'ค้นอยู่ → หัวหมวดแสดงสถานะล็อก');
-    const before = store.getItem(PALETTE_OPEN_KEY);
+    assert.equal(seg.one('pal-list').hidden, false, 'ผลค้นหาแสดง inline');
+    const visible = seg.one('pal-list').all('tool-row').filter((r) => !r.hidden);
+    assert.ok(visible.length >= 1 && visible.length < seg.one('pal-list').all('tool-row').length);
+    assert.ok(visible.every((r) => r.one('af-name').textContent.toLowerCase().includes('otsu')));
+    assert.equal(seg.one('pal-count').textContent, String(visible.length), 'ค้นอยู่ → นับเฉพาะที่ตรง');
+    assert.ok(t.secs.filter((s) => s !== seg).every((s) => s.hidden), 'หมวดที่ไม่ตรงต้องซ่อน');
+    assert.equal(t.container.one('palette-empty').hidden, true);
+    // ค้นอยู่ → คลิกหัวหมวดไม่เปิด popup
+    assert.equal(seg.one('pal-head').getAttribute('aria-disabled'), 'true');
     seg.one('pal-head').click();
-    assert.equal(store.getItem(PALETTE_OPEN_KEY), before);
+    assert.equal(t.popup().hidden, true);
+
+    // คลิก tile inline = onAdd (ต้องส่งทั้ง filterId ระดับหมวดและ opId ที่คลิก)
+    visible[0].click();
+    assert.equal(t.added.length, 1);
+    assert.equal(t.added[0][0], 'segment_edge');
 
     // ไม่พบ
     input.value = 'zzzz-ไม่มีแน่นอน';
     input.fire('input');
-    assert.equal(container.one('palette-empty').hidden, false);
-    assert.equal(container.one('palette-empty').textContent, 'ไม่พบเครื่องมือ');
-    assert.ok(secs.every((s) => s.hidden));
+    assert.equal(t.container.one('palette-empty').hidden, false);
+    assert.equal(t.container.one('palette-empty').textContent, 'ไม่พบเครื่องมือ');
+    assert.ok(t.secs.every((s) => s.hidden));
 
-    // ล้างคำค้น → กลับไปตามสถานะที่บันทึก (COLOR พับ · ENHANCE เปิด)
+    // ล้างคำค้น → เหลือแต่หัวหมวด · popup ยังปิด · เปิดใหม่ได้
     input.value = '';
     input.fire('input');
-    assert.equal(container.one('palette-empty').hidden, true);
-    assert.equal(openOf(secs[0]), false);
-    assert.equal(openOf(secs[1]), true);
-    assert.ok(secs.every((s) => !s.hidden));
-
-    // คลิกแถว = onAdd(filterId, opId)
-    secs[1].all('tool-row')[0].click();
-    assert.equal(added.length, 1);
-    // ต้องส่งทั้ง filterId (กลุ่มระดับหมวด) และ opId ที่คลิก — ไม่งั้น node ใหม่ไม่ preset วิธีตามที่คลิก
-    assert.deepEqual(added[0], ['enhance_tools', 'brightness_contrast']);
-  }, store);
+    assert.equal(t.container.one('palette-empty').hidden, true);
+    assert.ok(t.secs.every((s) => !s.hidden && s.one('pal-list').hidden));
+    assert.equal(seg.one('pal-count').textContent, String(toolCount(TOOL_SECTIONS[segIdx])));
+    assert.equal(seg.one('pal-head').getAttribute('aria-disabled'), 'false');
+    seg.one('pal-head').click();
+    assert.equal(t.popup().hidden, false);
+  }, makeStore());
 });
 
-test('p2-d5 palette: เปิดใหม่หลังบันทึก → ใช้สถานะที่บันทึก (ไม่กลับไป COLOR อย่างเดียว)', () => {
-  const store = makeStore(JSON.stringify({ COLOR: false, MOTION: true }));
+test('p2-d5 palette: ไม่จำหมวดที่เปิดข้ามการเปิดแอป — localStorage เก่า (mv-palette-open) ถูกเมิน popup เริ่มปิดเสมอ · render ซ้ำปิด popup', () => {
+  const stored = JSON.stringify({ COLOR: true, MOTION: true });
+  const store = makeStore([['mv-palette-open', stored]]);
   withDom(() => {
-    const container = new El('div');
-    createPalettePanel(container, { onAdd() {} }).render();
-    const secs = container.all('pal-section');
-    assert.equal(secs[0].one('pal-list').hidden, true);
-    assert.equal(secs[TITLES.indexOf('MOTION')].one('pal-list').hidden, false);
+    const t = mkPal();
+    assert.equal(t.popup().hidden, true);
+    assert.ok(t.secs.every((s) => s.one('pal-head').getAttribute('aria-expanded') === 'false'));
+    t.secs[0].one('pal-head').click();
+    t.pal.render();
+    assert.equal(t.container.one('pal-popover').hidden, true, 'render ใหม่ → popup ปิด');
+    assert.equal(store.getItem('mv-palette-open'), stored, 'ไม่เขียนทับ/ไม่บันทึกสถานะเปิดอีก');
   }, store);
 });
 

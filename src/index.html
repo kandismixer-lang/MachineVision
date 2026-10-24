@@ -4,6 +4,14 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Machine Vision — เรียนรู้การประมวลผลภาพ</title>
+    <!-- ตั้งธีม (สว่าง/มืด) ก่อนวาดเฟรมแรก กันจอมืดวาบ — ต้องตรงกับ renderer/ui/theme.js (key mv-theme, ค่าเริ่มต้น light) -->
+    <script>
+      (function () {
+        var t = "light";
+        try { var v = localStorage.getItem("mv-theme"); if (v === "dark" || v === "light") t = v; } catch (e) {}
+        document.documentElement.setAttribute("data-theme", t);
+      })();
+    </script>
     <link rel="stylesheet" href="./styles/app.css" />
   </head>
   <body>
@@ -25,11 +33,21 @@
         </div>
         <!-- แถบเลือกแหล่งภาพ: กล้อง / นำเข้าภาพ -->
         <div id="source-bar" class="source-bar"></div>
+        <!-- สลับธีมสว่าง/มืด (ผูกใน app.js ผ่าน ui/theme.js) — แสดงไอคอนของธีมที่จะสลับไป -->
+        <button id="theme-toggle" class="btn btn-icon theme-toggle" type="button" aria-label="สลับธีมสว่าง/มืด" title="สลับธีมสว่าง/มืด">
+          <svg class="theme-ico theme-ico-moon" viewBox="0 0 24 24" width="16" height="16" aria-hidden="true" focusable="false"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z" fill="currentColor"/></svg>
+          <svg class="theme-ico theme-ico-sun" viewBox="0 0 24 24" width="16" height="16" aria-hidden="true" focusable="false"><circle cx="12" cy="12" r="4.2" fill="currentColor"/><g stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 2.5v2.6M12 18.9v2.6M2.5 12h2.6M18.9 12h2.6M5.3 5.3l1.8 1.8M16.9 16.9l1.8 1.8M5.3 18.7l1.8-1.8M16.9 7.1l1.8-1.8"/></g></svg>
+        </button>
       </header>
 
       <div class="workspace">
         <!-- ซ้าย: palette ของ node (คลิกเพิ่มลงกระดาน) -->
         <aside id="palette-panel" class="panel panel-left"></aside>
+        <!-- rail พับของแถบเครื่องมือ (โผล่เมื่อซ่อนแถบ) — ปุ่มเปิดกลับ -->
+        <div id="palette-rail" class="panel-rail panel-rail-left" hidden>
+          <button type="button" class="rail-btn" data-expand="palette" aria-controls="palette-panel" aria-label="แสดงแถบเครื่องมือ" title="แสดงแถบเครื่องมือ"><svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true" focusable="false"><path d="M9 5l7 7-7 7" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
+          <span class="rail-label" aria-hidden="true">เครื่องมือ · Tools</span>
+        </div>
         <div class="lr-handle lr-handle-col" data-lr="palette" role="separator" aria-orientation="vertical" aria-controls="palette-panel" aria-label="ปรับความกว้างแถบเครื่องมือ" tabindex="0" title="ลากซ้าย-ขวาเพื่อปรับความกว้างแถบเครื่องมือ · ดับเบิลคลิกเพื่อคืนค่าเดิม"></div>
 
         <!-- กลาง: บน=ภาพผลลัพธ์, ล่าง=กระดานต่อ node สไตล์ Node-RED -->
@@ -130,6 +148,8 @@
         <!-- ขวา: รายละเอียด node ที่เลือก + พารามิเตอร์ -->
         <aside id="props-panel" class="panel panel-right">
           <!-- Version2ui: สลับ workflow โดยใช้ panel เดิมทั้งหมด ไม่สร้าง logic ซ้ำ -->
+          <!-- ปุ่มซ่อนแผง อยู่นอก tablist (ARIA) — anchor sticky ความสูง 0 วางปุ่มทับมุมขวาบนของแถบแท็บโดยไม่ดันเลย์เอาต์ -->
+          <div class="panel-collapse-anchor"><button type="button" class="panel-collapse-btn" data-collapse="props" aria-controls="props-panel" aria-label="ซ่อนแผงด้านขวา" title="ซ่อนแผงด้านขวา"><svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true" focusable="false"><path d="M9 5l7 7-7 7" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/></svg></button></div>
           <div class="inspector-tabs" role="tablist" aria-label="Right panel workspace">
             <button type="button" class="inspector-tab active" data-inspector-tab="inspect" role="tab" aria-label="ปรับค่า INSPECT" aria-selected="true"><span class="it-th">ปรับค่า</span><span class="it-en">INSPECT</span></button>
             <button type="button" class="inspector-tab" data-inspector-tab="preview" role="tab" aria-label="พรีวิว PREVIEW" aria-selected="false"><span class="it-th">พรีวิว</span><span class="it-en">PREVIEW</span></button>
@@ -219,6 +239,11 @@
             <div class="logs-list" id="logs-list"></div>
           </details>
         </aside>
+        <!-- rail พับของแผงขวา (โผล่เมื่อซ่อนแผง) — ปุ่มเปิดกลับ -->
+        <div id="props-rail" class="panel-rail panel-rail-right" hidden>
+          <button type="button" class="rail-btn" data-expand="props" aria-controls="props-panel" aria-label="แสดงแผงด้านขวา" title="แสดงแผงด้านขวา (ปรับค่า · พรีวิว · ชุดข้อมูล)"><svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true" focusable="false"><path d="M15 5l-7 7 7 7" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
+          <span class="rail-label" aria-hidden="true">ปรับค่า · พรีวิว</span>
+        </div>
       </div>
 
       <footer class="statusbar">

@@ -1,6 +1,6 @@
 // Panel ซ้าย: palette ของ node — คลิกเพื่อเพิ่มลงผืนกราฟ (สไตล์ Node-RED)
 import { FILTERS, OPS, GROUP_COLORS } from "../filters/registry.js";
-import { GROUP_ICON } from "../filters/ui-meta.js";
+import { GROUP_ICON, contrastOn } from "../filters/ui-meta.js";
 
 export const TOOL_SECTIONS = [
   { title: "COLOR", ops: ["grayscale", "colorspace", "channel_split", "rgb_adjust", "color_inrange", "kmeans_segment", "slic", "white_balance", "invert", "pseudocolor"] },
@@ -27,7 +27,7 @@ const VISIBLE_FILTER_IDS = [
   "image_registration", "image_quality", "motion",
 ];
 
-const OP_ICON = {
+export const OP_ICON = {
   grayscale: "◐", colorspace: "🎨", channel_split: "◉", rgb_adjust: "🎚", color_inrange: "🌈", invert: "◑",
   kmeans_segment: "⬡", white_balance: "⚖",
   brightness_contrast: "☀", gamma: "γ", hist_equalize: "▥", clahe: "▦", unsharp: "✦", laplacian_sharpen: "◇",
@@ -104,35 +104,6 @@ for (const filterId of VISIBLE_FILTER_IDS) {
   else OP_TO_FILTER[filterId] = filterId;
 }
 
-// ---------- สถานะพับ/กางของหมวด (Phase 2.3) ----------
-// เก็บใน localStorage["mv-palette-open"] เป็น JSON { "COLOR": true, "ENHANCE": false, ... }
-// ครั้งแรก (ไม่มีค่า/พัง) → เปิดเฉพาะ COLOR · หลังจากนั้นใช้ค่าที่บันทึกไว้ (หมวดที่ไม่เคยบันทึก = พับ)
-export const PALETTE_OPEN_KEY = "mv-palette-open";
-export const PALETTE_FIRST_OPEN = "COLOR";
-
-// raw = ข้อความดิบจาก localStorage (หรือ null) → { [title]: boolean } ครบทุกหมวดใน titles
-export function resolveOpenState(raw, titles) {
-  let saved = null;
-  if (typeof raw === "string") {
-    try {
-      const o = JSON.parse(raw);
-      if (o && typeof o === "object" && !Array.isArray(o)) saved = o;
-    } catch { /* ค่าพัง → ถือว่าครั้งแรก */ }
-  }
-  const out = {};
-  for (const t of titles) out[t] = saved ? saved[t] === true : t === PALETTE_FIRST_OPEN;
-  return out;
-}
-
-function loadOpenState(titles) {
-  let raw = null;
-  try { raw = localStorage.getItem(PALETTE_OPEN_KEY); } catch { /* ใช้ค่าเริ่มต้น */ }
-  return resolveOpenState(raw, titles);
-}
-function saveOpenState(state) {
-  try { localStorage.setItem(PALETTE_OPEN_KEY, JSON.stringify(state)); } catch { /* ไม่บันทึกก็ไม่เป็นไร */ }
-}
-
 // ---------- "ใช้ล่าสุด" (Phase 3.3) ----------
 // เก็บ opId ของเครื่องมือที่เพิ่งเพิ่มลงกระดาน (ใหม่สุดก่อน, ไม่ซ้ำ, ≤ 5) ใน localStorage["mv-palette-recent"] เป็น JSON array
 export const PALETTE_RECENT_KEY = "mv-palette-recent";
@@ -187,22 +158,35 @@ export function toolMatches(name, opId, query) {
   return String(name || "").toLowerCase().includes(q) || String(opId || "").toLowerCase().includes(q);
 }
 
+// ชื่อสั้นบน tile/การ์ด: ตัดส่วนในวงเล็บออก (กติกาเดียวกับป้ายชื่อบนกระดาน) — ชื่อเต็มอยู่ใน tooltip
+export function shortToolName(name) {
+  const raw = String(name == null ? "" : name);
+  return raw.replace(/\s*\([^)]*\)\s*/g, " ").trim() || raw;
+}
+
 // cb: onAdd(filterId, opId) — each visible tile is one concrete Function,
 // while the graph still creates the compatible category node and presets its mode.
 export function createPalettePanel(container, cb) {
   let query = ""; // คำค้นเครื่องมือ (คงไว้ข้ามการ re-render)
   let paletteSearchEl = null; // input ช่องค้นหาปัจจุบัน (re-render ใหม่ทุกครั้ง) — ให้ Ctrl+/ โฟกัสได้
-  const openState = loadOpenState(TOOL_SECTIONS.map((s) => s.title));
-  let sections = [];  // [{ title, head, list, countEl, rows: [{el, name, opId}] }]
+  let sections = [];  // [{ title, color, wrap, head, list, countEl, rows: [{el, name, opId}] }] — rows ใน list = ผลค้นหาแบบ inline
   let aiRow = null;   // { wrap, el, name } แถว Model Detect (ถ้ามี)
   let emptyEl = null; // "ไม่พบเครื่องมือ"
   let recent = loadRecent(); // opId ที่ใช้ล่าสุด (ใหม่สุดก่อน)
   let recentBlock = null; // { wrap, list, rows: [{el, name, opId}] } — ซ่อนทั้งก้อนเมื่อว่าง/ไม่ตรงคำค้น
+  // popup ของหมวด (ไม่จำข้ามการเปิดแอป): openSection = หมวดที่เปิดอยู่ (หรือ null)
+  let openSection = null;
+  let pop = null; // { el, title, count, list, close } — สร้างใหม่ทุก render()
+
+  const isSearching = () => query.trim() !== "";
+  // node อยู่ใต้ root (หรือเป็น root เอง) ไหม — เดินตาม parentNode (ไม่พึ่ง Node.contains)
+  const within = (root, node) => { for (let n = node; n; n = n.parentNode) if (n === root) return true; return false; };
 
   // ซ่อน/แสดงตามคำค้น โดยไม่ rebuild (คงโฟกัสช่องค้นหา)
-  // ค้นอยู่ → หมวดที่มีผลตรงกางออกอัตโนมัติ (ไม่แตะค่าที่บันทึก) · ไม่ค้น → กลับไปตามสถานะที่บันทึก
+  // ค้นอยู่ → ปิด popup แล้วแสดงเฉพาะเครื่องมือที่ตรงแบบ inline ใต้หัวหมวด · ไม่ค้น → เหลือแต่หัวหมวด (กดเปิด popup)
   function applyFilter() {
-    const searching = query.trim() !== "";
+    const searching = isSearching();
+    if (searching && openSection) closePopup(false);
     let total = 0;
     for (const s of sections) {
       let n = 0;
@@ -212,14 +196,12 @@ export function createPalettePanel(container, cb) {
         if (m) n++;
       }
       total += n;
-      const show = !searching || n > 0;
-      s.wrap.hidden = !show;
-      const open = searching ? n > 0 : openState[s.title];
-      s.list.hidden = !open;
-      s.head.setAttribute("aria-expanded", open ? "true" : "false");
-      // ระหว่างค้นหา การพับ/กางถูกล็อก (กางตามผลค้นหา) — บอกผู้ใช้ด้วยสไตล์ + tooltip แทนการคลิกแล้วเงียบ
+      s.wrap.hidden = searching && n === 0;
+      s.list.hidden = !(searching && n > 0);
+      s.head.setAttribute("aria-expanded", openSection === s ? "true" : "false");
+      // ระหว่างค้นหา หัวหมวดไม่เปิด popup (ผลค้นหาแสดงใต้หัวหมวดแล้ว) — บอกผู้ใช้ด้วยสไตล์ + tooltip แทนการคลิกแล้วเงียบ
       s.head.setAttribute("aria-disabled", searching ? "true" : "false");
-      s.head.title = searching ? "กำลังค้นหา — ล้างคำค้นก่อนจึงพับ/กางหมวดเองได้" : "";
+      s.head.title = searching ? "กำลังค้นหา — ผลลัพธ์แสดงใต้หมวดนี้ · ล้างคำค้นก่อนจึงเปิดหมวดเป็นหน้าต่างได้" : "";
       s.countEl.textContent = String(searching ? n : s.rows.length);
     }
     if (recentBlock) {
@@ -239,45 +221,151 @@ export function createPalettePanel(container, cb) {
     if (emptyEl) emptyEl.hidden = !(searching && total === 0);
   }
 
-  function toggleSection(s) {
-    if (query.trim() !== "") return; // ระหว่างค้นหา การกางเป็นแบบอัตโนมัติ — ไม่ให้สลับ/บันทึกทับ
-    openState[s.title] = !openState[s.title];
-    saveOpenState(openState);
-    applyFilter();
-    // หมวดที่อยู่ล่างสุดของ palette กางออกไปใต้ขอบที่มองเห็น — ผู้ใช้เห็นแค่ลูกศรหมุนแล้วนึกว่ากดไม่ได้
-    // จึงเลื่อนให้รายการที่เพิ่งกางเห็นได้ (สูงกว่ากรอบ → ชิดหัวหมวด)
-    if (openState[s.title]) revealSection(s);
+  // ---------- popup ของหมวด ----------
+  // วางชิดขอบขวาของ palette · ระดับเดียวกับหัวหมวดที่กด · ไม่ล้นหน้าต่าง (fixed → ต้องอยู่ใต้ <body> เพราะ .panel-left เป็น
+  // overflow + container-type ซึ่งจะตัด/ผูก position:fixed ของลูก)
+  function positionPopup() {
+    if (!openSection || !pop) return;
+    if (typeof container.getBoundingClientRect !== "function" || typeof window === "undefined") return;
+    const cr = container.getBoundingClientRect();
+    if (!cr.width || !cr.height) { closePopup(false); return; } // palette ถูกซ่อน (collapse) → ไม่มีที่ให้ยึด
+    const hr = openSection.head.getBoundingClientRect();
+    const M = 8;
+    const vw = window.innerWidth, vh = window.innerHeight;
+    const left = Math.min(cr.right + 6, Math.max(M, vw - 200 - M));
+    const st = pop.el.style;
+    st.left = left + "px";
+    st.width = Math.max(200, Math.min(360, vw - left - M)) + "px";
+    st.maxHeight = Math.max(160, vh - 2 * M) + "px";
+    const h = pop.el.offsetHeight || 0;
+    st.top = Math.max(M, Math.min(hr.top - 6, vh - M - h)) + "px";
   }
 
-  function revealSection(s) {
-    const sc = container;
-    if (typeof s.wrap.getBoundingClientRect !== "function" || typeof sc.getBoundingClientRect !== "function") return;
-    // ตำแหน่งในพิกัดเนื้อหาของกรอบ scroll (ไม่พึ่ง offsetParent)
-    const top = s.wrap.getBoundingClientRect().top - sc.getBoundingClientRect().top + sc.scrollTop;
-    const bottom = top + s.wrap.offsetHeight;
-    let target = null;
-    if (s.wrap.offsetHeight > sc.clientHeight || top < sc.scrollTop) target = top;
-    else if (bottom > sc.scrollTop + sc.clientHeight) target = bottom - sc.clientHeight;
-    if (target != null) sc.scrollTop = Math.max(0, Math.round(target));
+  function openPopup(s, byKeyboard) {
+    if (!pop || isSearching()) return;
+    openSection = s;
+    pop.title.textContent = s.title;
+    pop.count.textContent = String(s.rows.length);
+    pop.el.setAttribute("aria-label", s.title);
+    pop.el.style.setProperty("--cat-color", s.color);
+    pop.list.innerHTML = "";
+    for (const r of buildRows(s.section)) pop.list.appendChild(r.el);
+    pop.list.scrollTop = 0;
+    pop.el.hidden = false;
+    for (const x of sections) x.head.setAttribute("aria-expanded", x === s ? "true" : "false");
+    positionPopup();
+    if (byKeyboard) { const first = pop.list.children.find ? pop.list.children.find((c) => c.className === "tool-row") : pop.list.querySelector(".tool-row"); (first || pop.close).focus(); }
   }
 
-  function makeToolRow(label, iconText, color, title, onClick) {
+  // restoreFocus: Esc → ถ้าโฟกัสอยู่ใน popup/หัวหมวดที่เปิด ให้กลับไปที่หัวหมวด (ไม่แย่งโฟกัสจากที่อื่น)
+  function closePopup(restoreFocus) {
+    if (!openSection) return;
+    const s = openSection;
+    openSection = null;
+    if (pop) pop.el.hidden = true;
+    for (const x of sections) x.head.setAttribute("aria-expanded", "false");
+    const active = typeof document !== "undefined" ? document.activeElement : null;
+    if (restoreFocus && active && (within(pop && pop.el, active) || active === s.head)) s.head.focus();
+  }
+
+  function onHeadClick(s, ev) {
+    if (isSearching()) return; // ค้นอยู่ → ผลแสดง inline แล้ว
+    if (openSection === s) closePopup(false);
+    else openPopup(s, !!ev && ev.detail === 0); // detail 0 = กดด้วยคีย์บอร์ด (Enter/Space)
+  }
+
+  function onEscape(ev) {
+    if (!openSection || !ev || ev.key !== "Escape") return;
+    closePopup(true);
+  }
+  function onOutsidePointer(ev) {
+    if (!openSection) return;
+    const t = ev && ev.target;
+    if (within(pop && pop.el, t) || within(container, t)) return;
+    closePopup(false);
+  }
+  // listener ระดับหน้าต่าง: ผูกครั้งเดียวตอนสร้าง panel (render() ถูกเรียกซ้ำได้) · ไม่มี document/window (test) → ข้าม
+  if (typeof document !== "undefined" && typeof document.addEventListener === "function") {
+    document.addEventListener("keydown", onEscape);
+    document.addEventListener("pointerdown", onOutsidePointer, true);
+  }
+  if (typeof window !== "undefined" && typeof window.addEventListener === "function") {
+    window.addEventListener("resize", positionPopup);
+  }
+  if (typeof container.addEventListener === "function") container.addEventListener("scroll", positionPopup); // หัวหมวดเลื่อน → popup ตามระดับ
+  // ลากปรับความกว้าง/ซ่อนแถบ → ขอบขวาเปลี่ยน/หาย
+  if (typeof ResizeObserver !== "undefined" && typeof Element !== "undefined" && container instanceof Element) new ResizeObserver(() => positionPopup()).observe(container);
+
+  function buildPopup() {
+    const el = document.createElement("div");
+    el.className = "pal-popover";
+    el.id = "pal-popover";
+    el.setAttribute("role", "dialog");
+    el.hidden = true;
+    const head = document.createElement("div");
+    head.className = "pal-pop-head";
+    const title = document.createElement("span");
+    title.className = "pal-pop-title";
+    const count = document.createElement("span");
+    count.className = "pal-pop-count mono";
+    const close = document.createElement("button");
+    close.type = "button";
+    close.className = "pal-pop-close";
+    close.setAttribute("aria-label", "ปิดหน้าต่างหมวด");
+    close.title = "ปิด (Esc)";
+    close.textContent = "×";
+    close.addEventListener("click", () => closePopup(true));
+    head.append(title, count, close);
+    const list = document.createElement("div");
+    list.className = "pal-list pal-pop-list";
+    el.append(head, list);
+    el.addEventListener("keydown", onEscape);
+    return { el, title, count, list, close };
+  }
+
+  // tile สไตล์ KNIME: ชื่อสั้นอยู่บน · ใต้ชื่อเป็นกล่องไอคอนสีหมวด + สามเหลี่ยมพอร์ต (เข้าซ้าย / ออกขวา)
+  // ชื่อเต็มอยู่ใน title (tooltip) · inputs = 2 → สามเหลี่ยมเข้าซ้อนสองอัน · ยังเป็น button.tool-row เหมือนเดิม
+  function makeToolRow(label, iconText, color, title, onClick, ports = { inputs: 1, outputs: 1 }) {
     const b = document.createElement("button");
     b.type = "button";
     b.className = "tool-row";
     b.title = title;
     b.style.setProperty("--tool-color", color);
+    const nm = document.createElement("span");
+    nm.className = "af-name";
+    nm.textContent = shortToolName(label);
+    const wrap = document.createElement("span");
+    wrap.className = "af-ico-wrap";
+    wrap.setAttribute("aria-hidden", "true");
+    const mkPort = (cls) => { const p = document.createElement("span"); p.className = "af-port " + cls; return p; };
+    if (ports.inputs === 2) wrap.append(mkPort("af-port-in af-port-top"), mkPort("af-port-in af-port-bot"));
+    else if (ports.inputs > 0) wrap.appendChild(mkPort("af-port-in"));
     const ic = document.createElement("span");
     ic.className = "af-icon";
     ic.textContent = iconText;
-    ic.style.background = `color-mix(in srgb, ${color} 22%, transparent)`;
-    ic.style.borderColor = `color-mix(in srgb, ${color} 55%, transparent)`;
-    const nm = document.createElement("span");
-    nm.className = "af-name";
-    nm.textContent = label;
-    b.append(ic, nm);
+    ic.style.background = color;
+    ic.style.color = contrastOn(color);
+    wrap.appendChild(ic);
+    if (ports.outputs > 0) wrap.appendChild(mkPort("af-port-out"));
+    b.append(nm, wrap);
     b.addEventListener("click", onClick);
     return b;
+  }
+
+  // tile ทั้งหมวด (ใช้ทั้งใน popup และผลค้นหา inline)
+  function buildRows(section) {
+    const rows = [];
+    for (const opId of section.ops) {
+      const filterId = OP_TO_FILTER[opId];
+      const filter = FILTERS[filterId];
+      const op = OPS[opId];
+      if (!filter || !op) continue;
+      const colors = GROUP_COLORS[filter.group] || { title: "#475569" };
+      const el = makeToolRow(op.name, OP_ICON[opId] || GROUP_ICON[filterId] || "◇", colors.title,
+        `${op.name} — Add this Function to Pipeline Canvas`, () => addTool(filterId, opId), { inputs: filter.inputs === 2 ? 2 : 1, outputs: 1 });
+      rows.push({ el, name: op.name, opId });
+    }
+    return rows;
   }
 
   // ทุกทางที่เพิ่มเครื่องมือ (แถวปกติ + แถวใน "ใช้ล่าสุด") ผ่านที่เดียว: จำ opId แล้วค่อยเรียก onAdd เดิม
@@ -286,6 +374,7 @@ export function createPalettePanel(container, cb) {
     saveRecent(recent);
     cb.onAdd(filterId, opId);
     renderRecent();
+    positionPopup(); // บล็อก "ใช้ล่าสุด" อาจเพิ่ม/ลดความสูง → หัวหมวดขยับ · popup คงเปิดไว้ให้เพิ่มหลายตัว
   }
 
   // สร้างบล็อก "ใช้ล่าสุด" ใหม่ในที่เดิม (ไม่ rebuild ทั้งแผง → ไม่เสียตำแหน่งเลื่อน/โฟกัสช่องค้นหา)
@@ -304,7 +393,7 @@ export function createPalettePanel(container, cb) {
       if (!filter || !op) continue;
       const colors = GROUP_COLORS[filter.group] || { title: "#475569" };
       const el = makeToolRow(op.name, OP_ICON[opId] || GROUP_ICON[filterId] || "◇", colors.title,
-        `${op.name} — เพิ่มลงกระดานอีกครั้ง`, () => addTool(filterId, opId));
+        `${op.name} — เพิ่มลงกระดานอีกครั้ง`, () => addTool(filterId, opId), { inputs: filter.inputs === 2 ? 2 : 1, outputs: 1 });
       fresh.appendChild(el);
       rows.push({ el, name: op.name, opId });
     }
@@ -320,13 +409,27 @@ export function createPalettePanel(container, cb) {
   }
 
   function render() {
+    closePopup(false);
+    if (pop && pop.el.remove) pop.el.remove(); // popup อยู่ใต้ <body> → ต้องเอาออกเองก่อนสร้างใหม่
     container.innerHTML = "";
     sections = [];
     aiRow = null;
     recentBlock = null;
 
     const h = document.createElement("h2");
-    h.textContent = "เครื่องมือ · Tools";
+    const hText = document.createElement("span");
+    hText.textContent = "เครื่องมือ · Tools";
+    h.appendChild(hText);
+    // ปุ่มซ่อนแถบ — layout-resize.js ฟังคลิก [data-collapse] ที่ document (render นี้สร้างปุ่มใหม่ทุกครั้ง)
+    const collapseBtn = document.createElement("button");
+    collapseBtn.type = "button";
+    collapseBtn.className = "panel-collapse-btn";
+    collapseBtn.setAttribute("data-collapse", "palette");
+    collapseBtn.setAttribute("aria-controls", "palette-panel");
+    collapseBtn.setAttribute("aria-label", "ซ่อนแถบเครื่องมือ");
+    collapseBtn.title = "ซ่อนแถบเครื่องมือ";
+    collapseBtn.innerHTML = `<svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true" focusable="false"><path d="M15 5l-7 7 7 7" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
+    h.appendChild(collapseBtn);
     container.appendChild(h);
 
     // ช่องค้นหาเครื่องมือ (§4/§11) — icon ซ้าย + keycap "Ctrl /" ขวา (จางลงเมื่อโฟกัส)
@@ -341,7 +444,7 @@ export function createPalettePanel(container, cb) {
     search.placeholder = "ค้นหาเครื่องมือ…";
     search.setAttribute("aria-label", "ค้นหาเครื่องมือ");
     search.value = query;
-    search.addEventListener("input", () => { query = search.value; applyFilter(); });
+    search.addEventListener("input", () => { query = search.value; applyFilter(); }); // applyFilter ปิด popup เองเมื่อเริ่มค้น
     const searchHint = document.createElement("span");
     searchHint.className = "keycap ps-hint";
     searchHint.textContent = "Ctrl /";
@@ -385,20 +488,25 @@ export function createPalettePanel(container, cb) {
       aiRow = { wrap, el: row, name: "Model Detect" };
     }
 
-    TOOL_SECTIONS.forEach((section, si) => {
+    TOOL_SECTIONS.forEach((section) => {
       const wrap = document.createElement("div");
       wrap.className = "pal-section";
-      const listId = "pal-list-" + si;
+
+      // สีประจำหมวด = สีของกลุ่มของเครื่องมือตัวแรก (ใช้เป็นแถบซ้ายหัวหมวด + แถบบน popup)
+      const firstFilter = FILTERS[OP_TO_FILTER[section.ops.find((id) => OP_TO_FILTER[id] && OPS[id])]];
+      const color = ((firstFilter && GROUP_COLORS[firstFilter.group]) || { title: "#475569" }).title;
 
       const head = document.createElement("button");
       head.type = "button";
       head.className = "pal-head";
-      head.setAttribute("aria-controls", listId);
+      head.style.setProperty("--cat-color", color);
+      head.setAttribute("aria-haspopup", "dialog");
+      head.setAttribute("aria-controls", "pal-popover");
       head.setAttribute("aria-expanded", "false");
       const chev = document.createElement("span");
       chev.className = "pal-chev";
       chev.setAttribute("aria-hidden", "true");
-      chev.textContent = "▾";
+      chev.textContent = "▸"; // บอกว่า "เปิดออกด้านข้าง"
       const ttl = document.createElement("span");
       ttl.className = "pal-title";
       ttl.textContent = section.title;
@@ -406,25 +514,15 @@ export function createPalettePanel(container, cb) {
       countEl.className = "pal-count mono";
       head.append(chev, ttl, countEl);
 
+      // รายการ inline: ซ่อนตามปกติ · โชว์เฉพาะตอนค้นหา
       const list = document.createElement("div");
       list.className = "pal-list";
-      list.id = listId;
+      const rows = buildRows(section);
+      for (const r of rows) list.appendChild(r.el);
 
-      const rows = [];
-      for (const opId of section.ops) {
-        const filterId = OP_TO_FILTER[opId];
-        const filter = FILTERS[filterId];
-        const op = OPS[opId];
-        if (!filter || !op) continue;
-        const colors = GROUP_COLORS[filter.group] || { title: "#475569" };
-        const el = makeToolRow(op.name, OP_ICON[opId] || GROUP_ICON[filterId] || "◇", colors.title,
-          `${op.name} — Add this Function to Pipeline Canvas`, () => addTool(filterId, opId));
-        list.appendChild(el);
-        rows.push({ el, name: op.name, opId });
-      }
-
-      const s = { title: section.title, wrap, head, list, countEl, rows };
-      head.addEventListener("click", () => toggleSection(s));
+      const s = { title: section.title, section, color, wrap, head, list, countEl, rows };
+      head.addEventListener("click", (ev) => onHeadClick(s, ev));
+      head.addEventListener("keydown", onEscape);
       wrap.append(head, list);
       container.appendChild(wrap);
       sections.push(s);
@@ -437,7 +535,9 @@ export function createPalettePanel(container, cb) {
     emptyEl.hidden = true;
     container.appendChild(emptyEl);
 
-    applyFilter(); // ใช้คำค้นที่ค้างไว้ (ถ้ามี) + สถานะพับ/กาง
+    pop = buildPopup();
+    (document.body || container).appendChild(pop.el);
+    applyFilter(); // ใช้คำค้นที่ค้างไว้ (ถ้ามี)
   }
 
   // โฟกัส + เลือกข้อความในช่องค้นหา (ใช้กับคีย์ลัด Ctrl+/ — UI-only, ไม่ยุ่ง keymap ระบบ)

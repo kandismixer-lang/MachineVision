@@ -84,6 +84,12 @@ ipcMain.handle("export:chooseDir", async () => {
 
 // ---------- IPC: อ่านค่าประสิทธิภาพระบบ (Design §17) ----------
 // รวม CPU% ของทุก process ในแอป + RAM ทั้งแอป จาก app.getAppMetrics()
+// สีพื้นหน้าต่างตามธีมของ renderer (เห็นตอน resize/รีโหลดก่อน renderer วาดทัน) — dark = สีเดิม
+ipcMain.on("theme:set", (e, theme) => {
+  const win = BrowserWindow.fromWebContents(e.sender);
+  if (win && !win.isDestroyed()) win.setBackgroundColor(theme === "dark" ? "#1e1e1e" : "#e8eae6");
+});
+
 ipcMain.handle("sys:metrics", async () => {
   try {
     const metrics = app.getAppMetrics();

@@ -32,6 +32,11 @@ contextBridge.exposeInMainWorld("mvDL", {
   convertPt: (ptPath) => ipcRenderer.invoke("dl:convertPt", ptPath),
 });
 
+// สะพานแจ้งธีม (light/dark) ให้ main ตั้งสีพื้นหน้าต่าง — กันกะพริบสีเก่าตอน resize/รีโหลดในโหมดสว่าง
+contextBridge.exposeInMainWorld("mvTheme", {
+  set: (theme) => ipcRenderer.send("theme:set", theme === "dark" ? "dark" : "light"),
+});
+
 // สะพานปุ่ม "เช็คอัปเดตตอนนี้" — check() เริ่มเช็ค, onStatus(cb) รับผลจริง (checking/available/
 // not-available/downloaded/error) จาก main.js กันเงียบเหมือน auto-check ตอนเปิดแอป
 contextBridge.exposeInMainWorld("mvUpdate", {

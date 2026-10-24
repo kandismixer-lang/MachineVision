@@ -3,20 +3,13 @@
 // C = แบ่งความสูง จอผลลัพธ์ (.stage) กับ Pipeline (.graph-wrap)
 // หลักการ: `state` = ค่าที่ผู้ใช้ตั้ง (null = ค่าเริ่มต้นของ CSS) · render() คำนวณค่าจริงหลัง clamp
 // แล้วเขียน CSS var แบบ idempotent — ไม่มีค่าที่เก็บไว้ = ไม่มี inline var = หน้าตาเหมือนเดิมทุกพิกเซล
-const KEY = "mv-layout-v1";
-const LIMITS = {
-  palette: { min: 200, max: 440 },
-  props: { min: 280, max: 560 },
-  centerMinW: 480,
-  stageMinH: 180,
-  graphMinH: 150,
-};
-const RATIO = { min: 0.1, max: 0.9 };
+import { LIMITS, RATIO, RAIL_W, clamp, load, save } from "./layout-state.js";
 const STEP = { col: 16, colBig: 64, row: 24, rowBig: 96 };
 const DRAG_THRESHOLD = 3;
 const FIELD = { palette: "paletteW", props: "propsW", stage: "stageRatio" };
 const VAR = { palette: "--palette-w", props: "--props-w" };
 const NAME = { palette: "แถบเครื่องมือ", props: "แผงคุณสมบัติ" };
+const HIDDEN = { palette: "paletteHidden", props: "propsHidden" };
 
 // preset สำหรับเมนู "มุมมอง" (Phase 2.4 — ทางเลือกแทนการลาก, WCAG 2.5.7) · ค่าผ่านการ clamp/persist ทางเดียวกับการลาก
 export const STAGE_PRESETS = [
@@ -29,51 +22,26 @@ export const WIDTH_PRESETS = {
   props: { label: "แผงคุณสมบัติ (ขวา)", narrow: 300, wide: 440 },
 };
 
-const clamp = (v, lo, hi) => Math.min(hi, Math.max(lo, v));
 const px = (s) => parseFloat(s) || 0;
 
-// ---------- persistence (ทุกทางพังได้ → เงียบ ใช้ค่าเริ่มต้น) ----------
-function emptyState() { return { paletteW: null, propsW: null, stageRatio: null }; }
-
-function load() {
-  let raw = null;
-  try { raw = localStorage.getItem(KEY); } catch { return emptyState(); }
-  if (raw == null) return emptyState();
-  try {
-    const o = JSON.parse(raw);
-    if (!o || typeof o !== "object" || o.v !== 1) throw new Error("bad");
-    const num = (v, lo, hi) => {
-      if (v == null) return null;
-      if (typeof v !== "number" || !Number.isFinite(v)) throw new Error("bad");
-      return clamp(v, lo, hi);
-    };
-    return {
-      paletteW: num(o.paletteW, LIMITS.palette.min, LIMITS.palette.max),
-      propsW: num(o.propsW, LIMITS.props.min, LIMITS.props.max),
-      stageRatio: num(o.stageRatio, RATIO.min, RATIO.max),
-    };
-  } catch {
-    try { localStorage.removeItem(KEY); } catch { /* ignore */ }
-    return emptyState();
-  }
-}
-
-function save(s) {
-  try {
-    if (s.paletteW == null && s.propsW == null && s.stageRatio == null) localStorage.removeItem(KEY);
-    else localStorage.setItem(KEY, JSON.stringify({ v: 1, paletteW: s.paletteW, propsW: s.propsW, stageRatio: s.stageRatio }));
-  } catch { /* ignore */ }
-}
-
 let live = null; // instance ปัจจุบันของ initLayoutResize (เมนู "มุมมอง" เรียกผ่าน setStageRatio / setPanelWidth)
+const subscribers = new Set(); // แจ้งเมื่อสถานะซ่อน/แสดงแผงเปลี่ยน (เมนู/คีย์ลัด/ปุ่มอัปเดต aria)
 
 // ตั้งสัดส่วนจอผลลัพธ์ : กระดาน (0.1–0.9) แล้วบันทึกเหมือนการลาก · คืน false ถ้ายังไม่พร้อม (ไม่ใช่ ui-v2)
 export function setStageRatio(r) { return live ? live.setStageRatio(r) : false; }
 // ตั้งความกว้างแถบเครื่องมือ/แผงคุณสมบัติ (px) — clamp ตามขอบเขตเดียวกับการลาก
 export function setPanelWidth(which, w) { return live ? live.setPanelWidth(which, w) : false; }
+// ซ่อน/แสดงแถบเครื่องมือ (which="palette") หรือแผงขวา ("props") — เหลือ rail 32px ให้กดเปิดกลับ · ความกว้างเดิมที่ผู้ใช้ตั้งไว้ถูกเก็บและคืนตอนเปิด
+export function setPanelCollapsed(which, hidden) { return live ? live.setPanelCollapsed(which, hidden) : false; }
+export function togglePanel(which) { return live ? live.togglePanel(which) : false; }
+export function isPanelCollapsed(which) { return live ? live.isPanelCollapsed(which) : false; }
+export function onPanelCollapseChange(fn) { subscribers.add(fn); return () => subscribers.delete(fn); }
 
 export function initLayoutResize() {
-  const noop = { reset() {}, setStageRatio() { return false; }, setPanelWidth() { return false; }, snapshot() { return null; } };
+  const noop = {
+    reset() {}, setStageRatio() { return false; }, setPanelWidth() { return false; }, snapshot() { return null; },
+    setPanelCollapsed() { return false; }, togglePanel() { return false; }, isPanelCollapsed() { return false; },
+  };
   if (!document.body.classList.contains("ui-v2")) return noop;
   const ws = document.querySelector(".workspace");
   const center = document.querySelector(".center-col");
@@ -84,8 +52,12 @@ export function initLayoutResize() {
   const handles = [...document.querySelectorAll(".lr-handle[data-lr]")];
   if (!ws || !center || !stage || !palette || !props || !handles.length) return noop;
   const panelEl = { palette, props };
+  const rails = { palette: document.getElementById("palette-rail"), props: document.getElementById("props-rail") };
 
   const state = load();
+  const isHidden = (w) => !!state[HIDDEN[w]];
+  // กว้างจริงของแผงในตอนนี้ (แผงที่ซ่อน = ความกว้าง rail) — ใช้คำนวณพื้นที่ที่เหลือให้ฝั่งตรงข้าม
+  const widthOf = (w) => (isHidden(w) ? RAIL_W : panelEl[w].getBoundingClientRect().width);
   const readout = document.createElement("div");
   readout.className = "lr-readout";
   readout.setAttribute("aria-hidden", "true");
@@ -155,19 +127,19 @@ export function initLayoutResize() {
     for (const w of ["palette", "props"]) {
       const v = state[FIELD[w]];
       eff[w] = v == null ? null : clamp(v, LIMITS[w].min, LIMITS[w].max);
-      total += eff[w] ?? m.def[w];
+      total += isHidden(w) ? RAIL_W : (eff[w] ?? m.def[w]);
     }
     const overflow = total - (m.inner - LIMITS.centerMinW);
     if (overflow > 0) {
       const ex = {};
       let sumEx = 0;
       for (const w of ["palette", "props"]) {
-        ex[w] = eff[w] == null ? 0 : eff[w] - LIMITS[w].min;
+        ex[w] = eff[w] == null || isHidden(w) ? 0 : eff[w] - LIMITS[w].min; // แผงที่ซ่อนไม่ถูกหด (เก็บค่าเดิมไว้คืนตอนเปิด)
         sumEx += ex[w];
       }
       if (sumEx > 0) {
         const take = Math.min(overflow, sumEx);
-        for (const w of ["palette", "props"]) if (eff[w] != null) eff[w] -= (take * ex[w]) / sumEx;
+        for (const w of ["palette", "props"]) if (eff[w] != null && !isHidden(w)) eff[w] -= (take * ex[w]) / sumEx;
       }
     }
     return eff;
@@ -219,8 +191,8 @@ export function initLayoutResize() {
     setAria(handleOf("stage"), lo * 100, hi * 100, s, splitText(s));
   }
   function updateAria(mc, eff, avail) {
-    const pw = eff.palette ?? mc.def.palette;
-    const qw = eff.props ?? mc.def.props;
+    const pw = isHidden("palette") ? RAIL_W : (eff.palette ?? mc.def.palette);
+    const qw = isHidden("props") ? RAIL_W : (eff.props ?? mc.def.props);
     ariaCol("palette", pw, colMax("palette", mc.inner, qw));
     ariaCol("props", qw, colMax("props", mc.inner, pw));
     if (avail > 0) {
@@ -301,7 +273,7 @@ export function initLayoutResize() {
     // ไม่งั้น render() จะคำนวณการหดตามสัดส่วนใหม่จากค่าเดิม → ด้านที่ไม่ได้ลากกระโดดตอนปล่อยเมาส์
     const other = which === "palette" ? "props" : "palette";
     const otherW = Math.round(ctx.otherW);
-    if (state[FIELD[other]] != null && otherW < state[FIELD[other]]) {
+    if (!isHidden(other) && state[FIELD[other]] != null && otherW < state[FIELD[other]]) {
       state[FIELD[other]] = clamp(otherW, LIMITS[other].min, LIMITS[other].max);
     }
   }
@@ -309,10 +281,10 @@ export function initLayoutResize() {
     if (which === "stage") {
       return { avail: measureRows().avail, start: stage.getBoundingClientRect().height };
     }
-    const other = which === "palette" ? props : palette;
+    const other = which === "palette" ? "props" : "palette";
     return {
       inner: measureCols().inner,
-      otherW: other.getBoundingClientRect().width,
+      otherW: widthOf(other),
       start: panelEl[which].getBoundingClientRect().width,
     };
   }
@@ -321,6 +293,17 @@ export function initLayoutResize() {
   function reset(which = "all") {
     const list = which === "all" ? ["palette", "props", "stage"] : [which];
     const els = new Set();
+    if (which === "all") {
+      // reset-all ขณะโฟกัสอยู่บนปุ่ม rail (rail ถูกซ่อน → โฟกัสหลุดไป body) → จำไว้ แล้วย้ายไปปุ่มซ่อนของแผงนั้น
+      const railFocus = ["palette", "props"].find((w) => rails[w]?.contains(document.activeElement));
+      for (const w of ["palette", "props"]) if (isHidden(w)) {
+        state[HIDDEN[w]] = false;
+        els.add(ws);
+        for (const fn of [...subscribers]) { try { fn(w, false); } catch (e) { console.error(e); } }
+      }
+      applyCollapsedDom();
+      if (railFocus) panelEl[railFocus].querySelector("[data-collapse]")?.focus();
+    }
     for (const w of list) {
       if (!(w in FIELD)) continue;
       state[FIELD[w]] = null;
@@ -499,13 +482,50 @@ export function initLayoutResize() {
     render();
     return true;
   }
+  // ---------- ซ่อน/แสดงแผง ----------
+  function applyCollapsedDom() {
+    for (const w of ["palette", "props"]) {
+      const hid = isHidden(w);
+      ws.classList.toggle(w === "palette" ? "pal-collapsed" : "props-collapsed", hid);
+      if (rails[w]) rails[w].hidden = !hid;
+      panelEl[w].inert = hid; // แผงที่ซ่อน (display:none) ห้ามรับโฟกัส/ถูกอ่านโดย screen reader
+    }
+  }
+  function setPanelCollapsedImpl(which, hidden) {
+    if (!(which in HIDDEN) || drag) return false;
+    hidden = !!hidden;
+    if (isHidden(which) === hidden) return true;
+    state[HIDDEN[which]] = hidden;
+    persistNow();
+    stopAnim();
+    ws.classList.add("lr-animating");
+    animTimer = setTimeout(() => ws.classList.remove("lr-animating"), 200);
+    applyCollapsedDom();
+    render();
+    for (const fn of [...subscribers]) { try { fn(which, hidden); } catch (e) { console.error(e); } }
+    // โฟกัส: ซ่อน → ไปที่ปุ่มเปิดบน rail · เปิด → กลับไปที่ปุ่มซ่อนของแผง (ถ้ามี) ไม่ให้โฟกัสหลุด
+    if (hidden) rails[which]?.querySelector("button")?.focus();
+    else if (rails[which]?.contains(document.activeElement)) panelEl[which].querySelector("[data-collapse]")?.focus();
+    return true;
+  }
   live = {
+    setPanelCollapsed: setPanelCollapsedImpl,
+    togglePanel: (w) => setPanelCollapsedImpl(w, !isHidden(w)),
+    isPanelCollapsed: isHidden,
     reset,
     setStageRatio: setStageRatioImpl,
     setPanelWidth: setPanelWidthImpl,
-    snapshot: () => ({ stageRatio: state.stageRatio, paletteW: state.paletteW, propsW: state.propsW }),
+    snapshot: () => ({ stageRatio: state.stageRatio, paletteW: state.paletteW, propsW: state.propsW, paletteHidden: isHidden("palette"), propsHidden: isHidden("props") }),
   };
 
+  // ปุ่มซ่อน/แสดง: ปุ่มบน rail (static ใน index.html) + ปุ่มในหัวแผง (palette-panel.js สร้างใหม่ทุกครั้งที่ render จึงฟังที่ document)
+  document.addEventListener("click", (e) => {
+    const b = e.target.closest?.("[data-collapse],[data-expand]");
+    if (!b) return;
+    const which = b.dataset.collapse || b.dataset.expand;
+    if (which in HIDDEN) setPanelCollapsedImpl(which, !!b.dataset.collapse);
+  });
+  applyCollapsedDom();
   for (const h of handles) {
     h.addEventListener("pointerdown", onPointerDown);
     h.addEventListener("dblclick", (e) => { e.preventDefault(); reset(h.dataset.lr); });
@@ -543,6 +563,11 @@ export function initViewMenu(btn, opts = {}) {
       list.push({ head: "ความกว้าง" + wp.label });
       list.push({ label: "แคบ", hint: wp.narrow + " px", checked: cur != null && Math.abs(cur - wp.narrow) < 1, run: () => setPanelWidth(which, wp.narrow) });
       list.push({ label: "กว้าง", hint: wp.wide + " px", checked: cur != null && Math.abs(cur - wp.wide) < 1, run: () => setPanelWidth(which, wp.wide) });
+    }
+    list.push({ head: "แผง" });
+    for (const which of ["palette", "props"]) {
+      const hid = !!snap && snap[HIDDEN[which]];
+      list.push({ label: (hid ? "แสดง" : "ซ่อน") + WIDTH_PRESETS[which].label, hint: "", plain: true, run: () => togglePanel(which) });
     }
     list.push({ head: "" });
     list.push({ label: "คืนค่าเดิมทั้งหมด", hint: "", plain: true, run: () => { if (live) live.reset("all"); } });

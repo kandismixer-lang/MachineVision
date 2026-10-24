@@ -8,6 +8,7 @@ import { createClassPanel } from "./ui/class-panel.js";
 import { createSplitPanel } from "./ui/split-panel.js";
 import { createAnnotateCanvas } from "./ui/annotate-canvas.js";
 import { createSourceBar } from "./ui/source-bar.js";
+import { bindThemeToggle, histColors, onThemeChange } from "./ui/theme.js";
 import { createBatchCsv, finishBatchCsv } from "./ui/batch-csv.js";
 import { createExportDialog } from "./ui/export-dialog.js";
 import { startCamera, listCameras } from "./camera.js";
@@ -37,7 +38,7 @@ import { exportYoloDataset } from "./dataset/export-yolo.js";
 import { importYoloDataset } from "./dataset/import-yolo.js";
 import { defaultAugmentConfig, normalizeAugmentConfig } from "./dataset/augment.js";
 import { createAugmentDialog } from "./ui/augment-dialog.js";
-import { initLayoutResize, initViewMenu } from "./ui/layout-resize.js";
+import { initLayoutResize, initViewMenu, togglePanel, setPanelCollapsed } from "./ui/layout-resize.js";
 // ใบอนุญาตฟอนต์ (SIL OFL-1.1) ต้องไปกับตัวแอปที่ bundle ฟอนต์ IBM Plex — import เพื่อให้ Vite คัดลอกเข้า dist/assets (ไม่ได้ใช้ค่า)
 import "../assets/fonts/OFL.txt?url";
 import { statusText, sourceDetail, statusLevel, sourceChipLabel } from "./graph/layout-math.js";
@@ -549,6 +550,18 @@ function setSelectedPreviewView(view, userInitiated = true) {
 for (const tab of selectedPreviewTabs) {
   tab.addEventListener("click", () => setSelectedPreviewView(tab.dataset.previewView));
 }
+// สลับธีม → วาด Histogram ใหม่ด้วยสีของธีมใหม่ (ภาพนิ่งไม่มี pump มาวาดทับให้เอง)
+// ตอนแท็บพรีวิว/แผงขวาซ่อนอยู่ canvas กว้าง 0 → วาดตอนนี้จะได้ buffer ผิดขนาด (เบลอ) → เลื่อนไปวาดตอนกลับมาแสดง
+let histogramThemeStale = false;
+function redrawHistogramForTheme() {
+  if (!selectedPreviewLatestImage || !selectedPreviewHistogram.dataset.ready) { histogramThemeStale = false; return; }
+  if (selectedPreviewHistogram.getBoundingClientRect().width === 0) { histogramThemeStale = true; return; }
+  histogramThemeStale = false;
+  const { img, width, height } = selectedPreviewLatestImage;
+  renderSelectedPreviewAnalysis(img, width, height);
+}
+onThemeChange(redrawHistogramForTheme);
+new ResizeObserver(() => { if (histogramThemeStale) redrawHistogramForTheme(); }).observe(selectedPreviewHistogram);
 
 function invalidateSelectedPreview() {
   // ปรับพารามิเตอร์ → ผลเก่าใน worker ถือว่าใช้ไม่ได้ (bump generation ให้ผลเก่าที่ค้างมาถูกทิ้ง)
@@ -643,13 +656,14 @@ function renderSelectedPreviewAnalysis(img, width, height) {
   if (selectedPreviewHistogram.width !== hb.w) selectedPreviewHistogram.width = hb.w;
   if (selectedPreviewHistogram.height !== hb.h) selectedPreviewHistogram.height = hb.h;
   const ctx = selectedPreviewHistogram.getContext("2d");
+  const hc = histColors();
   ctx.setTransform(hb.scale, 0, 0, hb.scale, 0, 0);
   const w = HIST_LW;
   const h = HIST_LH;
   ctx.clearRect(0, 0, w, h);
-  ctx.fillStyle = "#050b14";
+  ctx.fillStyle = hc.bg;
   ctx.fillRect(0, 0, w, h);
-  ctx.strokeStyle = "rgba(126, 160, 198, .13)";
+  ctx.strokeStyle = hc.grid;
   ctx.lineWidth = 1;
   for (let x = 0; x <= 4; x++) {
     const gx = 10 + ((w - 20) * x) / 4;
@@ -660,16 +674,16 @@ function renderSelectedPreviewAnalysis(img, width, height) {
     ctx.beginPath(); ctx.moveTo(10, gy); ctx.lineTo(w - 10, gy); ctx.stroke();
   }
   // เส้นหลัก: threshold → luma ของภาพขาเข้า · อื่น ๆ → ขาออก (เทา = เส้นเดียว, สี = R/G/B)
-  const mainBins = plan === "threshold" && haveInput ? [[selectedInputBins[3], "#38d9ff"]] : null;
-  const channels = mainBins || (grayscale ? [[hist[0], "#38d9ff"]] : [
-    [hist[0], "#ff5577"], [hist[1], "#45e59a"], [hist[2], "#4aa3ff"],
+  const mainBins = plan === "threshold" && haveInput ? [[selectedInputBins[3], hc.luma]] : null;
+  const channels = mainBins || (grayscale ? [[hist[0], hc.luma]] : [
+    [hist[0], hc.r], [hist[1], hc.g], [hist[2], hc.b],
   ]);
   // ขาเข้าที่จางอยู่ข้างหลัง (compare) — ขาออกเป็นเทาล้วนก็เทียบด้วย luma ขาเข้าเส้นเดียว; ปรับสัดส่วนตามจำนวนตัวอย่างให้เทียบกันได้
   let faint = null;
   let faintScale = 1;
   if (plan === "compare" && haveInput) {
-    faint = grayscale ? [[selectedInputBins[3], "#38d9ff"]] : [
-      [selectedInputBins[0], "#ff5577"], [selectedInputBins[1], "#45e59a"], [selectedInputBins[2], "#4aa3ff"],
+    faint = grayscale ? [[selectedInputBins[3], hc.luma]] : [
+      [selectedInputBins[0], hc.r], [selectedInputBins[1], hc.g], [selectedInputBins[2], hc.b],
     ];
     faintScale = samples / selectedInputSamples;
   }
@@ -698,12 +712,12 @@ function renderSelectedPreviewAnalysis(img, width, height) {
   // เส้นเกณฑ์ T (เส้นประสีส้ม = --warning) + ป้าย "T = 137"
   if (marker != null) {
     const mx = markerX(marker, 10, w - 10);
-    ctx.strokeStyle = "#ff9f43";
+    ctx.strokeStyle = hc.marker;
     ctx.lineWidth = 1.5;
     ctx.setLineDash([4, 3]);
     ctx.beginPath(); ctx.moveTo(mx, 8); ctx.lineTo(mx, h - 22); ctx.stroke();
     ctx.setLineDash([]);
-    ctx.fillStyle = "#ff9f43";
+    ctx.fillStyle = hc.marker;
     ctx.font = "600 11px 'IBM Plex Mono', Consolas, monospace";
     const label = "T = " + marker;
     const right = mx > w - 70;
@@ -711,7 +725,7 @@ function renderSelectedPreviewAnalysis(img, width, height) {
     ctx.fillText(label, right ? mx - 5 : mx + 5, 21);
     ctx.textAlign = "left";
   }
-  ctx.fillStyle = "#71849d";
+  ctx.fillStyle = hc.axis;
   ctx.font = "500 10px 'IBM Plex Mono', Consolas, monospace"; // ตัวเลขล้วน → Plex Mono (มี fallback)
   ctx.fillText("0", 10, h - 7);
   ctx.fillText("128", w / 2 - 9, h - 7);
@@ -832,6 +846,7 @@ annotateCanvas = createAnnotateCanvas({
     return oc && oc.width ? oc : null;
   },
   focusClassPanel: () => {
+    setPanelCollapsed("props", false); // ผู้ใช้กด "เปิดแผงคลาส" ตั้งใจไปที่แผง → เปิดแผงขวาก่อน (ถ้าซ่อนอยู่)
     setInspectorTab("dataset");
     const sec = document.getElementById("class-panel-section");
     if (sec) {
@@ -849,6 +864,9 @@ annotateCanvas = createAnnotateCanvas({
       : null,
   onNavImage: (dir) => { if (state.images.length > 1) setImageIndex(state.imageIndex + dir); },
 });
+
+// ปุ่มสลับธีมสว่าง/มืดที่มุมขวาบน (สถานะ/การเก็บค่าอยู่ใน ui/theme.js)
+bindThemeToggle(document.getElementById("theme-toggle"));
 
 // P-8 C-B: ติ๊กไว้ = ตอน Save Picture ทั้งโฟลเดอร์ (ภาพนิ่ง > 1 ภาพ) เขียน CSV ค่าที่วัดได้ของทุกภาพด้วย (ค่าเริ่มต้น = เปิด; ไม่มีกล่องที่ให้ค่า = ไม่สร้างไฟล์)
 let batchCsvOn = true;
@@ -1717,6 +1735,9 @@ const KEY_ACTIONS = [
   { id: "nextImage", label: "▶ ภาพถัดไป", hint: "โหมดชุดภาพ (batch)", run: () => { if (state.images.length > 1) setImageIndex(state.imageIndex + 1); } },
   { id: "export", label: "⬇ โค้ด YOLO", hint: "เปิดหน้าต่างโค้ดเทรน YOLO", run: () => openExportCode() },
   { id: "saveImages", label: "💾 เซฟภาพ", hint: "บันทึกภาพผลลัพธ์เป็น PNG", run: () => saveImages() },
+  // ไม่มีคีย์เริ่มต้น (กันชนกับคีย์ลัดอื่น) — ผู้ใช้ผูกเองได้ในหน้าตั้งค่า
+  { id: "togglePalette", label: "ซ่อน/แสดงแถบเครื่องมือ", hint: "แถบซ้าย (Tools)", run: () => togglePanel("palette") },
+  { id: "toggleProps", label: "ซ่อน/แสดงแผงด้านขวา", hint: "ปรับค่า · พรีวิว · ชุดข้อมูล", run: () => togglePanel("props") },
 ].filter((a) => POSE_ENABLED || a.id !== "toggleMode");
 const DEFAULT_KEYMAP = { capture: " ", toggleMode: "m", toggleSource: "c", prevImage: "ArrowLeft", nextImage: "ArrowRight", export: "e" };
 
@@ -1740,6 +1761,7 @@ document.addEventListener("keydown", (e) => {
   // Ctrl+/ (หรือ Cmd+/) → โฟกัสช่องค้นหาเครื่องมือ (§11, UI-only ไม่ยุ่ง keymap) — ทำงานแม้กำลังพิมพ์อยู่ในช่องอื่น
   if ((e.ctrlKey || e.metaKey) && e.key === "/") {
     e.preventDefault();
+    setPanelCollapsed("palette", false); // ตั้งใจพิมพ์ค้นหาเครื่องมือ → เปิดแถบเครื่องมือก่อน (ถ้าซ่อนอยู่)
     palettePanel.focusSearch();
     return;
   }
@@ -2133,13 +2155,13 @@ async function openErgoFromCapture() {
       status.textContent = "⚠ ตรวจไม่พบร่างกายในภาพนี้ — ลองแคปภาพที่เห็นลำตัวชัด ๆ";
     } else if (ergo.level >= 2) {
       status.textContent = "⚠ ท่าเสี่ยง: " + ergo.warnings.join(" · ");
-      status.style.color = "#fca5a5";
+      status.style.color = "var(--ergo-bad)";
     } else if (ergo.level === 1) {
       status.textContent = "🟡 ท่าทางพอใช้ — ปรับให้ตรงขึ้นได้อีก";
-      status.style.color = "#fcd34d";
+      status.style.color = "var(--ergo-mid)";
     } else {
       status.textContent = "🟢 ท่าทางดี (ตามหลักการยศาสตร์)";
-      status.style.color = "#86efac";
+      status.style.color = "var(--ergo-good)";
     }
   } catch (err) {
     if (!closed) status.textContent = "วิเคราะห์ไม่สำเร็จ: " + err.message;

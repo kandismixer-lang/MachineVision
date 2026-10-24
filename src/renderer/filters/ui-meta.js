@@ -309,6 +309,20 @@ export function hexA(hex, a) {
   return `rgba(${r}, ${g}, ${b}, ${a})`;
 }
 
+// สีตัวอักษร/ไอคอนที่อ่านออกบนพื้น hex นั้น (ขาวบนสีเข้ม · เกือบดำบนสีสว่าง เช่น เหลือง/เขียวอ่อน) — ใช้กับกล่องไอคอนแบบ KNIME
+// (palette tile + การ์ดบนกระดาน) · อิงความสว่างสัมพัทธ์ WCAG; hex ผิดรูปแบบ → ขาว
+export function contrastOn(hex) {
+  if (!hex || hex[0] !== "#") return "#ffffff";
+  const h = hex.slice(1);
+  const full = h.length === 3 ? h.split("").map((c) => c + c).join("") : h;
+  const ch = [0, 2, 4].map((i) => {
+    const v = parseInt(full.slice(i, i + 2), 16) / 255;
+    return v <= 0.03928 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4);
+  });
+  const L = 0.2126 * ch[0] + 0.7152 * ch[1] + 0.0722 * ch[2];
+  return L > 0.4 ? "#1a1a1a" : "#ffffff";
+}
+
 // ---------------------------------------------------------------------------
 // OPTION_GROUPS — จัด dropdown ยาว ๆ เป็นหัวข้อ <optgroup> ตาม "เป้าหมายงาน" (ภาษาไทย) ช่วยมือใหม่เลือกวิธีถูก
 // key: "<filterId>.mode" (select "เลือกวิธี" ของ node หมวด) | "<opId>.<localKey>" (select ภายใน op เช่น morphology.op)

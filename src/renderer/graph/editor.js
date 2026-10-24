@@ -7,27 +7,53 @@ import "litegraph.js/css/litegraph.css";
 import { FILTERS, defaultParams, GROUP_COLORS, migrateLegacyStep } from "../filters/registry.js";
 import { computeFit, findFreeSpot, applyFit, isViewUntouched, planInsert, formatZoom } from "./layout-math.js";
 import { canvasBufferSizeDpr, dotGridRange, flowT, flowDotCount, visibleAreaOf, isFlowLink, createFlowLoop, buildStepIds } from "../ui/phase3-math.js";
-import { GROUP_ICON, OP_PRIMARY, currentOpId, localParamsFor, hexA } from "../filters/ui-meta.js";
+import { GROUP_ICON, OP_PRIMARY, currentOpId, localParamsFor, contrastOn } from "../filters/ui-meta.js";
+import { OP_ICON } from "../ui/palette-panel.js";
+import { graphColors, onThemeChange } from "../ui/theme.js";
 
-// ---- node card (Design node-card §1 + UI redesign spec §5) — const/font hoisted ไป module scope กัน alloc ทุกเฟรม ----
+// ---- node card สไตล์ Arctic Blue ----
+// Filter/Source/Model Detect = การ์ดขาวกะทัดรัด (ขอบบาง มุมมน เงาจาง): ชื่อ (ตัวหนา) อยู่บนซ้ายในการ์ด · กล่องไอคอนสีหมวดทางซ้าย
+// · ไฟสถานะสามดวงข้างกล่องไอคอน (แดง error / เหลือง ยังไม่อยู่ใน pipeline / เขียว อยู่ใน pipeline) · บรรทัดล่าง = ค่าหลัก/ข้อมูลแหล่งภาพ/ข้อความ error
+// Display = ชื่ออยู่ "เหนือ" การ์ด preview · การ์ด preview รักษาอัตราส่วนภาพ · ใต้การ์ด = ไฟสามดวง + ขนาดภาพ
+// พอร์ตเข้า/ออกอยู่ที่ขอบซ้าย/ขวาของการ์ดที่กึ่งกลางความสูงกล่องไอคอน (getConnectionPos ตัวเดียวใช้ทั้งวาด/ลากสาย/hit-test)
+// พิกัดในไฟล์นี้เป็นพิกัดภายใน node (0,0 = pos): พื้นที่ชื่ออยู่ y ∈ [-NODE_TITLE_HEIGHT, 0) — LiteGraph นับเป็นส่วนของ node
+// (isPointInside/getBounding/nodeRects ใช้ NODE_TITLE_HEIGHT เหมือนเดิม) จึงคลิก/ลากที่ชื่อก็เลือก/ย้าย node ได้
 // ฟอนต์ canvas ต้องมี fallback เสมอ (เดิมไม่มี → เบราว์เซอร์ตกไป serif) — ฟอนต์จริงโหลดจาก @font-face ใน app.css
 const NC_STACK = "'IBM Plex Sans Thai', 'Leelawadee UI', 'Noto Sans Thai', 'Segoe UI', Tahoma, sans-serif";
-const NC_FONT_TITLE = `600 13px ${NC_STACK}`;
-const NC_FONT_LINE1 = `500 12px ${NC_STACK}`;
+const NC_FONT_TITLE = `700 12px ${NC_STACK}`; // ชื่อ node
 const NC_FONT_PORT = `500 11px ${NC_STACK}`;
-const NC_FONT_MONO = `500 11px 'IBM Plex Mono', Consolas, ${NC_STACK}`;
-const NC_FONT_ICON = `14px 'Segoe UI Emoji', 'Segoe UI Symbol', ${NC_STACK}`;
+const NC_FONT_MONO = `500 10.5px 'IBM Plex Mono', Consolas, ${NC_STACK}`; // บรรทัดค่าหลัก/ขนาดภาพ
+const NC_FONT_GLYPH = `20px 'Segoe UI Emoji', 'Segoe UI Symbol', ${NC_STACK}`;
 const NC_FONT_PILL = `500 10.5px ${NC_STACK}`;
 const NC_ICON_FALLBACK = "🧩";
-const NC_W = 192; // ความกว้างการ์ดทุกชนิด
-const NC_RADIUS = 10;
-const NC_FOCUS = "#8cc8ff"; // ring ตอนเลือก (ไม่ใช้สีหมวด — Segmentation แดงจะดูเหมือน error)
-const NC_BODY = "#0f1b2b";
-const NC_TITLE_BASE = "#132235";
-const NC_ERR = "#ff5577"; // = --danger · สถานะ error ราย node (UI เฟส 3.6)
-const NC_ERR_TEXT = "#ffb3c1";
-const NC_DOT = "rgba(255,255,255,.04)"; // จุดพื้นหลังกระดาน (3.4)
-const NC_FLOW = "#cfe9ff"; // จุดวิ่งบนสาย (3.5)
+const NC_NAME_H = 24; // ความสูงแถวชื่อเหนือ pos (= LiteGraph.NODE_TITLE_HEIGHT) — การ์ดทั่วไปวาดชื่อในแถวนี้
+const NC_PAD = 10; // ระยะขอบในการ์ด
+const NC_BOX = 38; // กล่องไอคอน
+const NC_W = 148; // ความกว้างการ์ดทั่วไป (Source / Filter / DL)
+const NC_RADIUS = 8;
+const NC_GAP = 44; // ช่องว่างแนวนอนระหว่างการ์ดตอนวางเทมเพลต/กราฟตั้งต้น (เผื่อพอร์ต + หัวลูกศร + ให้เห็นสาย)
+const NC_YELLOW = "#e0a100"; // ไฟเหลือง "ยังไม่อยู่ใน pipeline" (ใช้ได้ทั้งสองธีม)
+// layout: w/h = ขนาด node (ใต้ pos) · box = กล่องไอคอน/preview · card = สี่เหลี่ยมการ์ดที่วาดพื้น/ขอบ · kind: "std" | "display"
+const LAYOUT_STD = {
+  kind: "std",
+  w: NC_W,
+  h: 62,
+  box: { x: NC_PAD, y: 2, w: NC_BOX, h: NC_BOX },
+  card: { x: 0, y: -NC_NAME_H, w: NC_W, h: 62 + NC_NAME_H },
+};
+// Display: การ์ด preview 16:9 (ชื่ออยู่เหนือการ์ด) + พื้นที่ใต้การ์ด 32px สำหรับไฟ + ขนาดภาพ
+const LAYOUT_DISPLAY = {
+  kind: "display",
+  w: 160,
+  h: 90 + 32,
+  box: { x: 0, y: 0, w: 160, h: 90 },
+  card: { x: 0, y: 0, w: 160, h: 90 },
+};
+// Display สูงกว่า node ทั่วไป: ขยับ y ให้พอร์ตเข้า (กลางการ์ด preview) ตรงระดับพอร์ตออกของ node ทั่วไปที่ pos.y เท่ากัน
+const DISPLAY_DY = (LAYOUT_STD.box.y + LAYOUT_STD.box.h / 2) - (LAYOUT_DISPLAY.box.y + LAYOUT_DISPLAY.box.h / 2);
+// สีของกราฟ (ขอบเลือก, พื้น/ขอบการ์ด, error 3.6, จุดพื้นหลัง 3.4, จุดวิ่งบนสาย 3.5 ฯลฯ) อยู่ใน ui/theme.js ตามธีมสว่าง/มืด
+// → gc() คืนพาเลตต์ปัจจุบัน (object เดิมทุกครั้ง ไม่ alloc ต่อเฟรม) · ขอบตอนเลือกไม่ใช้สีหมวด (Segmentation แดงจะดูเหมือน error)
+const gc = graphColors;
 
 // ผสมสี hex: a*t + b*(1-t) → ได้สีทึบ (ไม่โปร่ง ไม่ให้สายเห็นทะลุหัวการ์ด)
 function mixHex(a, b, t) {
@@ -36,148 +62,199 @@ function mixHex(a, b, t) {
   return "#" + x.map((v, i) => Math.round(v * t + y[i] * (1 - t)).toString(16).padStart(2, "0")).join("");
 }
 
-// แถบสีหมวด 3px ด้านบนหัวการ์ด + กรอบ/ring ตามสถานะ (default / hover / selected)
-function drawCardChrome(ctx, node) {
-  const W = node.size[0];
-  const H = node.size[1];
-  const TH = LiteGraph.NODE_TITLE_HEIGHT;
-  const sel = !!node.is_selected;
-  const hov = !!node.mouseOver && !sel;
-  ctx.save();
-  ctx.beginPath();
-  ctx.roundRect(0, -TH, W, H + TH, NC_RADIUS);
-  ctx.clip();
-  ctx.fillStyle = node.boxcolor || "#2997ff";
-  ctx.fillRect(0, -TH, W, 3);
-  ctx.restore();
-  ctx.save();
-  if (sel) {
-    ctx.strokeStyle = NC_FOCUS;
-    ctx.lineWidth = 2;
-    ctx.shadowColor = "rgba(140,200,255,0.45)";
-    ctx.shadowBlur = 10;
-    ctx.beginPath();
-    ctx.roundRect(-3, -TH - 3, W + 6, H + TH + 6, NC_RADIUS + 3);
-  } else {
-    ctx.strokeStyle = `rgba(255,255,255,${hov ? 0.24 : 0.1})`;
-    ctx.lineWidth = 1;
-    ctx.beginPath();
-    ctx.roundRect(0.5, -TH + 0.5, W - 1, H + TH - 1, NC_RADIUS);
-  }
-  ctx.stroke();
-  ctx.restore();
-  if (node.__mvError) drawErrorState(ctx, node);
+// สีของ node แต่ละชนิด เก็บที่ class (Ctor.color/bgcolor — LiteGraph ใช้เป็น fallback ของ node.color)
+// ไม่ใส่ที่ instance เพราะ graph.serialize เก็บ node.color ลง snapshot (undo) → สลับธีมแล้วสีเก่าจะค้าง
+// พื้น node = โปร่งใส: การ์ด/ชื่อ/ไฟวาดเองใน onDrawForeground
+const cardClasses = [];
+function paintCardClass(Ctor, accent) {
+  const g = gc();
+  Ctor.color = mixHex(accent, g.titleBase, g.titleMixAmt);
+  Ctor.bgcolor = "transparent";
+}
+function registerCardColors(Ctor, accent) {
+  cardClasses.push([Ctor, accent]);
+  paintCardClass(Ctor, accent);
 }
 
-// สถานะ error (3.6): กรอบประ 1.5px แดง + ป้าย "!" 16px ที่มุมขวาบน + ข้อความสั้นใต้การ์ด
-// ไม่พึ่งสีอย่างเดียว (ประ + ! + ข้อความ) — Segmentation สีหมวดก็เป็นแดงเหมือนกัน
-function drawErrorState(ctx, node) {
-  const W = node.size[0];
-  const H = node.size[1];
-  const TH = LiteGraph.NODE_TITLE_HEIGHT;
-  ctx.save();
-  ctx.strokeStyle = NC_ERR;
-  ctx.lineWidth = 1.5;
-  ctx.setLineDash([4, 3]);
-  ctx.beginPath();
-  ctx.roundRect(0.75, -TH + 0.75, W - 1.5, H + TH - 1.5, NC_RADIUS);
-  ctx.stroke();
-  ctx.setLineDash([]);
-  // ป้าย "!" (วงกลมเส้นผ่านศูนย์กลาง 16px กึ่งกลางที่มุมขวาบนของการ์ด)
-  ctx.fillStyle = NC_ERR;
-  ctx.beginPath();
-  ctx.arc(W, -TH, 8, 0, Math.PI * 2);
-  ctx.fill();
-  ctx.fillStyle = "#ffffff";
-  ctx.font = `700 11px ${NC_STACK}`;
-  ctx.textAlign = "center";
-  ctx.textBaseline = "alphabetic";
-  ctx.fillText("!", W, -TH + 4);
-  // ข้อความ (ตัด … ให้พอดีความกว้างการ์ด) บนแถบเข้มกันกลืนกับพื้น
-  ctx.font = NC_FONT_PORT;
-  ctx.textAlign = "left";
-  const text = ellipsisText(ctx, node, "err", node.__mvError, W - 12);
-  ctx.fillStyle = "rgba(5,11,20,0.88)";
-  ctx.beginPath();
-  ctx.roundRect(0, H + 4, W, 18, 5);
-  ctx.fill();
-  ctx.fillStyle = NC_ERR_TEXT;
-  ctx.fillText(text, 6, H + 17);
-  ctx.restore();
+// ชื่อบนกระดานตัดวงเล็บอังกฤษออก ให้สั้น (palette ยังใช้ชื่อเต็ม) — ตัด … ตอนวาด (ellipsisText)
+function titleOf(node) {
+  const raw = String(node.title == null ? "" : node.title);
+  // ตัดอีโมจิ/สัญลักษณ์นำหน้า ("📷 แหล่งภาพ") — ไอคอนอยู่ในกล่องแล้ว · เลขขั้น "1. " ขึ้นต้นด้วยตัวเลขจึงไม่โดนตัด
+  const t = raw.replace(/\s*\([^)]*\)\s*/g, " ").replace(/^[^\p{L}\p{N}]+/u, "").trim();
+  return t || raw;
 }
 
-// จุดสถานะที่หัวการ์ด: อยู่ใน pipeline = จุดเขียวทึบ, ไม่อยู่ = วงกลวง (ไม่พึ่งสีอย่างเดียว), ปิดอยู่ = จุดเทา
-// __mvInPipeline ตั้งใน tracePipeline (เฉพาะฝั่ง editor — ไม่แตะ pipeline ที่ส่งให้ worker)
-function drawStatusDot(ctx, node, disabled) {
-  const cx = node.size[0] - 14;
-  const cy = -LiteGraph.NODE_TITLE_HEIGHT / 2;
+// พอร์ตวางที่ขอบการ์ด: เข้า = ขอบซ้าย (x=0) · ออก = ขอบขวา (x=w) · กลางความสูงกล่องไอคอน/preview
+// op 2 อินพุตวางซ้อนกันรอบกึ่งกลาง · override ที่ prototype (ไม่เก็บ pos ลง serialize) → โปรเจกต์/undo เก่าโหลดแล้วตำแหน่งถูกเสมอ
+// ทั้งการวาดจุด + ลากสาย + hit-test ของ LiteGraph เรียก getConnectionPos ตัวนี้ที่เดียว จึงตรงกันเป๊ะ
+function cardConnectionPos(isInput, slot, out) {
+  out = out || new Float32Array(2);
+  const L = this.mvLayout;
+  const n = isInput && this.inputs ? this.inputs.length : 1;
+  const dy = isInput && n === 2 ? (slot === 0 ? -8 : 8) : 0;
+  out[0] = this.pos[0] + (isInput ? 0 : L.w);
+  out[1] = this.pos[1] + L.box.y + L.box.h / 2 + dy;
+  return out;
+}
+// จุดพอร์ตกลม · ป้ายชื่อ slot ยังอยู่ในข้อมูล (pipeline/โปรเจกต์เก็บชื่อ) แต่ไม่โชว์: LiteGraph.NODE_TEXT_COLOR = โปร่งใส (applyGraphTheme)
+function styleSlots(node) {
+  for (const sl of node.inputs || []) sl.shape = LiteGraph.CIRCLE_SHAPE;
+  for (const sl of node.outputs || []) sl.shape = LiteGraph.CIRCLE_SHAPE;
+}
+function installCardHooks(Ctor, layout) {
+  Ctor.title_mode = LiteGraph.NO_TITLE;
+  Ctor.collapsable = false; // ย่อการ์ดไม่มีความหมายกับ layout แบบการ์ดคงที่
+  Ctor.prototype.resizable = false; // ขนาดคงที่ตาม layout
+  Ctor.prototype.mvLayout = layout;
+  Ctor.prototype.getTitle = function () { return titleOf(this); };
+  Ctor.prototype.getConnectionPos = cardConnectionPos;
+  const prevConfigure = Ctor.prototype.onConfigure;
+  Ctor.prototype.onConfigure = function (o) {
+    if (prevConfigure) prevConfigure.call(this, o);
+    // configure ของ LiteGraph ทับ size/slot ด้วยค่าที่เซฟไว้ (โปรเจกต์เก่า = การ์ดขนาดเดิม, slot ไม่มี shape) → คืนค่า layout ปัจจุบัน
+    this.size = [layout.w, layout.h];
+    if (this.flags) this.flags.collapsed = false;
+    styleSlots(this);
+  };
+}
+
+// ไฟสามดวง: ซ้าย→ขวา = แดง (error) · เหลือง (ยังไม่อยู่ใน pipeline) · เขียว (อยู่ใน pipeline)
+// ไม่พึ่งสีอย่างเดียว: ดวงที่ติดเป็นวงกลมทึบ ที่เหลือเป็นวงโปร่ง · ปิดอยู่ = วงโปร่งสีเทาทั้งสามดวง
+function drawTrafficLight(ctx, cx, cy, lit, step) { // lit: "err" | "idle" | "run" | null (ปิดอยู่) · cx = กึ่งกลางดวงที่สอง
+  const cols = [gc().err, NC_YELLOW, gc().statusOn];
+  const idx = lit === "err" ? 0 : lit === "idle" ? 1 : lit === "run" ? 2 : -1;
   ctx.save();
-  ctx.beginPath();
-  ctx.arc(cx, cy, 3, 0, Math.PI * 2);
-  if (disabled) {
-    ctx.fillStyle = "#64748b";
-    ctx.fill();
-  } else if (node.__mvInPipeline) {
-    ctx.fillStyle = "#27c98a";
-    ctx.fill();
-  } else {
-    ctx.strokeStyle = "#8592a4";
-    ctx.lineWidth = 1.5;
+  ctx.lineWidth = 1.2;
+  for (let i = 0; i < 3; i++) {
+    ctx.beginPath();
+    ctx.arc(cx + (i - 1) * step, cy, 3.5, 0, Math.PI * 2);
+    if (i === idx) {
+      ctx.fillStyle = cols[i];
+      ctx.fill();
+      ctx.strokeStyle = cols[i];
+    } else {
+      ctx.strokeStyle = lit == null ? gc().statusOff : gc().statusIdle;
+    }
     ctx.stroke();
   }
   ctx.restore();
 }
 
-// สีชื่อหัวการ์ด: LiteGraph อ่าน constructor.title_text_color ทันทีหลังเรียก onDrawTitleText ของ node นั้น
-// → ตั้งค่าตามสถานะ node ก่อนทุกครั้ง (กล่องที่ไม่อยู่ใน pipeline = #a7b2c3 เป๊ะ, ปกติ = null → ใช้สีเริ่มต้น)
-function titleColorHook() {
-  const dim = !this.__mvInPipeline && this.mode !== LiteGraph.NEVER;
-  this.constructor.title_text_color = dim ? "#a7b2c3" : null;
-}
+// วาดการ์ด Arctic Blue ทั้งใบ (เรียกจาก onDrawForeground ของทุกชนิด node — ช่องพอร์ต LiteGraph วาดทับทีหลัง)
+//   o.accent = สีหมวด · o.glyph = ไอคอนในกล่อง (ถ้าไม่มี o.drawBox) · o.sub = บรรทัดเล็ก (ค่าหลัก/ข้อมูล)
+//   o.drawBox(ctx, box) = วาดเนื้อในการ์ดเอง (preview ของ Display) · o.disabled = ปิดอยู่
+function drawCard(ctx, node, o) {
+  const L = node.mvLayout;
+  const W = L.w, box = L.box, card = L.card;
+  const isDisplay = L.kind === "display";
+  const sel = !!node.is_selected;
+  const hov = !!node.mouseOver && !sel;
+  const disabled = !!o.disabled;
+  const inFlow = !!node.__mvInPipeline;
+  const err = node.__mvError;
+  const g = gc();
 
-// ชื่อหัวการ์ดที่ตัดวงเล็บ + ตัด … ให้พอดีก่อนถึงจุดสถานะ (กว้าง − 28 ซ้าย − 24 ขวา)
-let titleMeasureCtx = null;
-function fitTitleOf(node) {
-  const raw = String(node.title == null ? "" : node.title);
-  if (!titleMeasureCtx) titleMeasureCtx = document.createElement("canvas").getContext("2d");
-  titleMeasureCtx.font = NC_FONT_TITLE;
-  const stripped = raw.replace(/\s*\([^)]*\)\s*/g, " ").trim() || raw;
-  return ellipsisText(titleMeasureCtx, node, "title", stripped, node.size[0] - 28 - 24);
-}
-function installCardHooks(Ctor) {
-  Ctor.prototype.onDrawTitleText = titleColorHook;
-  Ctor.prototype.getTitle = function () { return fitTitleOf(this); };
-}
-
-// ลายเฉียงจาง ๆ บนการ์ดที่ปิดอยู่ + ป้าย "ปิดอยู่"
-function drawDisabledMark(ctx, node) {
-  const W = node.size[0];
-  const H = node.size[1];
-  const TH = LiteGraph.NODE_TITLE_HEIGHT;
+  // 1) พื้นการ์ด + ขอบ (เลือก = ขอบฟ้า 2px + เรืองจาง · ชี้ = ขอบเข้มขึ้น · ปกติ = ขอบบาง 1px) + เงาจาง
   ctx.save();
   ctx.beginPath();
-  ctx.roundRect(0, -TH, W, H + TH, NC_RADIUS);
-  ctx.clip();
-  ctx.strokeStyle = "rgba(255,255,255,0.04)";
-  ctx.lineWidth = 1;
+  ctx.roundRect(card.x, card.y, card.w, card.h, NC_RADIUS);
+  ctx.shadowColor = sel ? g.focusGlow : g.shadow;
+  ctx.shadowBlur = sel ? 10 : 4;
+  ctx.shadowOffsetY = sel ? 0 : 1;
+  ctx.fillStyle = g.body;
+  ctx.fill();
+  ctx.shadowColor = "transparent";
   ctx.beginPath();
-  for (let x = -H - TH; x < W; x += 6) {
-    ctx.moveTo(x, H);
-    ctx.lineTo(x + H + TH, -TH);
-  }
+  const bw = sel ? 2 : 1;
+  ctx.roundRect(card.x + bw / 2, card.y + bw / 2, card.w - bw, card.h - bw, NC_RADIUS);
+  ctx.strokeStyle = sel ? g.focus : hov ? g.cardBorderHover : g.cardBorder;
+  ctx.lineWidth = bw;
   ctx.stroke();
   ctx.restore();
+
+  // 2) ชื่อ + กล่องไอคอน/preview — จางลงเมื่อไม่อยู่ใน pipeline / ปิดอยู่
   ctx.save();
-  ctx.font = NC_FONT_PILL;
+  // ชื่อ: "ไม่อยู่ใน pipeline" จางด้วยสี titleTextDim อย่างเดียว (ไม่คูณ alpha ซ้ำ — 0.7 ทำ contrast บนขาวเหลือ ~3.1:1 < 4.5:1)
+  if (disabled) ctx.globalAlpha = 0.45;
+  ctx.font = NC_FONT_TITLE;
+  ctx.textAlign = "left";
   ctx.textBaseline = "alphabetic";
-  ctx.textAlign = "center";
-  const pw = 44;
-  ctx.fillStyle = "rgba(5,11,20,0.8)";
-  ctx.beginPath();
-  ctx.roundRect(W - pw - 30, -TH + 6, pw, 16, 8);
-  ctx.fill();
-  ctx.fillStyle = "#a7b2c3";
-  ctx.fillText("ปิดอยู่", W - pw / 2 - 30, -TH + 17.5);
+  ctx.fillStyle = sel ? g.titleTextSel : inFlow && !disabled ? g.titleText : g.titleTextDim;
+  const nx = isDisplay ? 2 : NC_PAD;
+  ctx.fillText(ellipsisText(ctx, node, "nm", titleOf(node), (isDisplay ? W : W - NC_PAD * 2) - 2), nx, -8);
+  if (!disabled && !inFlow) ctx.globalAlpha = 0.7; // กล่องไอคอน/preview ยังจางตามเดิม
+  if (o.drawBox) {
+    o.drawBox(ctx, box);
+  } else {
+    ctx.fillStyle = o.accent;
+    ctx.beginPath();
+    ctx.roundRect(box.x, box.y, box.w, box.h, 8);
+    ctx.fill();
+    ctx.fillStyle = contrastOn(o.accent);
+    ctx.font = NC_FONT_GLYPH;
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    ctx.fillText(o.glyph || NC_ICON_FALLBACK, box.x + box.w / 2, box.y + box.h / 2 + 1);
+  }
+  if (disabled) { // ลายเฉียงทับกล่อง
+    ctx.beginPath();
+    ctx.roundRect(box.x, box.y, box.w, box.h, 8);
+    ctx.clip();
+    ctx.strokeStyle = g.statusOff;
+    ctx.globalAlpha = 0.6;
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    for (let x = box.x - box.h; x < box.x + box.w; x += 6) {
+      ctx.moveTo(x, box.y + box.h);
+      ctx.lineTo(x + box.h, box.y);
+    }
+    ctx.stroke();
+  }
+  ctx.restore();
+
+  // 3) error: กรอบประแดงรอบการ์ด (ไม่พึ่งสีอย่างเดียว: ประ + ไฟแดง + ข้อความ)
+  if (err && !disabled) {
+    ctx.save();
+    ctx.strokeStyle = g.err;
+    ctx.lineWidth = 1.5;
+    ctx.setLineDash([4, 3]);
+    ctx.beginPath();
+    ctx.roundRect(card.x + 1, card.y + 1, card.w - 2, card.h - 2, NC_RADIUS);
+    ctx.stroke();
+    ctx.restore();
+  }
+
+  // 4) ไฟสามดวง + บรรทัดเล็ก (ค่าหลัก · ถ้า error = ข้อความ error สีแดง · ปิดอยู่ = ป้าย "ปิดอยู่")
+  //    การ์ดทั่วไป: ไฟอยู่ขวากล่องไอคอน บรรทัดเล็กอยู่ล่างชิดซ้าย · Display: ไฟกลางใต้การ์ด ตามด้วยขนาดภาพ
+  const lit = disabled ? null : err ? "err" : inFlow ? "run" : "idle";
+  let sx, sy, align, maxW;
+  if (isDisplay) {
+    const ly = box.y + box.h + 10;
+    drawTrafficLight(ctx, W / 2, ly, lit, 11);
+    sx = W / 2; sy = ly + 17; align = "center"; maxW = W - 8;
+  } else {
+    drawTrafficLight(ctx, box.x + box.w + 14 + 11, box.y + box.h / 2, lit, 11);
+    sx = NC_PAD; sy = box.y + box.h + 15; align = "left"; maxW = W - NC_PAD * 2;
+  }
+  ctx.save();
+  ctx.textAlign = align;
+  ctx.textBaseline = "alphabetic";
+  if (disabled) {
+    ctx.font = NC_FONT_PILL;
+    const pw = 46;
+    const px = align === "center" ? sx - pw / 2 : sx;
+    ctx.fillStyle = g.pillBg;
+    ctx.beginPath();
+    ctx.roundRect(px, sy - 11, pw, 15, 7.5);
+    ctx.fill();
+    ctx.fillStyle = g.pillText;
+    ctx.textAlign = "center";
+    ctx.fillText("ปิดอยู่", px + pw / 2, sy);
+  } else if (err || o.sub) {
+    ctx.font = NC_FONT_MONO;
+    ctx.fillStyle = err ? g.errText : g.textSub;
+    ctx.fillText(ellipsisText(ctx, node, "sub", err ? String(err) : o.sub, maxW), sx, sy);
+  }
   ctx.restore();
 }
 
@@ -228,63 +305,31 @@ function registerNodeTypes(onGraphChange) {
   // ปิดเมนู node ประเภทอื่นที่ติดมากับ LiteGraph — เหลือเฉพาะของเรา
   LiteGraph.clearRegisteredTypes();
 
-  // chip ไอคอน 20x20 (มุมซ้ายของแถวเนื้อหา)
-  function drawIconChip(ctx, accent, x, y, icon) {
-    ctx.fillStyle = hexA(accent, 0.16);
-    ctx.strokeStyle = hexA(accent, 0.5);
-    ctx.lineWidth = 1;
-    ctx.beginPath();
-    ctx.roundRect(x, y, 20, 20, 5);
-    ctx.fill();
-    ctx.stroke();
-    ctx.fillStyle = "#f5f7fa";
-    ctx.font = NC_FONT_ICON;
-    ctx.textAlign = "center";
-    ctx.textBaseline = "alphabetic";
-    ctx.fillText(icon, x + 10, y + 15);
-    ctx.textAlign = "left";
-  }
-
   // --- node แหล่งภาพ (ชื่อ/ไอคอน/รายละเอียดสลับตามโหมด — ดู setSourceInfo) ---
   function SourceNode() {
     this.addOutput("ภาพ", "image");
-    this.boxcolor = "#2997ff"; // จุดสี Source = Blue (Design §3.1)
-    this.color = mixHex(this.boxcolor, NC_TITLE_BASE, 0.18);
-    this.bgcolor = NC_BODY;
-    this.size = [NC_W, 56];
+    this.boxcolor = "#2997ff"; // สี Source = Blue (Design §3.1)
+    this.size = [LAYOUT_STD.w, LAYOUT_STD.h];
+    styleSlots(this);
   }
+  registerCardColors(SourceNode, "#2997ff");
   SourceNode.title = "📷 แหล่งภาพ";
   SourceNode.prototype.onConnectionsChange = onGraphChange;
   SourceNode.prototype.onDrawForeground = function (ctx) {
-    if (this.flags && this.flags.collapsed) return;
     const kind = SOURCE_KINDS[sourceInfo.kind] || SOURCE_KINDS.camera;
-    ctx.save();
-    drawIconChip(ctx, this.boxcolor, 10, 32, kind.icon);
-    ctx.textBaseline = "alphabetic";
-    ctx.textAlign = "left";
-    ctx.font = NC_FONT_LINE1;
-    ctx.fillStyle = "#f5f7fa";
-    ctx.fillText(kind.line1, 38, 41);
-    if (sourceInfo.detail) {
-      ctx.font = NC_FONT_MONO;
-      ctx.fillStyle = "#a7b2c3";
-      ctx.fillText(ellipsisText(ctx, this, "src", sourceInfo.detail, this.size[0] - 38 - 10), 38, 53);
-    }
-    ctx.restore();
-    drawStatusDot(ctx, this, false);
-    drawCardChrome(ctx, this);
+    drawCard(ctx, this, { accent: this.boxcolor, glyph: kind.icon, sub: sourceInfo.detail || kind.line1 });
   };
-  installCardHooks(SourceNode);
+  installCardHooks(SourceNode, LAYOUT_STD);
   LiteGraph.registerNodeType(SOURCE_TYPE, SourceNode);
 
   // --- node แสดงผลลัพธ์ (วาด preview ของสายตัวเองในช่อง well) ---
   function DisplayNode() {
     this.addInput("ภาพ", "image");
-    this.size = [NC_W, 96];
-    this.boxcolor = "#6d7bff"; // จุดสี Output = Indigo (Design §3.1)
-    this.color = mixHex(this.boxcolor, NC_TITLE_BASE, 0.18);
-    this.bgcolor = NC_BODY;
+    this.size = [LAYOUT_DISPLAY.w, LAYOUT_DISPLAY.h];
+    this.boxcolor = "#6d7bff"; // สี Output = Indigo (Design §3.1)
+    styleSlots(this);
   }
+  registerCardColors(DisplayNode, "#6d7bff");
   DisplayNode.title = "🖥️ ผลลัพธ์";
   DisplayNode.prototype.onConnectionsChange = onGraphChange;
   DisplayNode.prototype.onRemoved = function () {
@@ -297,152 +342,101 @@ function registerNodeTypes(onGraphChange) {
   DisplayNode.prototype.onConfigure = function (o) {
     if (o && o.mvName !== undefined) this.__mvName = o.mvName;
   };
-  // วาดภาพผลลัพธ์ใน well (fit รักษาอัตราส่วน) — แถวพอร์ต "ภาพ" อยู่เหนือ well ไม่ทับกัน
+  // กล่อง = ช่อง preview สด: วาดภาพผลลัพธ์ใน well (fit รักษาอัตราส่วน) · พอร์ต "ภาพ" อยู่กลางขอบซ้ายของ well
   DisplayNode.prototype.onDrawForeground = function (ctx) {
-    if (this.flags && this.flags.collapsed) return;
-    const wx = 8, wy = 26, ww = this.size[0] - 16, wh = this.size[1] - wy - 8;
-    ctx.save();
-    ctx.fillStyle = "#050b14";
-    ctx.beginPath();
-    ctx.roundRect(wx, wy, ww, wh, 6);
-    ctx.fill();
     const img = displayImages.get(this.id);
-    if (!img || !img.width) {
-      ctx.fillStyle = "#8592a4";
-      ctx.font = NC_FONT_PORT;
-      ctx.textAlign = "center";
-      ctx.textBaseline = "alphabetic";
-      ctx.fillText("ยังไม่มีสายเข้า", wx + ww / 2, wy + wh / 2 + 4);
-    } else {
-      const ar = img.width / img.height;
-      let dw = ww - 2;
-      let dh = dw / ar;
-      if (dh > wh - 2) {
-        dh = wh - 2;
-        dw = dh * ar;
-      }
-      ctx.save();
-      ctx.beginPath();
-      ctx.roundRect(wx, wy, ww, wh, 6);
-      ctx.clip();
-      ctx.drawImage(img, wx + (ww - dw) / 2, wy + (wh - dh) / 2, dw, dh);
-      ctx.restore();
-    }
-    ctx.strokeStyle = "rgba(255,255,255,0.08)";
-    ctx.lineWidth = 1;
-    ctx.beginPath();
-    ctx.roundRect(wx + 0.5, wy + 0.5, ww - 1, wh - 1, 6);
-    ctx.stroke();
-    ctx.restore();
-    drawStatusDot(ctx, this, false);
-    drawCardChrome(ctx, this);
+    const accent = this.boxcolor;
+    drawCard(ctx, this, {
+      accent,
+      sub: img && img.width ? `${img.width}×${img.height}` : "",
+      drawBox: (c, box) => {
+        // preview อยู่ในการ์ด (inset 4px) รักษาอัตราส่วนภาพ — ขอบการ์ด/ขอบเลือกวาดโดย drawCard
+        const wx = box.x + 4, wy = box.y + 4, ww = box.w - 8, wh = box.h - 8;
+        c.fillStyle = gc().well;
+        c.beginPath();
+        c.roundRect(wx, wy, ww, wh, 5);
+        c.fill();
+        if (!img || !img.width || !img.height) {
+          c.fillStyle = gc().wellText;
+          c.font = NC_FONT_PORT;
+          c.textAlign = "center";
+          c.textBaseline = "alphabetic";
+          c.fillText("ยังไม่มีสายเข้า", wx + ww / 2, wy + wh / 2 + 4);
+        } else {
+          const ar = img.width / img.height;
+          let dw = ww;
+          let dh = dw / ar;
+          if (dh > wh) {
+            dh = wh;
+            dw = dh * ar;
+          }
+          c.save();
+          c.beginPath();
+          c.roundRect(wx, wy, ww, wh, 5);
+          c.clip();
+          c.drawImage(img, wx + (ww - dw) / 2, wy + (wh - dh) / 2, dw, dh);
+          c.restore();
+        }
+      },
+    });
   };
-  installCardHooks(DisplayNode);
+  installCardHooks(DisplayNode, LAYOUT_DISPLAY);
   LiteGraph.registerNodeType(DISPLAY_TYPE, DisplayNode);
 
   // --- node Deep Learning (YOLO Detect) — ต่อสาย แหล่งภาพ → กล่องนี้ → ผลลัพธ์ ---
-  // ไม่บังคับ size เอง — ให้ LiteGraph auto-size ตาม slot เพื่อให้จุดต่อ (วาด) ตรงกับพื้นที่คลิก
   function DLNode() {
     this.addInput("เข้า", "image");
     this.addOutput("ออก", "image");
-    this.boxcolor = "#ef5bff"; // จุดสี Deep Learning = Pink (Design §3.1)
-    this.color = mixHex(this.boxcolor, NC_TITLE_BASE, 0.18);
-    this.bgcolor = NC_BODY;
-    this.size = [NC_W, 56];
+    this.boxcolor = "#ef5bff"; // สี Deep Learning = Pink (Design §3.1)
+    this.size = [LAYOUT_STD.w, LAYOUT_STD.h];
     this.__mvInPipeline = false;
+    styleSlots(this);
   }
+  registerCardColors(DLNode, "#ef5bff");
   DLNode.title = "🧠 Model Detect";
   DLNode.prototype.onConnectionsChange = onGraphChange;
   DLNode.prototype.onDrawForeground = function (ctx) {
-    if (this.flags && this.flags.collapsed) return;
-    const inFlow = !!this.__mvInPipeline;
-    ctx.save();
-    if (!inFlow) ctx.globalAlpha = 0.7;
-    drawIconChip(ctx, this.boxcolor, 10, 32, "🧠");
-    ctx.textBaseline = "alphabetic";
-    ctx.font = NC_FONT_LINE1;
-    ctx.fillStyle = mixHex(this.boxcolor, "#ffffff", 0.75);
-    ctx.fillText("Deep Learning", 38, 47);
-    ctx.restore();
-    drawStatusDot(ctx, this, false);
-    drawCardChrome(ctx, this);
+    drawCard(ctx, this, { accent: this.boxcolor, glyph: "🧠", sub: "Deep Learning" });
   };
-  installCardHooks(DLNode);
+  installCardHooks(DLNode, LAYOUT_STD);
   LiteGraph.registerNodeType(DL_TYPE, DLNode);
 
   // --- node ของ filter แต่ละตัวจาก registry (ลงสีตามกลุ่ม) ---
   for (const [id, def] of Object.entries(FILTERS)) {
     const colors = GROUP_COLORS[def.group] || { title: "#475569", body: "#1e293b" };
-    const tint = mixHex(colors.title, "#ffffff", 0.75); // สีตัวอักษรหมวดในตัวการ์ด (อ่านง่ายบนพื้นเข้ม)
-    // node 2 อินพุต: แถวพอร์ต "เข้า B" (slot ที่ 2) อยู่ระดับเดียวกับแถวเนื้อหา → เลื่อนแถวเนื้อหาลง 1 slot
-    // ไม่งั้น chip ไอคอน + ชื่อหมวดทับป้าย "เข้า B" และจุดต่อสาย
-    const rowShift = def.inputs === 2 ? 24 : 0; // = LiteGraph.NODE_SLOT_HEIGHT
     function FilterNode() {
       this.addInput("เข้า", "image");
-      if (def.inputs === 2) this.addInput("เข้า B", "image"); // Tier 2 §A.1 — เฉพาะ op ที่รับภาพ 2 ใบ
+      if (def.inputs === 2) this.addInput("เข้า B", "image"); // Tier 2 §A.1 — เฉพาะ op ที่รับภาพ 2 ใบ (พอร์ตซ้อนสองอันรอบกลางกล่อง)
       this.addOutput("ออก", "image");
       this.properties = defaultParams(id);
       this.filterId = id;
-      // หัวการ์ด = สีหมวดผสมกับพื้นเข้มแบบทึบ (ไม่โปร่ง สายไม่เห็นทะลุ) + แถบสีหมวด 3px ใน drawCardChrome
-      this.color = mixHex(colors.title, NC_TITLE_BASE, 0.18);
-      this.bgcolor = NC_BODY;
-      this.boxcolor = colors.title; // จุดสีประจำหมวดที่หัว node
-      this.size = [NC_W, 56 + rowShift]; // แถวพอร์ต + แถวเนื้อหา (หมวด + ค่าหลัก)
+      this.boxcolor = colors.title; // สีประจำหมวด = สีกล่องไอคอน
+      this.size = [LAYOUT_STD.w, LAYOUT_STD.h];
       this.__mvInPipeline = false;
+      styleSlots(this);
     }
     // ชื่อบนกระดานตัดวงเล็บอังกฤษออก ให้สั้น ไม่ล้น (palette ยังใช้ชื่อเต็ม)
+    registerCardColors(FilterNode, colors.title);
     FilterNode.title = def.name.replace(/\s*\([^)]*\)\s*/g, "").trim();
     FilterNode.prototype.filterId = id;
     FilterNode.prototype.onConnectionsChange = onGraphChange;
     FilterNode.prototype.onPropertyChanged = onGraphChange;
-    // การ์ดการทดลอง: icon chip + ชื่อหมวด (ซ้าย) + ค่าหลักที่ตั้งไว้ (ขวา, mono)
+    // การ์ด: ชื่อ (เหนือกล่อง) · กล่องไอคอนสีหมวด (glyph ของ op ปัจจุบัน) · ไฟ · ค่าหลักที่ตั้งไว้ (ใต้ไฟ)
     FilterNode.prototype.onDrawForeground = function (ctx) {
-      if (this.flags && this.flags.collapsed) return;
-      const disabled = this.mode === LiteGraph.NEVER;
-      const inFlow = !!this.__mvInPipeline;
-      const W = this.size[0];
-      const accent = this.boxcolor;
-
-      ctx.save();
-      if (disabled) ctx.globalAlpha = 0.45;
-      else if (!inFlow) ctx.globalAlpha = 0.7;
-
-      drawIconChip(ctx, accent, 10, 32 + rowShift, GROUP_ICON[this.filterId] || NC_ICON_FALLBACK);
-
-      // op/method ปัจจุบัน → ค่าหลัก (ถ้ามี) ชิดขวาแบบ mono
       const opId = currentOpId(this.filterId, this.properties);
       const primaryFn = OP_PRIMARY[opId];
       let value = "";
       try {
         if (primaryFn) value = primaryFn(localParamsFor(this.filterId, this.properties)) || "";
       } catch { value = ""; }
-      const opDef = FILTERS[this.filterId];
-      const nameText = opDef ? opDef.name : this.filterId;
-      ctx.textBaseline = "alphabetic";
-      // แบ่งความกว้างแถวเนื้อหา: ชื่อหมวดได้ที่ก่อน (สูงสุด 92px) ที่เหลือให้ค่าหลัก — ไม่ให้ฝั่งใดถูกตัดเหลือแต่ "…"
-      const rowW = W - 38 - 10;
-      ctx.font = NC_FONT_LINE1;
-      const nameBudget = value ? Math.min(ctx.measureText(nameText).width, 92) : rowW;
-      let valueW = 0;
-      if (value) {
-        ctx.font = NC_FONT_MONO;
-        const v = ellipsisText(ctx, this, "v", value, Math.max(30, rowW - nameBudget - 8));
-        valueW = ctx.measureText(v).width;
-        ctx.textAlign = "right";
-        ctx.fillStyle = "#a7b2c3";
-        ctx.fillText(v, W - 10, 47 + rowShift);
-      }
-      ctx.textAlign = "left";
-      ctx.font = NC_FONT_LINE1;
-      ctx.fillStyle = tint;
-      ctx.fillText(ellipsisText(ctx, this, "l1", nameText, W - 38 - 10 - (valueW ? valueW + 8 : 0)), 38, 47 + rowShift);
-      ctx.restore();
-
-      if (disabled) drawDisabledMark(ctx, this);
-      drawStatusDot(ctx, this, disabled);
-      drawCardChrome(ctx, this);
+      drawCard(ctx, this, {
+        accent: this.boxcolor,
+        glyph: OP_ICON[opId] || GROUP_ICON[this.filterId] || NC_ICON_FALLBACK,
+        sub: value,
+        disabled: this.mode === LiteGraph.NEVER,
+      });
     };
-    installCardHooks(FilterNode);
+    installCardHooks(FilterNode, LAYOUT_STD);
     LiteGraph.registerNodeType("filters/" + id, FilterNode);
   }
 }
@@ -458,7 +452,7 @@ export function createGraphEditor(canvasEl, cb) {
   const canvas = new LGraphCanvas(canvasEl, graph);
   canvas.allow_searchbox = false; // กันเมนูซับซ้อนเกินจำเป็นสำหรับมือใหม่
   // ต่อสายง่ายขึ้นสำหรับมือใหม่: จุด/เส้นใหญ่ขึ้น + ระยะจับ (hit-area) กว้างขึ้น
-  canvas.connections_width = 2; // เส้นบางลงตาม Design §12 (~2-3px) แต่ยังจับง่าย
+  canvas.connections_width = 2.5; // เส้นชัดบนพื้นขาว (~2-3px) แต่ยังจับง่าย
   canvas.render_connection_arrows = false;
   canvas.render_canvas_border = false; // กรอบ "ขนาดจอ" ที่ origin กราฟ — เดิมซ่อนอยู่ที่ขอบ canvas แต่พอ Fit เลื่อนมุมมองจะเห็นเป็นสี่เหลี่ยมลอย
   canvas.round_radius = 10; // มุมมนการ์ด node (Design §11.1 radius-md)
@@ -475,7 +469,7 @@ export function createGraphEditor(canvasEl, cb) {
   function drawDotGrid(ctx, visible) {
     const r = dotGridRange(visible, canvas.ds.scale);
     if (!r) return;
-    ctx.fillStyle = NC_DOT;
+    ctx.fillStyle = gc().dot;
     ctx.beginPath();
     for (let c = 0; c < r.cols; c++) {
       const x = r.x0 + c * r.spacing;
@@ -511,10 +505,11 @@ export function createGraphEditor(canvasEl, cb) {
   const baseRenderLink = canvas.renderLink;
   canvas.renderLink = function (ctx, a, b, link, skipBorder, flow, color, startDir, endDir, sub) {
     baseRenderLink.call(this, ctx, a, b, link, skipBorder, flow, color, startDir, endDir, sub);
+    if (link && !flow && this.ds.scale >= 0.4) drawLinkArrow(this, ctx, a, b, color || link.color || this.default_link_color, startDir, endDir);
     if (!link || flow || !flowOn() || !linkInPipeline(link)) return;
     const n = flowDotCount(Math.hypot(b[0] - a[0], b[1] - a[1]));
     const now = LiteGraph.getTime();
-    ctx.fillStyle = NC_FLOW;
+    ctx.fillStyle = gc().flow;
     ctx.beginPath();
     for (let i = 0; i < n; i++) {
       const p = this.computeConnectionPoint(a, b, flowT(now, i, n), startDir, endDir);
@@ -523,6 +518,22 @@ export function createGraphEditor(canvasEl, cb) {
     }
     ctx.fill();
   };
+  // หัวลูกศรเข้าพอร์ตปลายทาง (ทิศตามเส้นโค้งช่วงท้าย) — ปลายแหลมห่างจุดพอร์ต 5px ไม่ให้ทับจุดพอร์ต
+  function drawLinkArrow(cv, ctx, a, b, color, startDir, endDir) {
+    const p = cv.computeConnectionPoint(a, b, 0.94, startDir, endDir);
+    const ang = Math.atan2(b[1] - p[1], b[0] - p[0]);
+    const ux = Math.cos(ang), uy = Math.sin(ang);
+    const tx = b[0] - ux * 5, ty = b[1] - uy * 5;
+    ctx.save();
+    ctx.fillStyle = color;
+    ctx.beginPath();
+    ctx.moveTo(tx, ty);
+    ctx.lineTo(tx - ux * 9 - uy * 4.5, ty - uy * 9 + ux * 4.5);
+    ctx.lineTo(tx - ux * 9 + uy * 4.5, ty - uy * 9 - ux * 4.5);
+    ctx.closePath();
+    ctx.fill();
+    ctx.restore();
+  }
   function linkInPipeline(link) {
     return isFlowLink(graph.getNodeById(link.origin_id), graph.getNodeById(link.target_id));
   }
@@ -542,27 +553,40 @@ export function createGraphEditor(canvasEl, cb) {
   const syncFlow = () => flowLoop.sync();
   if (reducedMql && reducedMql.addEventListener) reducedMql.addEventListener("change", syncFlow);
   // สีพื้นกระดาน + เส้นกริดให้เข้าโทน dark-industrial (Design §3.1)
-  canvas.clear_background_color = "#08111d"; // = --surface-canvas
-  LiteGraph.NODE_TITLE_HEIGHT = 28; // เดิม 30 — หัวการ์ดกระชับ (hit-test ของ litegraph อ่านค่านี้ตอนรันจึงตามอัตโนมัติ)
-  LiteGraph.NODE_TITLE_TEXT_Y = 19;
-  LiteGraph.NODE_DEFAULT_BGCOLOR = NC_BODY;
-  LiteGraph.NODE_DEFAULT_COLOR = NC_TITLE_BASE;
-  LiteGraph.NODE_TITLE_COLOR = "#f5f7fa";
-  LiteGraph.NODE_SELECTED_TITLE_COLOR = "#ffffff";
-  LiteGraph.NODE_DEFAULT_BOXCOLOR = "rgba(255,255,255,0.35)";
+  // การ์ดไม่มีแถบหัวแล้ว (NO_TITLE) → ค่านี้คือ "ความสูงพื้นที่ชื่อเหนือ pos" ที่ LiteGraph นับเป็นส่วนของ node (hit-test/bounding ตามอัตโนมัติ)
+  LiteGraph.NODE_TITLE_HEIGHT = NC_NAME_H;
   LiteGraph.NODE_BOX_OUTLINE_COLOR = "transparent";
-  LiteGraph.NODE_TEXT_COLOR = "#8592a4"; // ป้าย "เข้า/ออก/ภาพ" ของพอร์ต
-  LiteGraph.DEFAULT_SHADOW_COLOR = "rgba(1,6,14,0.45)";
-  LiteGraph.LINK_COLOR = "#4a6285";
   LiteGraph.NODE_SLOT_HEIGHT = 24; // ช่องจุดต่อสายสูงขึ้น = จับง่ายขึ้น
   LiteGraph.link_center_field = 6;
   // ค่าที่ LGraphCanvas คัดลอกจาก LiteGraph ตอน constructor (ตั้งทีหลังไม่มีผล) → ตั้งบน canvas ตรง ๆ
-  canvas.default_link_color = "#4a6285";
-  canvas.node_title_color = "#f5f7fa";
   canvas.render_connections_border = false;
-  canvas.default_connection_color = { input_off: "#6f86a6", input_on: "#58b4ff", output_off: "#6f86a6", output_on: "#58b4ff" };
-  canvas.default_connection_color_byType = { image: "#58b4ff" };
-  canvas.default_connection_color_byTypeOff = { image: "#6f86a6" };
+  // สีทั้งหมดที่ขึ้นกับธีม (พื้นกระดาน = --surface-canvas, การ์ด, ตัวอักษร, สาย, พอร์ต) ตั้งในฟังก์ชันเดียว
+  // เรียกตอนเริ่ม + ทุกครั้งที่สลับธีม (ไม่ต้อง reload) — ค่าที่ LGraphCanvas คัดลอกตอน constructor ต้องตั้งบน canvas ตรง ๆ
+  function applyGraphTheme() {
+    const g = gc();
+    canvas.clear_background_color = g.canvasBg;
+    LiteGraph.NODE_DEFAULT_BGCOLOR = g.body;
+    LiteGraph.NODE_DEFAULT_COLOR = g.titleBase;
+    LiteGraph.NODE_TITLE_COLOR = g.titleText;
+    LiteGraph.NODE_SELECTED_TITLE_COLOR = g.titleTextSel;
+    LiteGraph.NODE_DEFAULT_BOXCOLOR = g.defaultBox;
+    LiteGraph.NODE_TEXT_COLOR = "transparent"; // ซ่อนป้าย "เข้า/ออก/ภาพ" ของพอร์ต (การ์ดโชว์แค่จุดพอร์ต · ชื่อ slot ยังอยู่ในข้อมูล)
+    LiteGraph.DEFAULT_SHADOW_COLOR = g.shadow;
+    LiteGraph.LINK_COLOR = g.link;
+    canvas.default_link_color = g.link;
+    canvas.node_title_color = g.titleText;
+    canvas.default_connection_color = { input_off: g.portIdle, input_on: g.portOn, output_off: g.portIdle, output_on: g.portOn };
+    canvas.default_connection_color_byType = { image: g.portOn };
+    canvas.default_connection_color_byTypeOff = { image: g.portIdle };
+    for (const [Ctor, accent] of cardClasses) paintCardClass(Ctor, accent);
+    graph._nodes.forEach((n) => { n.__mvTextCache = null; });
+    canvas.setDirty(true, true);
+  }
+  applyGraphTheme();
+  onThemeChange(() => {
+    applyGraphTheme();
+    highlightNodeLinks(highlightedNode); // ทาสีสาย highlight ใหม่ตามธีม (ประกาศทีหลัง จึงเรียกเฉพาะตอนสลับธีม)
+  });
   // ฟอนต์ของ litegraph เอง (ชื่อหัวการ์ด/ป้ายพอร์ต) — ค่าเดิมคือ Arial
   canvas.title_text_font = NC_FONT_TITLE;
   canvas.inner_text_font = NC_FONT_PORT;
@@ -575,7 +599,6 @@ export function createGraphEditor(canvasEl, cb) {
     // canvas ไม่ได้ใช้ฟอนต์ผ่าน DOM → สั่งโหลดน้ำหนักที่การ์ดใช้เองก่อน แล้ววาดใหม่
     Promise.all([
       document.fonts.load(NC_FONT_TITLE, "ก"),
-      document.fonts.load(NC_FONT_LINE1, "ก"),
       document.fonts.load(NC_FONT_MONO, "0"),
     ]).catch(() => {}).then(() => document.fonts.ready).then(redrawAfterFonts);
   }
@@ -585,7 +608,7 @@ export function createGraphEditor(canvasEl, cb) {
   src.pos = [40, 80];
   graph.add(src);
   const dst = LiteGraph.createNode(DISPLAY_TYPE);
-  dst.pos = [260, 80];
+  dst.pos = [src.pos[0] + NC_W + NC_GAP, 80 + DISPLAY_DY]; // พอร์ตออกของ Source ตรงระดับพอร์ตเข้าของ Display
   graph.add(dst);
   src.connect(0, dst, 0);
 
@@ -772,6 +795,9 @@ export function createGraphEditor(canvasEl, cb) {
     graph.configure(JSON.parse(s));
     graph.start(); // configure→clear หยุด loop — เปิดใหม่กัน node ที่พึ่ง onExecute เงียบตาย
     applyingHistory = false;
+    // configure สร้าง node/link ชุดใหม่ + ไม่มีการเลือก (onSelect(null)) → ล้าง highlight ที่ค้าง ไม่งั้นสลับธีมแล้วทาสีสายของ node ที่ไม่มีแล้ว
+    highlightedNode = null;
+    highlightedLinkObjs = [];
     canvas.setDirty(true, true);
     cb.onSelect(null);
     cb.onPipelineChange(extractPipelines());
@@ -800,7 +826,9 @@ export function createGraphEditor(canvasEl, cb) {
 
   // เน้นเส้นเชื่อม (เข้า+ออก) ของ node ที่เลือก → เห็น data flow ง่ายขึ้น (Design §22)
   let highlightedLinkObjs = [];
+  let highlightedNode = null; // จำ node ล่าสุดไว้ทาสีสายใหม่เมื่อสลับธีม
   function highlightNodeLinks(node) {
+    highlightedNode = node || null;
     // litegraph เก็บ highlighted_links เป็น object keyed by link id (ไม่ใช่ array)
     // litegraph วาดสาย highlight เป็นสีขาวตายตัว (renderLink) → ไม่ใช้ highlighted_links แต่ตั้ง link.color
     // เป็นสีโฟกัส (#8cc8ff) ให้สายของกล่องที่เลือก แล้วคืนค่าเมื่อเลือกกล่องอื่น
@@ -809,7 +837,7 @@ export function createGraphEditor(canvasEl, cb) {
     if (node) {
       const mark = (id) => {
         const l = id != null ? graph.links[id] : null;
-        if (l) { l.color = NC_FOCUS; highlightedLinkObjs.push(l); }
+        if (l) { l.color = gc().focus; highlightedLinkObjs.push(l); }
       };
       (node.inputs || []).forEach((i) => { if (i) mark(i.link); });
       (node.outputs || []).forEach((o) => { (o && o.links ? o.links : []).forEach(mark); });
@@ -852,6 +880,9 @@ export function createGraphEditor(canvasEl, cb) {
     }
   };
   canvas.onNodeDeselected = () => { highlightNodeLinks(null); cb.onSelect(null); };
+  // Ctrl+A / ลากกรอบเลือก เรียก selectNodes ตรง (ไม่ผ่าน onNodeSelected) → litegraph ใส่ highlighted_links = สาย "#FFF"
+  // บนกระดานขาวสายหายเหลือแต่หัวลูกศร → ล้างทิ้งทุกครั้งที่ selection เปลี่ยน (ใช้ link.color ของ highlightNodeLinks แทน)
+  canvas.onSelectionChange = () => { canvas.highlighted_links = {}; };
 
   graph.onNodeAdded = () => notify();
   graph.onNodeRemoved = (node) => {
@@ -931,7 +962,7 @@ export function createGraphEditor(canvasEl, cb) {
       newNode: { w: node.size[0], h: node.size[1], inputs: def && def.inputs },
       fanOut: outLinks.length,
       downstream: down.map((n) => ({ id: n.id, x: n.pos[0], y: n.pos[1], w: n.size[0], h: n.size[1], direct: directIds.has(n.id) })),
-      obstacles, TH,
+      obstacles, TH, gap: NC_GAP, // ระยะห่างเท่ากับตอนวางเทมเพลต (เผื่อพอร์ต + หัวลูกศร)
     });
     if (plan.mode !== "splice") return null;
     return { plan, sel, outLinks, down };
@@ -1008,7 +1039,7 @@ export function createGraphEditor(canvasEl, cb) {
     // เรียงเป็นแถวเดียวซ้าย→ขวา: Source [40,80] → ขั้นตอนต่อกัน → Display อยู่ใต้ขั้นตอนสุดท้าย
     src.pos = [40, 80];
     let prev = src;
-    let x = src.pos[0] + NC_W + 28;
+    let x = src.pos[0] + NC_W + NC_GAP;
     let lastX = null;
     for (const raw of steps) {
       const step = migrateLegacyStep(raw); // เทมเพลตเก่าอ้างกลุ่มเก่า (dropdown ไม่ครบหมวด) → ย้ายไปกลุ่มระดับหมวดที่ครบ
@@ -1017,12 +1048,13 @@ export function createGraphEditor(canvasEl, cb) {
       if (step.params) Object.assign(n.properties, step.params);
       n.pos = [x, 80];
       lastX = x;
-      x += NC_W + 28;
+      x += NC_W + NC_GAP;
       graph.add(n);
       prev.connect(0, n, 0); // out → in (source/filter output ต่อได้หลายเส้น)
       prev = n;
     }
-    dst.pos = lastX == null ? [src.pos[0] + NC_W + 28, 80] : [lastX, 80 + 56 + 24 + LiteGraph.NODE_TITLE_HEIGHT];
+    // การ์ดแคบลงมาก → ผลลัพธ์อยู่ต่อท้ายแถวเดียวกัน (พอร์ตตรงระดับ ไม่ต้องหักลงแถวใหม่เหมือนการ์ด 192px เดิม)
+    dst.pos = [x, 80 + DISPLAY_DY];
     prev.connect(0, dst, 0); // ตัวสุดท้าย → ผลลัพธ์ (แทนสายเดิมของ display)
     canvas.setDirty(true, true);
     notify();
