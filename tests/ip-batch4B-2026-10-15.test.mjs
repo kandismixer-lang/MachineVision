@@ -33,7 +33,7 @@ if (!isReady(cv)) {
 
 const readSrc = (rel) => fs.readFileSync(new URL(`../src/renderer/${rel}`, import.meta.url), 'utf8');
 const NEW_OPS = ['deconv_wiener', 'deconv_lucy', 'ecc_register', 'gabor_filter', 'glcm', 'nlm_denoise', 'dehaze', 'dct_jpeg'];
-const HOST = { deconv_wiener: 'filter_denoise', deconv_lucy: 'filter_denoise', nlm_denoise: 'filter_denoise', ecc_register: 'image_arithmetic', gabor_filter: 'analysis_detect', glcm: 'analysis_detect', dehaze: 'enhance_tools', dct_jpeg: 'frequency' };
+const HOST = { deconv_wiener: 'filter_denoise', deconv_lucy: 'filter_denoise', nlm_denoise: 'filter_denoise', ecc_register: 'image_registration' /* 2026-10-24 ย้ายจาก image_arithmetic */, gabor_filter: 'analysis_detect', glcm: 'analysis_detect', dehaze: 'enhance_tools', dct_jpeg: 'frequency' };
 const NEEDS = { deconv_wiener: 'any', deconv_lucy: 'any', ecc_register: 'any', gabor_filter: 'gray', glcm: 'gray', nlm_denoise: 'any', dehaze: 'any', dct_jpeg: 'gray' };
 const NEW_ICONS = { deconv_wiener: '⟲', deconv_lucy: '⌾', ecc_register: '⧉', gabor_filter: '⋈', glcm: '⧈', nlm_denoise: '✣', dehaze: '🌫', dct_jpeg: '⬗' };
 const MORPH_NEW = ['hit_or_miss', 'regional_max', 'regional_min', 'h_maxima', 'extended_max'];
@@ -590,7 +590,7 @@ for (const [variant, what] of [['A', 'the old params'], ['B', 'every new param p
 // ===================================================================
 test('ip4b-S1. (static structure) the 8 new ops exist with the right needs and host groups; OPS = 115 (96 + 19 morph_* from 2026-10-18), FILTERS = 34 (33 + morph_tools); Morphology has 19 operations (the old 14 first, in order); no select key is "mode"; defaultParams() == the OPS defaults (prefixed); legacy groups untouched; the category groups = the palette sections in order', () => {
   assert.equal(Object.keys(OPS).length, 115); // 96 + 19 morph_* (Morphology แยกเครื่องมือ, 2026-10-18)
-  assert.equal(Object.keys(FILTERS).length, 34); // +morph_tools (2026-10-18)
+  assert.equal(Object.keys(FILTERS).length, 35); // +morph_tools (2026-10-18) +image_registration (2026-10-24)
   for (const id of NEW_OPS) {
     assert.ok(OPS[id], id); assert.equal(OPS[id].needs, NEEDS[id], `${id}.needs`);
     assert.equal(OP_TO_FILTER[id], HOST[id], `${id} host`);
@@ -631,7 +631,8 @@ test('ip4b-S1. (static structure) the 8 new ops exist with the right needs and h
   const ad = sec('ANALYSIS & DETECTION');
   assert.deepEqual(ad.slice(ad.indexOf('local_entropy_filter'), ad.indexOf('local_entropy_filter') + 5), ['local_entropy_filter', 'gabor_filter', 'glcm', 'focus_score', 'regionprops']);
   assert.deepEqual(sec('FREQUENCY DOMAIN').slice(-2), ['bandpass_notch', 'dct_jpeg']);
-  assert.deepEqual(sec('IMAGE ARITHMETIC').slice(-2), ['roi_apply', 'ecc_register']);
+  assert.equal(sec('IMAGE ARITHMETIC').at(-1), 'roi_apply'); // 2026-10-24 ecc_register ย้ายไป IMAGE REGISTRATION
+  assert.deepEqual(sec('IMAGE REGISTRATION'), ['template_matching', 'ecc_register']);
   // 2026-10-18: MORPHOLOGY = 19 เครื่องมือ morph_* (ลำดับ/ความหมายล็อกใน tests/morph-split.test.mjs) · ตัวเก่า 'morphology' เป็น legacy ไม่อยู่บน palette
   assert.deepEqual(sec('MORPHOLOGY'), modes('morph_tools'));
   assert.equal(sec('MORPHOLOGY').length, 19);

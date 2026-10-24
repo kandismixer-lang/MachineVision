@@ -1127,7 +1127,7 @@ const sectionOps = (title) => TOOL_SECTIONS.find((s) => s.title === title).ops;
 test('ip3-T1. (static structure) 2 new ops exist with needs any / gray and no "mode" key, FILTERS is still 33, the ops live only in the category groups (enhance_tools / analysis_detect), legacy groups are untouched, defaultParams = OPS defaults, sections and group op lists follow the spec order', () => {
   assert.deepEqual(NEW_OPS.map((id) => OPS[id] && OPS[id].needs), ['any', 'gray']);
   for (const id of [...NEW_OPS, 'regionprops', 'resize', 'rotate']) for (const p of OPS[id].params) assert.notEqual(p.key, 'mode', id);
-  assert.equal(Object.keys(FILTERS).length, 34); // +morph_tools (2026-10-18)
+  assert.equal(Object.keys(FILTERS).length, 35); // +morph_tools (2026-10-18) +image_registration (2026-10-24)
   assert.equal(OP_TO_FILTER.quantize, 'enhance_tools'); assert.equal(OP_TO_FILTER.shape_filter, 'analysis_detect');
   assert.equal(OP_TO_FILTER.resize, 'geometry'); assert.equal(OP_TO_FILTER.rotate, 'geometry');
   const modes = (f) => FILTERS[f].params.find((p) => p.key === 'mode').options.map((o) => o.value);

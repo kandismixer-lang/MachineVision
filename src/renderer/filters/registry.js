@@ -5431,7 +5431,7 @@ export const OPS = {
   // Template Matching (Tier 2, 18b) — กลุ่มเดี่ยวใหม่ inputs:2 (primary = ภาพค้นหา, src2 = template)
   // ===================================================================
   template_matching: {
-    name: "Template Matching",
+    name: "Normalized Cross-Correlation",
     needs: "gray",
     desc: "หาตำแหน่งของ 'ภาพตัวอย่างเล็ก' (template) ในภาพใหญ่ (search image) โดยเลื่อน template ไปทาบทั่วภาพแล้ววัดความคล้ายที่แต่ละตำแหน่ง — จุดที่คล้ายที่สุดคือคำตอบ ใช้หาตำแหน่งชิ้นงาน/โลโก้/สัญลักษณ์ที่รู้หน้าตาแน่นอนอยู่แล้วในภาพกล้อง ต่อสาย 'เข้า B' ด้วยภาพ template (ต้องเล็กกว่าภาพหลักทั้งกว้างและสูง)",
     params: [
@@ -8440,8 +8440,9 @@ export const FILTERS = {
   // 18b เพิ่ม imfuse/mask เข้ากลุ่มเดิม (opIds list) — group/inputs:2 เดิมจาก 18a ใช้ต่อได้เลย ไม่ต้องแก้
   // IP batch 2 ชิ้น B (2026-10-02) ต่อท้าย imarith/logical_ops/inpaint/hist_match — ห้ามสลับลำดับ 3 ตัวเดิม
   // (ไฟล์โปรเจกต์เก่าที่บันทึก mode ไว้ต้องเปิดได้เหมือนเดิม)
+  // 2026-10-24 ecc_register ย้ายไปหมวด Image Registration — คงไว้เป็น legacyOpIds ให้ undo/โปรเจกต์เก่ายังรันได้ (migrateLegacyStep ย้ายเทมเพลตไป image_registration)
   image_arithmetic: mergeGroup("Image Arithmetic", "Image Arithmetic",
-    ["imabsdiff", "imfuse", "mask", "imarith", "logical_ops", "inpaint", "hist_match", "roi_apply", "ecc_register"], "imabsdiff", [], { inputs: 2 }),
+    ["imabsdiff", "imfuse", "mask", "imarith", "logical_ops", "inpaint", "hist_match", "roi_apply"], "imabsdiff", ["ecc_register"], { inputs: 2 }),
 
   // Template Matching (Tier 2, 18b) — กลุ่มเดี่ยวใหม่ inputs:2 (ตามแนวเดียวกับ morphology/watershed/
   // grabcut ที่มี op เดียวไม่ต้องมี mode select wrapper) primary = ภาพค้นหา, src2 = template
@@ -8488,6 +8489,11 @@ export const FILTERS = {
   // Motion ทั้งสามจำ state ข้ามเฟรม → stateful:true · เปลี่ยนวิธี = params เปลี่ยน → getNodeState (fingerprint) reset+dispose state เก่าเอง
   motion: mergeGroup("Motion", "Motion",
     ["mog2", "farneback_optical_flow", "pyrlk_optical_flow"], "mog2", [], { stateful: true }),
+
+  // Image Registration (2026-10-24) — แทนหมวด TEMPLATE MATCHING ให้ตรง MATLAB ที่รวม normxcorr2 กับ imregister ไว้หมวดเดียว
+  // template_matching (เดี่ยว) / image_arithmetic ที่ mode = ecc_register คงเป็น legacy · migrateLegacyStep ย้ายมาที่นี่
+  image_registration: mergeGroup("Image Registration", "Image Registration",
+    ["template_matching", "ecc_register"], "template_matching", [], { inputs: 2 }),
 
   // Morphology (2026-10-18) — 1 operation = 1 เครื่องมือ · ลำดับ dropdown = ลำดับ TOOL_SECTIONS.MORPHOLOGY · default = Erosion (เหมือนค่าเริ่มต้นเดิม)
   // ไม่อยู่ใน CATEGORY_FILTER_IDS (ที่มี OLD_HOST ให้เทียบ) — ย้ายจาก morphology ด้วย migrateMorphologyStep ด้านล่างแทน
@@ -8545,6 +8551,7 @@ export const GROUP_COLORS = {
   "Filter & Denoise":     { title: "#38bdf8", body: NODE_BODY }, // Sky = Blur
   "Segmentation & Edge":  { title: "#ff5577", body: NODE_BODY }, // Red/Pink = Segmentation
   "Analysis & Detection": { title: "#a78bfa", body: NODE_BODY }, // Lavender = Shape Analysis
+  "Image Registration":   { title: "#ef4444", body: NODE_BODY }, // Red = Template Matching
 };
 
 // ลำดับกลุ่มตามหัวข้อการสอน
@@ -8572,6 +8579,7 @@ export const GROUP_ORDER = [
   "Filter & Denoise",
   "Segmentation & Edge",
   "Analysis & Detection",
+  "Image Registration",
 ];
 
 // resolve needs รองรับทั้ง string และ function (merged filter)
@@ -8603,7 +8611,7 @@ export function defaultParams(filterId) {
 // ใช้ตอนวางเทมเพลต (editor.applyTemplate) — เทมเพลต/โปรเจกต์เก่าอ้าง filter id ของกลุ่มเก่า (color_space,
 // segmentation, restoration, watershed, psnr ...) ซึ่ง dropdown ไม่ครบหมวด · ย้ายไปกลุ่มใหม่ที่ครบ
 // key ของ param เป็น "opId__key" เหมือนกันทุก mergeGroup จึงคัดลอกตรง ๆ ได้ · op เดี่ยวเก่า (ไม่มี mode) ต้องเติม prefix + mode
-export const CATEGORY_FILTER_IDS = ["color_tools", "enhance_tools", "filter_denoise", "segment_edge", "analysis_detect", "image_quality", "motion"];
+export const CATEGORY_FILTER_IDS = ["color_tools", "enhance_tools", "filter_denoise", "segment_edge", "analysis_detect", "image_quality", "motion", "image_registration"];
 const OP_TO_CATEGORY_FILTER = {};
 for (const gid of CATEGORY_FILTER_IDS) {
   for (const o of FILTERS[gid].params[0].options) OP_TO_CATEGORY_FILTER[o.value] = gid;

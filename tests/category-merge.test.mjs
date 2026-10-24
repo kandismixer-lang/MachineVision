@@ -77,11 +77,11 @@ test('cm-2. each op appears in exactly one category; the 7 split categories use 
 });
 
 test('cm-3. new groups: flags (psnr/ssim group inputs:2, motion stateful:true, nobody else changed), colors, icons, GROUP_ORDER', () => {
-  assert.equal(CATEGORY_FILTER_IDS.length, 7);
+  assert.equal(CATEGORY_FILTER_IDS.length, 8); // 2026-10-24: + image_registration
   for (const id of CATEGORY_FILTER_IDS) {
     const f = FILTERS[id];
     assert.ok(f, id);
-    assert.equal(f.inputs, id === 'image_quality' ? 2 : undefined, `${id}.inputs`);
+    assert.equal(f.inputs, id === 'image_quality' || id === 'image_registration' ? 2 : undefined, `${id}.inputs`);
     assert.equal(f.stateful, id === 'motion' ? true : undefined, `${id}.stateful`);
     assert.ok(GROUP_COLORS[f.group] && GROUP_COLORS[f.group].title, `${id}: GROUP_COLORS["${f.group}"]`);
     assert.ok(GROUP_ORDER.includes(f.group), `${id}: GROUP_ORDER has "${f.group}"`);
@@ -95,7 +95,7 @@ test('cm-3. new groups: flags (psnr/ssim group inputs:2, motion stateful:true, n
   for (const id of CATEGORY_FILTER_IDS) assert.equal(icons.get(GROUP_ICON[id]).length, 1, `${id}: icon collides with ${icons.get(GROUP_ICON[id])}`);
   // เฉพาะกลุ่มเก่า psnr/ssim (+image_quality) / template_matching / image_arithmetic ที่เป็น inputs:2; stateful เฉพาะ motion + 3 ตัวเดี่ยว
   const two = Object.entries(FILTERS).filter(([, f]) => f.inputs !== undefined).map(([k]) => k).sort();
-  assert.deepEqual(two, ['image_arithmetic', 'image_quality', 'psnr', 'ssim', 'template_matching']);
+  assert.deepEqual(two, ['image_arithmetic', 'image_quality', 'image_registration', 'psnr', 'ssim', 'template_matching']);
   const st = Object.entries(FILTERS).filter(([, f]) => f.stateful !== undefined).map(([k]) => k).sort();
   assert.deepEqual(st, ['farneback_optical_flow', 'mog2', 'motion', 'pyrlk_optical_flow']);
 });
@@ -130,6 +130,7 @@ const OLD_HOST = {};
     const m = FILTERS[fid].params.find((p) => p.key === 'mode');
     if (m) for (const o of m.options) OLD_HOST[o.value] = fid; else OLD_HOST[fid] = fid;
   }
+  OLD_HOST.ecc_register = 'image_arithmetic'; // 2026-10-24 ออกจาก dropdown ของ image_arithmetic แล้ว แต่ยังรันได้ (legacyOpIds)
 }
 // op ใหม่หลัง 2026-10-07 อยู่เฉพาะกลุ่มระดับหมวด ไม่มี node เดิมให้เทียบ · ลำดับ = ลำดับใน CATEGORY_OPS (cm-5 deepEqual ตามลำดับ)
 // IP batch 4A (2026-10-15) เพิ่ม pseudocolor / guided_filter / focus_score / delta_e (roi_apply อยู่ image_arithmetic ซึ่งไม่ใช่หมวดที่ re-group จึงไม่อยู่ในลิสต์นี้)
@@ -280,7 +281,7 @@ test('cm-10. migrateLegacyStep: single-op legacy node gets mode + "op__" prefix 
 test('cm-11. migrateLegacyStep: leaves alone steps that need no change (new groups, morphology/geometry/template_matching, unknown id/mode, null)', () => {
   const same = [
     { id: 'color_tools', params: { mode: 'invert' } }, { id: 'morph_tools', params: { mode: 'morph_open' } }, // 2026-10-18: morphology เดิมถูกย้ายไป morph_tools แล้ว (tests/morph-split.test.mjs mp-6)
-    { id: 'geometry', params: { mode: 'resize' } }, { id: 'template_matching', params: {} },
+    { id: 'geometry', params: { mode: 'resize' } }, { id: 'image_registration', params: { mode: 'ecc_register' } },
     { id: 'frequency', params: { mode: 'fft_magnitude' } }, { id: 'image_arithmetic', params: { mode: 'imabsdiff' } },
     { id: 'nope', params: {} }, { id: 'toString', params: {} }, { id: 'segmentation', params: { mode: 'not_an_op' } },
   ];
@@ -295,12 +296,13 @@ test('cm-12. migration preserves behaviour: for EVERY legacy node x every op, ol
     const m = FILTERS[id].params.find((p) => p.key === 'mode');
     const ops = m ? m.options.map((o) => o.value) : [id];
     if (id === 'shape_analysis') ops.push('watershed'); // legacyOpIds
+    if (id === 'image_arithmetic') ops.push('ecc_register'); // legacyOpIds (2026-10-24)
     for (const op of ops) {
       const oldParams = paramsFor(id, op);
       const mig = migrateLegacyStep({ id, params: oldParams });
       if (mig.id === id) {
-        // geometry/frequency/image_arithmetic/template_matching = ไม่ย้าย (ตรงกับหมวด palette อยู่แล้ว)
-        assert.ok(['geometry', 'frequency', 'image_arithmetic', 'template_matching'].includes(id), `${id}/${op} unexpectedly not migrated`);
+        // geometry/frequency/image_arithmetic = ไม่ย้าย (ตรงกับหมวด palette อยู่แล้ว) · template_matching ย้ายไป image_registration ตั้งแต่ 2026-10-24
+        assert.ok(['geometry', 'frequency', 'image_arithmetic'].includes(id), `${id}/${op} unexpectedly not migrated`);
         continue;
       }
       // 2026-10-18: morphology → morph_tools (ไม่อยู่ใน CATEGORY_FILTER_IDS) — พฤติกรรมเท่าเดิมทุก op ล็อกใน tests/morph-split.test.mjs mp-6
@@ -426,4 +428,46 @@ test('cm-17. Motion node: switching method on ONE nodeId via the real runPipelin
   assert.ok(disposedOld >= 3);
   W.sweepNodeState(new Set(), store);
   assert.equal(store.size, 0);
+});
+
+// ---------------------------------------------------------------------------
+// (4) 2026-10-24 หมวด IMAGE REGISTRATION แทน TEMPLATE MATCHING (ตรง MATLAB: normxcorr2 + imregister หมวดเดียว)
+// ---------------------------------------------------------------------------
+test('cm-18. IMAGE REGISTRATION: palette = [NCC, ECC] on image_registration; NCC renamed; ECC left the Image Arithmetic dropdown but legacy image_arithmetic still runs it', () => {
+  assert.equal(TOOL_SECTIONS.some((s) => s.title === 'TEMPLATE MATCHING'), false);
+  assert.deepEqual(TOOL_SECTIONS.find((s) => s.title === 'IMAGE REGISTRATION').ops, ['template_matching', 'ecc_register']);
+  assert.equal(OP_TO_FILTER.template_matching, 'image_registration');
+  assert.equal(OP_TO_FILTER.ecc_register, 'image_registration');
+  assert.equal(OPS.template_matching.name, 'Normalized Cross-Correlation');
+  assert.equal(FILTERS.image_registration.group, 'Image Registration');
+  assert.equal(FILTERS.image_registration.inputs, 2);
+  assert.ok(!modeOptions('image_arithmetic').includes('ecc_register'));
+  // legacy: undo/โปรเจกต์เก่าที่ยังเป็น image_arithmetic + mode ecc_register ต้องรันได้และได้ผลเท่ากล่องใหม่
+  const legacy = { ...defaultParams('image_arithmetic'), mode: 'ecc_register', ecc_register__motion: 'translation' };
+  const fresh = { ...defaultParams('image_registration'), mode: 'ecc_register', ecc_register__motion: 'translation' };
+  assert.deepEqual(runFilter('image_registration', fresh, true), runFilter('image_arithmetic', legacy, true));
+});
+
+test('cm-19. migrateLegacyStep: template_matching (single op) and image_arithmetic/ecc_register → image_registration with non-default values kept; output + codegen unchanged', () => {
+  const cases = [
+    { from: { id: 'template_matching', params: { method: 'ccorr', threshold: 55 } }, op: 'template_matching',
+      want: { mode: 'template_matching', template_matching__method: 'ccorr', template_matching__threshold: 55 } },
+    { from: { id: 'image_arithmetic', params: { mode: 'ecc_register', ecc_register__motion: 'affine', ecc_register__iterations: 20 } }, op: 'ecc_register',
+      want: { mode: 'ecc_register', ecc_register__motion: 'affine', ecc_register__iterations: 20 } },
+  ];
+  for (const c of cases) {
+    const before = JSON.stringify(c.from);
+    const mig = migrateLegacyStep(c.from);
+    assert.equal(JSON.stringify(c.from), before, `${c.op}: input must not be mutated`);
+    assert.equal(mig.id, 'image_registration');
+    for (const [k, v] of Object.entries(c.want)) assert.equal(mig.params[k], v, `${c.op}: ${k}`);
+    const legacyParams = { ...defaultParams(c.from.id), ...c.from.params };
+    const applied = Object.assign(defaultParams(mig.id), mig.params);
+    assert.deepEqual(runFilter(mig.id, applied, true), runFilter(c.from.id, legacyParams, true), `${c.op}: output differs`);
+    const py = (id, params) => buildPythonCode([{ id, params, src2: { pipeline: [] } }], { displayName: 'X' });
+    assert.equal(py(mig.id, applied), py(c.from.id, legacyParams), `${c.op}: codegen differs`);
+  }
+  // image_arithmetic ที่ไม่ใช่ ECC ไม่ย้าย
+  const keep = { id: 'image_arithmetic', params: { mode: 'imfuse' } };
+  assert.equal(migrateLegacyStep(keep), keep);
 });

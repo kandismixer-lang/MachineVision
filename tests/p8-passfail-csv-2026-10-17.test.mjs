@@ -252,7 +252,7 @@ test('p8-reg-1. pass_fail is a member of ANALYSIS & DETECTION (last), host analy
   assert.deepEqual(FILTERS.analysis_detect.params[0].options.map((o) => o.value), sec.ops);
   assert.deepEqual(OPS.pass_fail.params.map((q) => q.key), ['metric', 'cond', 'lo', 'hi']);
   for (const q of OPS.pass_fail.params) assert.ok(['select', 'number'].includes(q.type), q.key);
-  assert.equal(Object.keys(FILTERS).length, 34, 'no new FILTERS entry from P-8 (34 = 33 + morph_tools from 2026-10-18)');
+  assert.equal(Object.keys(FILTERS).length, 35, 'no new FILTERS entry from P-8 (35 = 33 + morph_tools from 2026-10-18 + image_registration from 2026-10-24)');
   assert.deepEqual(OPS.pass_fail.params[0].options.map((o) => o.value), Object.keys(PASS_FAIL_METRICS), 'metric options = metrics table');
   assert.match(OPS.pass_fail.desc, /maxObjects|แสดงวัตถุสูงสุด/, 'desc warns that regionprops is capped');
   assert.match(OPS.pass_fail.desc, /NG/);

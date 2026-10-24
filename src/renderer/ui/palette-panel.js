@@ -11,8 +11,8 @@ export const TOOL_SECTIONS = [
   { title: "SEGMENTATION & EDGE", ops: ["binary_threshold", "otsu_threshold", "adaptive_threshold", "multi_otsu_threshold", "canny", "sobel", "laplacian_edge", "scharr_edge", "prewitt_edge", "roberts_edge", "log_edge", "watershed", "grabcut", "region_growing"] },
   { title: "ANALYSIS & DETECTION", ops: ["find_contours", "connected_components", "distance_transform", "local_std_filter", "local_entropy_filter", "gabor_filter", "glcm", "focus_score", "regionprops", "feret", "line_profile", "shape_filter", "bounding_boxes", "hough_circles", "hough_lines", "harris_corners", "shi_tomasi_corners", "orb_keypoints", "akaze_keypoints", "fast_keypoints", "pass_fail"] },
   { title: "FREQUENCY DOMAIN", ops: ["fft_magnitude", "fft_filter", "bandpass_notch", "dct_jpeg"] },
-  { title: "IMAGE ARITHMETIC", ops: ["imabsdiff", "imfuse", "mask", "imarith", "logical_ops", "inpaint", "hist_match", "roi_apply", "ecc_register"] },
-  { title: "TEMPLATE MATCHING", ops: ["template_matching"] },
+  { title: "IMAGE ARITHMETIC", ops: ["imabsdiff", "imfuse", "mask", "imarith", "logical_ops", "inpaint", "hist_match", "roi_apply"] },
+  { title: "IMAGE REGISTRATION", ops: ["template_matching", "ecc_register"] },
   { title: "IMAGE QUALITY", ops: ["psnr", "ssim", "delta_e"] },
   { title: "MOTION", ops: ["mog2", "farneback_optical_flow", "pyrlk_optical_flow"] },
 ];
@@ -24,7 +24,7 @@ const VISIBLE_FILTER_IDS = [
   "color_tools", "enhance_tools", "geometry", "filter_denoise", "morph_tools",
   "segment_edge", "analysis_detect",
   "frequency", "image_arithmetic",
-  "template_matching", "image_quality", "motion",
+  "image_registration", "image_quality", "motion",
 ];
 
 const OP_ICON = {

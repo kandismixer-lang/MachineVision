@@ -676,7 +676,7 @@ test('ipC-6. (static structure) the 3 ops exist in OPS (the OPS total is NOT pin
     assert.equal(OPS[id].needs, 'any', `${id}.needs`);
     for (const p of OPS[id].params) assert.notEqual(p.key, 'mode', `${id}: param key "mode" would collide with MODE_KEY`);
   }
-  assert.equal(Object.keys(FILTERS).length, 34, 'FILTERS = 26 + 7 category-level groups (2026-10-07) + morph_tools (2026-10-18)');
+  assert.equal(Object.keys(FILTERS).length, 35, 'FILTERS = 26 + 7 category-level groups (2026-10-07) + morph_tools (2026-10-18) + image_registration (2026-10-24)');
   const modes = (f) => FILTERS[f].params.find((p) => p.key === 'mode').options.map((o) => o.value);
   assert.deepEqual(modes('noise'), ['salt_pepper_noise', 'gaussian_noise']);
   assert.deepEqual(modes('blur'), ['median_blur', 'gaussian_blur', 'box_blur', 'bilateral', 'wiener_filter']);

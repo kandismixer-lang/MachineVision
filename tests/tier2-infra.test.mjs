@@ -753,7 +753,7 @@ test('tier2-wiring. imabsdiff/image_arithmetic wired into FILTERS, TOOL_SECTIONS
 test('tier2-wiring2. every other pre-existing FILTERS entry is unaffected by the mergeGroup opts/inputs change (inputs is undefined everywhere except the 2-image groups)', () => {
   // อัปเดตรอบ 18b: image_arithmetic (18a) + template_matching/psnr/ssim (18b ใหม่) เป็น inputs:2 โดยตั้งใจ
   // — ทุก FILTERS entry อื่นต้อง inputs undefined เหมือนเดิมไม่เปลี่ยน (ยืนยันว่า opts ไม่รั่วไปโดนกลุ่มอื่น)
-  const TWO_IMAGE_GROUPS = new Set(['image_arithmetic', 'template_matching', 'psnr', 'ssim', 'image_quality']); // 2026-10-07: + image_quality (กลุ่มระดับหมวดของ psnr/ssim)
+  const TWO_IMAGE_GROUPS = new Set(['image_arithmetic', 'template_matching', 'psnr', 'ssim', 'image_quality', 'image_registration']); // 2026-10-07: + image_quality (กลุ่มระดับหมวดของ psnr/ssim) · 2026-10-24: + image_registration
   for (const [id, def] of Object.entries(FILTERS)) {
     if (TWO_IMAGE_GROUPS.has(id)) continue;
     assert.equal(def.inputs, undefined, `${id}.inputs must remain undefined (only image_arithmetic/template_matching/psnr/ssim get inputs:2)`);

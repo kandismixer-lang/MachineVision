@@ -909,6 +909,7 @@ test('tier2b-wiring-2. GROUP_COLORS/GROUP_ORDER include the 2 new groups, with c
   assert.equal(newHex.size, 2, 'the 2 new colors must not equal each other');
   for (const [group, c] of Object.entries(GROUP_COLORS)) {
     if (group === 'Template Matching' || group === 'Image Quality') continue;
+    if (group === 'Image Registration') continue; // 2026-10-24 หมวดที่แทน Template Matching ใช้สีเดิมโดยตั้งใจ
     assert.ok(!newHex.has(c.title.toLowerCase()), `pre-existing group "${group}"'s color collides with one of the 2 new groups`);
   }
 });

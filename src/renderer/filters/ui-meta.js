@@ -41,6 +41,7 @@ export const GROUP_ICON = {
   analysis_detect: "🧮",
   image_quality: "🏅",
   motion: "🏃",
+  image_registration: "🧭", // 2026-10-24 แทนหมวด Template Matching · เช็คแล้วไม่ชนกับ glyph ใน GROUP_ICON/OP_ICON
   // ใหม่ (2026-10-18) — Morphology แยกเป็นเครื่องมือรายตัว · เช็คแล้วไม่ชนกับ glyph ใน GROUP_ICON/OP_ICON/src ใด ๆ (morphology 🔲 เดิมคงไว้เป็น legacy)
   morph_tools: "⬓",
 };
@@ -360,7 +361,7 @@ export const OPTION_GROUPS = {
   "image_arithmetic.mode": [
     ["เทียบ / รวมสองภาพ", ["imabsdiff", "imfuse", "imarith", "logical_ops"]],
     ["ใช้ B เป็นหน้ากาก / บริเวณ", ["mask", "roi_apply", "inpaint"]],
-    ["ปรับ A ให้ตรงกับ B", ["hist_match", "ecc_register"]],
+    ["ปรับ A ให้ตรงกับ B", ["hist_match"]],
   ],
   "custom_kernel.preset": [
     ["ไม่เปลี่ยนภาพ (เทียบ)", ["identity"]],

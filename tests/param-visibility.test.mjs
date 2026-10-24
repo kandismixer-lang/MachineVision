@@ -222,7 +222,7 @@ test('pv-04 R1 defaultParams ของทุก filter (key ลำดับ + �
   // P-8 เพิ่ม op pass_fail (key pass_fail__*) ใน analysis_detect — ตัดออกก่อน hash เพื่อให้ hash เดิมยังล็อกทุก param เดิมเหมือนเดิม
   const old = (k) => !k.startsWith('pass_fail__');
   for (const id of Object.keys(FILTERS)) {
-    if (id === 'morph_tools') continue; // 2026-10-18: กลุ่มใหม่ (Morphology แยกเครื่องมือ) — hash นี้ล็อกเฉพาะ filter เดิมทั้ง 33 ตัว · morph_tools ล็อกใน tests/morph-split.test.mjs
+    if (id === 'morph_tools' || id === 'image_registration') continue; // image_registration (2026-10-24) ล็อกใน tests/category-merge.test.mjs // 2026-10-18: กลุ่มใหม่ (Morphology แยกเครื่องมือ) — hash นี้ล็อกเฉพาะ filter เดิมทั้ง 33 ตัว · morph_tools ล็อกใน tests/morph-split.test.mjs
     const d = defaultParams(id);
     snap[id] = { keys: FILTERS[id].params.map((p) => p.key).filter(old), defaults: Object.fromEntries(Object.entries(d).filter(([k]) => old(k))) };
   }
