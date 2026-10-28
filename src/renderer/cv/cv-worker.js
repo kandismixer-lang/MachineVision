@@ -1,6 +1,6 @@
 // Web Worker: โหลด OpenCV.js + รัน pipeline ของ filter หลายชั้น แยกจาก main thread
 import cv from "@techstark/opencv-js";
-import { FILTERS, needsOf, opIdOfStep } from "../filters/registry.js";
+import { OPS, FILTERS, needsOf, opIdOfStep } from "../filters/registry.js";
 
 let ready = false;
 
@@ -80,11 +80,13 @@ export function sweepNodeState(activeNodeIds, store = nodeState) {
 
 // เก็บ nodeId ทุกตัวที่ "ยังใช้งานอยู่จริง" ในเฟรมนี้ — รวมของ src2 sub-pipeline แบบ recursive ด้วย
 // (imabsdiff ซ้อน imabsdiff ก็ยังเก็บครบ) ใช้ก่อนเรียก sweepNodeState แต่ละเฟรม
+// PIQE อยู่ใน host สองพอร์ตแต่ไม่ใช้ B: ไม่เดินสาย/เก็บ state/fingerprint ของสายที่ไม่ได้รัน
+const usesSrc2 = (step) => OPS[opIdOfStep(step)]?.usesSrc2 !== false;
 export function collectNodeIds(pipeline, set) {
   for (const step of pipeline || []) {
     if (!step || step.enabled === false) continue; // node ที่ถูกปิด (bypass) และ src2 ของมันไม่ได้รันเฟรมนี้ → sweep ทิ้ง state (18d, V14)
     if (step.nodeId != null) set.add(step.nodeId);
-    if (step.src2) collectNodeIds(step.src2.pipeline, set);
+    if (step.src2 && usesSrc2(step)) collectNodeIds(step.src2.pipeline, set);
   }
 }
 
@@ -97,7 +99,7 @@ function stepFingerprint(s) {
     id: s.id,
     params: s.params,
     enabled: s.enabled,
-    src2: s.src2 ? (s.src2.pipeline || []).map(stepFingerprint) : undefined, // JSON.stringify ตัด undefined ทิ้ง
+    src2: s.src2 && usesSrc2(s) ? (s.src2.pipeline || []).map(stepFingerprint) : undefined, // JSON.stringify ตัด undefined ทิ้ง
   };
 }
 
@@ -171,7 +173,7 @@ export function runPipeline(baseRGB, pipeline, nodeState, activeNodeIds, frameMe
     let out = null;
     let memoKey = null;
     try {
-      if (step.src2) {
+      if (step.src2 && usesSrc2(step)) {
         // src2 ประมวลผลจาก baseRGB เดียวกัน (กล้องมีแหล่งเดียวในแอปนี้ — ดู §A.3) ไม่ใช่จาก `current` ของ
         // chain หลัก เพราะ chain B เป็นสายแยกที่ย้อนกลับไปหา SourceNode ของตัวเอง ไม่ใช่ต่อจาก chain A
         // อยู่ "ใน" try: สาย B throw → catch ด้านล่างต้องคืน converted/current ของ step นี้ (เดิมอยู่นอก try = รั่วทุกเฟรม)

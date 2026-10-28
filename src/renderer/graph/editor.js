@@ -4,7 +4,7 @@
 // กลับไปหาแหล่งภาพ) และวาด preview ของสายตัวเองในกล่อง
 import { LiteGraph, LGraph, LGraphCanvas } from "litegraph.js";
 import "litegraph.js/css/litegraph.css";
-import { FILTERS, defaultParams, GROUP_COLORS, migrateLegacyStep } from "../filters/registry.js";
+import { OPS, FILTERS, defaultParams, GROUP_COLORS, migrateLegacyStep } from "../filters/registry.js";
 import { computeFit, findFreeSpot, applyFit, isViewUntouched, planInsert, formatZoom } from "./layout-math.js";
 import { canvasBufferSizeDpr, dotGridRange, flowT, flowDotCount, visibleAreaOf, isFlowLink, createFlowLoop, buildStepIds } from "../ui/phase3-math.js";
 import { GROUP_ICON, OP_ICON, OP_PRIMARY, currentOpId, localParamsFor, shortToolName, contrastOn } from "../filters/ui-meta.js";
@@ -102,6 +102,20 @@ function cardConnectionPos(isInput, slot, out) {
 function styleSlots(node) {
   for (const sl of node.inputs || []) sl.shape = LiteGraph.CIRCLE_SHAPE;
   for (const sl of node.outputs || []) sl.shape = LiteGraph.CIRCLE_SHAPE;
+  const b = node.inputs && node.inputs[1];
+  if (b && node.filterId) {
+    if (OPS[currentOpId(node.filterId, node.properties)]?.usesSrc2 === false) {
+      // เก็บพอร์ต/สายเดิมไว้ให้โปรเจกต์เก่าและการสลับวิธี แต่บอกชัดว่าวิธีนี้ไม่ใช้ B
+      b.color_on = b.color_off = gc().statusOff;
+      b.label = "ไม่ใช้ในวิธีนี้";
+      b.mvUnused = true;
+    } else {
+      delete b.color_on;
+      delete b.color_off;
+      delete b.label;
+      delete b.mvUnused;
+    }
+  }
 }
 function installCardHooks(Ctor, layout) {
   Ctor.title_mode = LiteGraph.NO_TITLE;
@@ -257,6 +271,15 @@ function drawCard(ctx, node, o) {
     ctx.font = NC_FONT_MONO;
     ctx.fillStyle = err ? g.errText : g.textSub;
     ctx.fillText(ellipsisText(ctx, node, "sub", err ? String(err) : o.sub, maxW), sx, sy);
+  }
+  if (node.inputs && node.inputs[1]?.mvUnused) {
+    const port = cardConnectionPos.call(node, true, 1);
+    ctx.font = NC_FONT_PORT;
+    ctx.fillStyle = g.textSub;
+    ctx.textAlign = "right";
+    ctx.textBaseline = "middle";
+    ctx.globalAlpha = 0.55;
+    ctx.fillText(`B · ${node.inputs[1].label}`, port[0] - node.pos[0] - 8, port[1] - node.pos[1]);
   }
   ctx.restore();
 }
@@ -426,6 +449,7 @@ function registerNodeTypes(onGraphChange) {
     FilterNode.prototype.onPropertyChanged = onGraphChange;
     // การ์ด: ชื่อ (เหนือกล่อง) · กล่องไอคอนสีหมวด (glyph ของ op ปัจจุบัน) · ไฟ · ค่าหลักที่ตั้งไว้ (ใต้ไฟ)
     FilterNode.prototype.onDrawForeground = function (ctx) {
+      styleSlots(this);
       const opId = currentOpId(this.filterId, this.properties);
       const primaryFn = OP_PRIMARY[opId];
       let value = "";

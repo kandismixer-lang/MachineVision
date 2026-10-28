@@ -291,7 +291,7 @@ export function createPalettePanel(container, cb) {
       if (!filter || !op) continue;
       const colors = GROUP_COLORS[filter.group] || { title: "#475569" };
       const el = makeToolRow(op.name, OP_ICON[opId] || GROUP_ICON[filterId] || "◇", colors.title,
-        `${op.name} — Add this Function to Pipeline Canvas`, () => addTool(filterId, opId), { inputs: filter.inputs === 2 ? 2 : 1, outputs: 1 });
+        `${op.name} — Add this Function to Pipeline Canvas`, () => addTool(filterId, opId), { inputs: filter.inputs === 2 && op.usesSrc2 !== false ? 2 : 1, outputs: 1 });
       rows.push({ el, name: op.name, opId });
     }
     return rows;
@@ -322,7 +322,7 @@ export function createPalettePanel(container, cb) {
       if (!filter || !op) continue;
       const colors = GROUP_COLORS[filter.group] || { title: "#475569" };
       const el = makeToolRow(op.name, OP_ICON[opId] || GROUP_ICON[filterId] || "◇", colors.title,
-        `${op.name} — เพิ่มลงกระดานอีกครั้ง`, () => addTool(filterId, opId), { inputs: filter.inputs === 2 ? 2 : 1, outputs: 1 });
+        `${op.name} — เพิ่มลงกระดานอีกครั้ง`, () => addTool(filterId, opId), { inputs: filter.inputs === 2 && op.usesSrc2 !== false ? 2 : 1, outputs: 1 });
       fresh.appendChild(el);
       rows.push({ el, name: op.name, opId });
     }

@@ -124,9 +124,9 @@ function regionStatsPyLines() {
   ];
 }
 // ภาพ B → ขาวดำ → ปรับขนาดเท่า A → threshold 127 ได้ b_bin (ลำดับเดียวกับ GEN.mask และ registry.js)
-function bBinaryLines() {
+function bBinaryLines(ctx) {
   return [
-    "b_gray = img_b if img_b.ndim == 2 else cv2.cvtColor(img_b, cv2.COLOR_BGR2GRAY)",
+    `b_gray = img_b if img_b.ndim == 2 else cv2.cvtColor(img_b, ${pyBGrayCode(ctx)})`,
     "if img.shape[:2] != b_gray.shape[:2]:",
     "    b_gray = cv2.resize(b_gray, (img.shape[1], img.shape[0]), interpolation=cv2.INTER_LINEAR)",
     "_, b_bin = cv2.threshold(b_gray, 127, 255, cv2.THRESH_BINARY)",
@@ -300,7 +300,7 @@ function resolveOp(step) {
 // (ภาพขาวดำเกิดได้จาก 2 ทางข้างบนเท่านั้น) ขั้นที่แปลงขาวดำกลับเป็นสี (GRAY2BGR แล้ววาดสีแบบ BGR) จึงได้ true ต่อไปเองโดยไม่ต้องมีกฎแยก
 // GEN ใดที่ผลขึ้นกับลำดับช่องสี (เช่น ค่าสุ่มต่อช่องของ gaussian_noise, ลำดับที่พิมพ์ของ wiener_filter) ต้องอ่าน flag นี้ผ่าน
 // isMirrored(ctx) เท่านั้น — แหล่งความจริงเดียว ห้ามเดาลำดับช่องเองใน GEN
-// ⚠️ buildPythonCode2Image (P-21 นอกขอบเขต) ไม่ได้ track flag นี้ → isMirrored คืน true เมื่อไม่มีค่า (= พฤติกรรมเดิมก่อนแก้)
+// สายสองภาพเดิมใช้ mirrored5B แยกไว้ — pyGrayCode อ่านได้ด้วย โดยไม่เปลี่ยนกฎสีอื่นของ exporter เดิม
 function isMirrored(ctx) {
   return !ctx || ctx.mirrored !== false;
 }
@@ -313,7 +313,12 @@ function pyColor(ctx, rgb) {
 }
 // สี → ขาวดำภายใน op (แอปใช้ RGB2GRAY กับช่องตามลำดับของแอปเสมอ) — ช่องกลับด้าน = BGR2GRAY · หลัง Color Space = RGB2GRAY
 function pyGrayCode(ctx) {
-  return isMirrored(ctx) ? "cv2.COLOR_BGR2GRAY" : "cv2.COLOR_RGB2GRAY";
+  const order = ctx && ctx.mirrored5B !== undefined ? { mirrored: ctx.mirrored5B } : ctx;
+  return isMirrored(order) ? "cv2.COLOR_BGR2GRAY" : "cv2.COLOR_RGB2GRAY";
+}
+// ภาพ B มีลำดับช่องของสายตัวเอง ห้ามใช้ลำดับช่องของ A (รวมสาย B ซ้อนกัน)
+function pyBGrayCode(ctx) {
+  return pyGrayCode({ mirrored: ctx && ctx.src2Mirrored });
 }
 // คัด + เรียงวัตถุชุดเดียวกับ GEN.regionprops ทุกตัวอักษรของ sort key (เทสต์ static ปักไว้ — ไม่ refactor GEN.regionprops รอบนี้)
 // ต่างกันแค่ cap ไม่มี "0 = ไม่จำกัด" (feret จำกัด 1–500)
@@ -553,7 +558,7 @@ function binaryMorph5APy(p) {
 const GEN = {
   // ---- ปริภูมิสี ----
   grayscale: { needs: "any", out: "gray", gen: (p, ctx) =>
-    ctx.gray ? ["# ภาพเป็นขาวดำอยู่แล้ว"] : ["img = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)"] },
+    ctx.gray ? ["# ภาพเป็นขาวดำอยู่แล้ว"] : [`img = cv2.cvtColor(img, ${pyGrayCode(ctx)})`] },
 
   colorspace: { needs: "any", out: "color", appChannelOrder: true, gen: (p, ctx) => {
     const code = { hsv: "COLOR_BGR2HSV", hls: "COLOR_BGR2HLS", lab: "COLOR_BGR2Lab", ycrcb: "COLOR_BGR2YCrCb", xyz: "COLOR_BGR2XYZ", luv: "COLOR_BGR2Luv", yuv: "COLOR_BGR2YUV" }[p.space] || "COLOR_BGR2HSV";
@@ -1420,7 +1425,7 @@ const GEN = {
   } },
 
   // IP batch 2 ชิ้น D — bwferet บนขอบพิกเซล: ลำดับคำนวณ/กติกาเสมอกันเหมือน feretOfContour ของ registry.js ทุกขั้น (เลข Python int ล้วน
-  // ระยะจึงเท่าแอปทุก bit · มุมต่าง ≤ 1 ulp ของ atan2) · ⚠️ ภาพสีหลัง Color Space ถูกแปลงขาวดำด้วย BGR2GRAY อัตโนมัติ (backlog P-23 ของเดิม)
+  // ระยะจึงเท่าแอปทุก bit · มุมต่าง ≤ 1 ulp ของ atan2) · ภาพสีหลัง Color Space แปลงขาวดำตามลำดับช่องปัจจุบัน
   feret: { needs: "gray", out: "color", gen: (p, ctx) => {
     const minArea = clampNum(p.minArea, 50, 0, 5000);
     const cap = Math.round(clampNum(p.maxObjects, 50, 1, 500));
@@ -1676,8 +1681,8 @@ const GEN = {
     ];
   } },
 
-  watershed: { needs: "any", out: "color", gen: (p) => [
-    "gray = img if img.ndim == 2 else cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)",
+  watershed: { needs: "any", out: "color", gen: (p, ctx) => [
+    `gray = img if img.ndim == 2 else cv2.cvtColor(img, ${pyGrayCode(ctx)})`,
     "img = cv2.cvtColor(gray, cv2.COLOR_GRAY2BGR) if img.ndim == 2 else img",
     "_, thr = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)",
     "kernel = np.ones((3, 3), np.uint8)",
@@ -1691,7 +1696,7 @@ const GEN = {
     "markers = markers + 1",
     "markers[unknown == 255] = 0",
     "markers = cv2.watershed(img, markers)",
-    "img[markers == -1] = (0, 0, 255)  # เส้นแบ่งวัตถุสีแดง",
+    `img[markers == -1] = ${pyColor(ctx, [255, 0, 0])}  # เส้นแบ่งวัตถุสีแดง`,
   ] },
 
   // ---- ตรวจจับวัตถุ ----
@@ -2456,10 +2461,10 @@ const GEN = {
 
   // mask ไม่บังคับ channel ของ A เลย (ต่างจาก imfuse/imabsdiff) — out:"same" เพราะ bitwise_and ไม่เปลี่ยน
   // จำนวนช่องสีของ A แต่อย่างใด (เหมือน JS's cv.bitwise_and(src,src,dst,finalMask))
-  mask: { needs: "any", out: "same", gen: (p) => {
+  mask: { needs: "any", out: "same", gen: (p, ctx) => {
     const lines = [
       "if img_b.ndim == 3:",
-      "    img_b_gray = cv2.cvtColor(img_b, cv2.COLOR_BGR2GRAY)",
+      `    img_b_gray = cv2.cvtColor(img_b, ${pyBGrayCode(ctx)})`,
       "else:",
       "    img_b_gray = img_b",
       "if img.shape[:2] != img_b_gray.shape[:2]:",
@@ -2488,10 +2493,10 @@ const GEN = {
   ] },
 
   // logical_ops: out:"gray" — A และ B ถูก threshold 127 ทั้งคู่ (เหมือนแอป) ผลเป็น 0/255 ช่องเดียว
-  logical_ops: { needs: "any", out: "gray", gen: (p) => [
+  logical_ops: { needs: "any", out: "gray", gen: (p, ctx) => [
     "if img.ndim == 3:",
-    "    img = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)",
-    ...bBinaryLines(),
+    `    img = cv2.cvtColor(img, ${pyGrayCode(ctx)})`,
+    ...bBinaryLines(ctx),
     "_, a_bin = cv2.threshold(img, 127, 255, cv2.THRESH_BINARY)",
     pickOwn(LOGICAL_PY, p.operation, "and"),
     'print(f"white pixels: {cv2.countNonZero(img)}")',
@@ -2499,12 +2504,12 @@ const GEN = {
 
   // inpaint: out:"same" · guard ทั้งสองข้อ mirror แอปด้วยเลขจำนวนเต็มแบบเดียวกัน (nz * 100 > 25 * total) ·
   // radius clamp ช่วงเดียวกับ registry (intIn(p.radius, 3, 1, 7))
-  inpaint: { needs: "any", out: "same", gen: (p) => {
+  inpaint: { needs: "any", out: "same", gen: (p, ctx) => {
     const radius = Math.round(clampNum(p.radius, 3, 1, 7));
     const ns = p.method === "ns";
     const flag = ns ? "cv2.INPAINT_NS" : "cv2.INPAINT_TELEA";
     return [
-      ...bBinaryLines(),
+      ...bBinaryLines(ctx),
       "nz = cv2.countNonZero(b_bin)",
       "total = img.shape[0] * img.shape[1]",
       "if nz == 0:",
@@ -2519,9 +2524,9 @@ const GEN = {
 
   // hist_match: out:"same" · CDF แบบ float64 (.astype ก่อน cumsum — NumPy 2 สะสม float32 แล้วเพี้ยน ดู
   // contrast_stretch) · searchsorted side='left' = j แรกที่ cdf_b[j] >= cdf_a[i] เหมือนลูปของแอป · ไม่ resize B
-  hist_match: { needs: "any", out: "same", gen: () => [
+  hist_match: { needs: "any", out: "same", gen: (p, ctx) => [
     "if img.ndim == 2:",
-    "    hm_ref = img_b if img_b.ndim == 2 else cv2.cvtColor(img_b, cv2.COLOR_BGR2GRAY)",
+    `    hm_ref = img_b if img_b.ndim == 2 else cv2.cvtColor(img_b, ${pyBGrayCode(ctx)})`,
     "    planes_a, planes_b = [img], [hm_ref]",
     "else:",
     "    planes_a = cv2.split(img)",
@@ -2549,12 +2554,12 @@ const GEN = {
   // เต็มเฟรมที่ full-res — ผลคือ score/ตำแหน่งที่แสดงและใช้ตัดสิน threshold เป็นค่าจริงที่ full-res เสมอ
   // ไม่ใช่แค่ "แจ้งเตือน" — guard template>search ก่อนเรียก matchTemplate เสมอ (ยืนยันแล้วว่า cv2 ไม่ throw
   // คืนผลลัพธ์เพี้ยนแทน)
-  template_matching: { needs: "gray", out: "color", gen: (p) => {
+  template_matching: { needs: "gray", out: "color", gen: (p, ctx) => {
     const method = p.method === "ccorr" ? "cv2.TM_CCORR_NORMED" : "cv2.TM_CCOEFF_NORMED";
     const thresholdPct = finiteOr(p.threshold, 70);
     return [
       "if img_b.ndim == 3:",
-      "    img_b = cv2.cvtColor(img_b, cv2.COLOR_BGR2GRAY)",
+      `    img_b = cv2.cvtColor(img_b, ${pyBGrayCode(ctx)})`,
       "rows, cols = img.shape",
       "t_rows, t_cols = img_b.shape",
       "img_bgr = cv2.cvtColor(img, cv2.COLOR_GRAY2BGR)",
@@ -2610,9 +2615,9 @@ const GEN = {
   // ---- Image Quality (Tier 2, 18b) ----
   // ทั้งคู่ needs:"gray" บังคับ A เป็นขาวดำอยู่แล้วเสมอ (ไม่มีความกำกวมแบบ imfuse/imabsdiff ที่เป็น
   // needs:"any") ผลลัพธ์ภาพจึงเป็นขาวดำเสมอ (out:"gray") ไม่ต้องมี fast-path/divergence-comment ใด ๆ
-  psnr: { needs: "gray", out: "gray", gen: () => [
+  psnr: { needs: "gray", out: "gray", gen: (p, ctx) => [
     "if img_b.ndim == 3:",
-    "    img_b = cv2.cvtColor(img_b, cv2.COLOR_BGR2GRAY)",
+    `    img_b = cv2.cvtColor(img_b, ${pyBGrayCode(ctx)})`,
     "if img.shape[:2] != img_b.shape[:2]:",
     "    img_b = cv2.resize(img_b, (img.shape[1], img.shape[0]), interpolation=cv2.INTER_LINEAR)",
     "diff = cv2.absdiff(img, img_b)",
@@ -2637,11 +2642,11 @@ const GEN = {
   // p.speed undefined ต้องได้ "full" เสมอ) ไม่ย่อภาพ ค่าถูกต้องที่สุด (วัดจริงที่ 1080p ~82-127ms) — "fast"
   // ย่อ ≤640px ก่อนคำนวณเหมือนเดิม (~10ms) พร้อม downscale_note แจ้งเมื่อ scale<1 ทำงานจริง (qa วัดจริงพบว่า
   // downscale เปลี่ยนค่า SSIM ได้มาก: 1920x1080 full-res=0.3446 vs downscaled=0.9471 ~175% relative)
-  ssim: { needs: "gray", out: "gray", gen: (p) => {
+  ssim: { needs: "gray", out: "gray", gen: (p, ctx) => {
     const speed = p && p.speed === "fast" ? "fast" : "full";
     return [
     "if img_b.ndim == 3:",
-    "    img_b = cv2.cvtColor(img_b, cv2.COLOR_BGR2GRAY)",
+    `    img_b = cv2.cvtColor(img_b, ${pyBGrayCode(ctx)})`,
     "if img.shape[:2] != img_b.shape[:2]:",
     "    img_b = cv2.resize(img_b, (img.shape[1], img.shape[0]), interpolation=cv2.INTER_LINEAR)",
     "rows, cols = img.shape",
@@ -2996,7 +3001,7 @@ const GEN = {
     return [
       `a_g = img if img.ndim == 2 else cv2.cvtColor(img, ${gray})`,
       "b_src = img_b if img_b.shape[:2] == img.shape[:2] else cv2.resize(img_b, (img.shape[1], img.shape[0]), interpolation=cv2.INTER_LINEAR)",
-      `b_g = b_src if b_src.ndim == 2 else cv2.cvtColor(b_src, ${gray})`,
+      `b_g = b_src if b_src.ndim == 2 else cv2.cvtColor(b_src, ${pyBGrayCode(ctx)})`,
       "hh, ww = a_g.shape",
       `scale = min(1.0, ${maxSide} / max(ww, hh))  # ย่อภาพก่อนจับคู่`,
       "aw, ah = max(1, int(np.floor(ww * scale + 0.5))), max(1, int(np.floor(hh * scale + 0.5)))",
@@ -3228,7 +3233,7 @@ const GEN = {
     "    img = cv2.cvtColor(a, cv2.COLOR_GRAY2BGR) if img.ndim == 2 else img[:, :, :3].copy()",
     "    print('segmentation score: connect ground truth to input B')",
     "else:",
-    "    b = img_b if img_b.ndim == 2 else cv2.cvtColor(img_b, cv2.COLOR_BGR2GRAY)",
+    `    b = img_b if img_b.ndim == 2 else cv2.cvtColor(img_b, ${pyBGrayCode(ctx)})`,
     "    resized = a.shape[:2] != b.shape[:2]",
     "    if resized:",
     "        b = cv2.resize(b, (a.shape[1], a.shape[0]), interpolation=cv2.INTER_NEAREST)",
@@ -3707,7 +3712,7 @@ export function buildPythonCode(pipeline, opts = {}) {
     stepNo++;
     // แปลงเป็นขาวดำอัตโนมัติถ้า op ต้องการ (เหมือนที่แอปทำให้เบื้องหลัง)
     if (g.needs === "gray" && !ctx.gray) {
-      body.push("img = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)  # (แปลงขาวดำอัตโนมัติ)");
+      body.push(`img = cv2.cvtColor(img, ${pyGrayCode(ctx)})  # (แปลงขาวดำอัตโนมัติ)`);
       ctx.gray = true;
       ctx.mirrored = true;
     }
@@ -3778,10 +3783,10 @@ if __name__ == "__main__":
 // ชื่อ img_b (d=1) / img_b2 / img_b3 … (ดู bImageVar) · step สองภาพที่ไม่มี src2 เลย = แอปคืนภาพ A เดิม (passthroughNoSrc2) Python จึงข้ามขั้นนั้น
 const bImageVar = (depth) => (depth <= 1 ? "img_b" : `img_b${depth}`);
 // PIQE lives in a two-input category but measures A alone, even when B is connected.
-const usesSecondImage = (step) => FILTERS[step.id]?.inputs === 2 && resolveOp(step).opId !== "piqe";
+const usesSecondImage = (step) => FILTERS[step.id]?.inputs === 2 && OPS[resolveOp(step).opId]?.usesSrc2 !== false;
 const BATCH5B_OPS = new Set(["image_pyramid", "frangi_vesselness", "anisotropic_diffusion", "debayer", "piqe"]);
 // The legacy two-image compiler intentionally keeps its old channel behavior. Track a
-// separate flag for new 5B generators so no old-only export changes even one character.
+// separate flag for new 5B generators and gray conversions; other legacy color behavior stays unchanged.
 function context5B(opId, ctx) {
   return BATCH5B_OPS.has(opId) ? { ...ctx, mirrored: ctx.mirrored5B !== false } : ctx;
 }
@@ -3789,7 +3794,7 @@ function trackOrder5B(g, p, ctx) {
   if (g.appChannelOrder) ctx.mirrored5B = false;
   else if (g.bgrChannelOrder || ctx.gray || (g.grayOutOf && g.grayOutOf(p))) ctx.mirrored5B = true;
 }
-// สร้างบรรทัดของ "สาย B ของ step" ลง body — คืนชื่อตัวแปรที่เก็บภาพ B ที่ประมวลผลเสร็จแล้ว · depth = ระดับของ step (0 = สายหลัก)
+// สร้างบรรทัดของ "สาย B ของ step" ลง body — คืนลำดับช่องของผล B ให้ op แม่ใช้แปลงขาวดำ · depth = ระดับของ step (0 = สายหลัก)
 function emitBChain(step, depth, body, appOnly) {
   const w = bImageVar(depth + 1);
   body.push(`${w} = img_b_raw.copy()  # ภาพ B ของขั้นนี้ เริ่มจากภาพ B ดิบ`);
@@ -3814,11 +3819,12 @@ function emitBChain(step, depth, body, appOnly) {
         body.push(`# (${thaiName(r2.opId)}: ยังไม่ได้ต่อสาย B — แอปคืนภาพเดิม จึงข้ามขั้นนี้)`);
         continue;
       }
-      emitBChain(s2, depth + 1, body, appOnly);
+      ctxB.src2Mirrored = emitBChain(s2, depth + 1, body, appOnly);
     }
     if (g2.needs === "gray" && !ctxB.gray) {
-      body.push(`${w} = cv2.cvtColor(${w}, cv2.COLOR_BGR2GRAY)`);
+      body.push(`${w} = cv2.cvtColor(${w}, ${pyGrayCode(ctxB)})`);
       ctxB.gray = true;
+      ctxB.mirrored5B = true;
     }
     for (const line of g2.gen(r2.local, context5B(r2.opId, ctxB))) body.push(line.replace(/\bimg_b\b|\bimg\b/g, (t) => (t === "img" ? w : second)));
     const out2 = g2.outOf ? g2.outOf(r2.local) : g2.out;
@@ -3826,7 +3832,7 @@ function emitBChain(step, depth, body, appOnly) {
     else if (out2 === "color") ctxB.gray = false;
     trackOrder5B(g2, r2.local, ctxB);
   }
-  return w;
+  return ctxB.mirrored5B !== false;
 }
 function buildPythonCode2Image(pipeline, opts = {}) {
   const name = opts.displayName || "ผลลัพธ์";
@@ -3858,11 +3864,12 @@ function buildPythonCode2Image(pipeline, opts = {}) {
         continue;
       }
       // เรนเดอร์สาย B ของ step นี้ก่อนบรรทัดของ step หลักเสมอ (step หลักต้องใช้ img_b ที่ประมวลผลแล้ว เช่น GEN.imabsdiff อ่าน img_b ตรง ๆ)
-      emitBChain(step, 0, bodyA, appOnly);
+      ctxA.src2Mirrored = emitBChain(step, 0, bodyA, appOnly);
     }
     if (g.needs === "gray" && !ctxA.gray) {
-      bodyA.push("img = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)  # (แปลงขาวดำอัตโนมัติ)");
+      bodyA.push(`img = cv2.cvtColor(img, ${pyGrayCode(ctxA)})  # (แปลงขาวดำอัตโนมัติ)`);
       ctxA.gray = true;
+      ctxA.mirrored5B = true;
     }
     bodyA.push(`# ── ขั้นที่ ${stepNo}: ${thaiName(opId)} (${opId}) ──`);
     if (TEACH[opId]) bodyA.push(`# ${TEACH[opId]}`);
