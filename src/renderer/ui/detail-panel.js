@@ -169,6 +169,17 @@ const VAL_META = {
   dct_psnr:       { d: 2, tip: "ยิ่งสูงยิ่งเหมือนภาพเดิม", infTip: "ค่าสูงไม่จำกัด — เหมือนเดิมทุกพิกเซล" },
   dct_zero_pct:   { d: 1 },
   dct_blocks:     { d: 0 },
+  // IP batch 5A — mask overlap and topology
+  iou:           { d: 4 },
+  dice:          { d: 4 },
+  precision:     { d: 4 },
+  recall:        { d: 4 },
+  tp:            { d: 0 },
+  fp:            { d: 0 },
+  fn:            { d: 0 },
+  objects:       { d: 0 },
+  holes:         { d: 0 },
+  euler:         { d: 0 },
 };
 const META_FALLBACK = { w: 88, pri: true }; // key ที่ไม่รู้จัก → d undefined = ใช้ heuristic ใน fmtVal
 function metaOf(key) {

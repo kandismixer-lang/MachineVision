@@ -1307,6 +1307,8 @@ export function hMaximaImage(I, W, H, h) {
   for (let i = 0; i < n; i++) J[i] = Math.max(I[i] - h, 0);
   return reconstructDilate(J, I, W, H);
 }
+// แหล่งเดียวสำหรับ Extended Max ทั้ง Morphology และ Marker Watershed (5A)
+export function extendedMaxMask(I, W, H, h) { return regionalMaxMask(hMaximaImage(I, W, H, h), W, H); }
 
 // ---- Gabor (สูตร getGaborKernel ของ OpenCV — build นี้ไม่มี จึงคำนวณเอง · ได้ kernel float32 เท่ากับ cv2.getGaborKernel ทุกค่า) ----
 export function gaborKernel(k, sigma, thetaDeg, lambd, gamma, psi) {
@@ -1529,6 +1531,8 @@ export const PASS_FAIL_METRICS = {
   roi_mean: { op: "roi_polygon", th: "ROI Polygon", pick: (v) => pfScalar(v, "roi_mean") },
   focus: { op: "focus_score", th: "Focus / Sharpness Score", pick: (v) => pfScalar(v, "focus_score") },
   de_mean: { op: "delta_e", th: "Color Difference ΔE", pick: (v) => pfScalar(v, "de_mean") },
+  iou: { op: "seg_score", th: "Segmentation Score", pick: (v) => pfScalar(v, "iou") },
+  dice: { op: "seg_score", th: "Segmentation Score", pick: (v) => pfScalar(v, "dice") },
 };
 // เกณฑ์แสดงบนข้อความ: ปัด 2 ตำแหน่งแล้วตัดศูนย์ท้าย (0.30000000000000004 → 0.3 · 1 → 1)
 export const pfNum = (x) => String(Math.round(x * 100) / 100);
@@ -2239,6 +2243,13 @@ export const OPS = {
         { value: "regional_min", label: "Regional Minima (หุบเฉพาะที่)", hint: "บริเวณที่มืดกว่าทุกพิกเซลรอบตัว (ใช้ภาพเทา ไม่ตัด 127) — ผลเป็นภาพขาว-ดำ" },
         { value: "h_maxima", label: "H-maxima transform (ตัดยอดที่เตี้ยกว่า h)", hint: "ผลเป็นภาพเทา: ยอดทุกยอดถูกกดลง h ระดับ ยอดที่สูงไม่ถึง h หายไป — ใช้ค่า 'ความสูง h' ด้านล่าง" },
         { value: "extended_max", label: "Extended Maxima (ยอดที่สูงกว่ารอบข้างอย่างน้อย h)", hint: "= Regional Maxima ของ H-maxima · ใช้ทำ marker ให้ Watershed — ใช้ค่า 'ความสูง h' ด้านล่าง" },
+        { value: "clean", label: "Clean (ลบจุดเดี่ยว)", hint: "ลบจุดขาวที่ไม่มีเพื่อนบ้านขาว 8 ทิศ ทำหนึ่งรอบ" },
+        { value: "majority", label: "Majority (เสียงข้างมาก)", hint: "ขาวเมื่อในหน้าต่าง 3×3 มีขาวอย่างน้อย 5 จุด" },
+        { value: "spur", label: "Spur (ตัดกิ่งเส้น)", hint: "ลบจุดปลายที่มีเพื่อนบ้านขาวพอดีหนึ่งจุด" },
+        { value: "thin", label: "Thin (ทำให้บาง)", hint: "ทำให้บางด้วย Lam–Lee–Suen · 0 = จนนิ่ง" },
+        { value: "shrink", label: "Shrink (หดเป็นจุด)", hint: "หดวัตถุโดยรักษาจำนวนวัตถุและรู · 0 = จนนิ่ง" },
+        { value: "h_minima", label: "H-minima (ถมหุบตื้นกว่า h)", hint: "ถมหุบตื้นในภาพเทา ไม่ตัดที่ 127" },
+        { value: "extended_min", label: "Extended Min (หุบลึก ≥ h)", hint: "หาตำแหน่งหุบหลังถมหุบตื้นด้วย h" },
       ], default: "erode" },
       { key: "shape", visibleWhen: [{key:"op",in:["erode","dilate","open","close","gradient","tophat","blackhat"]}], type: "select", label: "รูปร่าง kernel (ไม่มีผลกับ Skeleton และ Opening by Reconstruction)", options: [
         { value: "rect", label: "สี่เหลี่ยม (Rect)" },
@@ -2249,17 +2260,18 @@ export const OPS = {
         { value: "line", label: "เส้นตรง (Line, ปรับมุมได้)", hint: "kernel มิติเดียว ใช้ปรับ Operation ตามแนวเส้นที่ต้องการ (เช่นลบ/เน้นเส้นแนวนอน-แนวตั้ง) — ที่มุมเฉียง (เช่น 45°) จำนวนพิกเซลจริงในเส้นอาจน้อยกว่าขนาดที่ตั้งไว้ เพราะต้องปัดพิกัดให้ลงตารางพิกเซล (เกิดกับ strel('line') ของ MATLAB เช่นกัน ไม่ใช่บั๊ก)" },
       ], default: "rect" },
       { key: "ksize", visibleWhen: [{key:"op",in:["erode","dilate","open","close","gradient","tophat","blackhat","reconstruct_open"]}], type: "number", label: "ขนาด kernel", min: 1, max: 21, step: 2, default: 5, desc: "ขนาดตัวแปรงที่ไล่ทาบภาพ — ใหญ่ = ผลกัด/พอกแรงขึ้น" },
-      { key: "iterations", visibleWhen: [{key:"op",in:["erode","dilate","open","close","gradient","tophat","blackhat","reconstruct_open"]}], type: "number", label: "จำนวนรอบ", min: 1, max: 5, step: 1, default: 1, desc: "ทำ operation ซ้ำกี่รอบ — มาก = ผลยิ่งเข้มขึ้น (สำหรับ Opening by Reconstruction คือจำนวนรอบกัดตอนสร้าง marker)" },
+      { key: "iterations", visibleWhen: [{key:"op",in:["erode","dilate","open","close","gradient","tophat","blackhat","reconstruct_open","majority","spur","thin","shrink"]}], type: "number", label: "จำนวนรอบ", min: 1, max: 5, step: 1, default: 1, desc: "ทำ operation ซ้ำกี่รอบ — มาก = ผลยิ่งเข้มขึ้น (สำหรับ Opening by Reconstruction คือจำนวนรอบกัดตอนสร้าง marker)" },
       { key: "minArea", visibleWhen: [{key:"op",in:["remove_small"]}], type: "number", label: "พื้นที่ขั้นต่ำ (px) — ใช้กับ Remove Small Objects เท่านั้น", min: 10, max: 5000, step: 10, default: 150, desc: "วัตถุที่มีพื้นที่น้อยกว่านี้ (พิกเซล) จะถูกลบทิ้ง — พารามิเตอร์นี้ไม่มีผลกับ Operation อื่นนอกจาก Remove Small Objects" },
       { key: "lineAngle", visibleWhen: [{key:"op",in:["erode","dilate","open","close","gradient","tophat","blackhat"]},{key:"shape",in:["line"]}], type: "number", label: "มุมของเส้น (องศา) — ใช้กับรูปร่าง Line เท่านั้น", min: 0, max: 179, step: 1, default: 0, desc: "0° = แนวนอน, 90° = แนวตั้ง — ไม่มีผลถ้าเลือกรูปร่างอื่น" },
       { key: "hmPattern", visibleWhen: [{key:"op",in:["hit_or_miss"]}], type: "select", label: "แม่แบบ Hit-or-Miss — ใช้กับ Hit-or-Miss เท่านั้น", options: Object.entries(HITMISS_PATTERNS).map(([value, v]) => ({ value, label: v.label })), default: "isolated" },
       { key: "hmRotate", visibleWhen: [{key:"op",in:["hit_or_miss"]}], type: "boolean", label: "รวมทั้ง 4 ทิศ (หมุนทีละ 90°) — ใช้กับ Hit-or-Miss เท่านั้น", default: true },
-      { key: "hHeight", visibleWhen: [{key:"op",in:["h_maxima","extended_max"]}], type: "number", label: "ความสูง h — ใช้กับ H-maxima / Extended Maxima เท่านั้น", min: 1, max: 255, step: 1, default: 10, desc: "ยอดที่สูงกว่ารอบข้างไม่ถึง h ระดับ (0–255) จะถูกตัดทิ้ง — เพิ่ม h เมื่อภาพมี noise มาก" },
+      { key: "hHeight", visibleWhen: [{key:"op",in:["h_maxima","extended_max","h_minima","extended_min"]}], type: "number", label: "ความสูง/ความลึก h — ใช้กับ H-maxima / Extended Maxima / H-minima / Extended Minima เท่านั้น", min: 1, max: 255, step: 1, default: 10, desc: "ยอดที่สูงกว่ารอบข้างไม่ถึง h ระดับ (0–255) จะถูกตัดทิ้ง — เพิ่ม h เมื่อภาพมี noise มาก" },
     ],
     apply(cv, src, p, ctx) {
       // IP batch 4B — ตัวเลือกใหม่ (ไม่ใช้ shape/ksize/iterations) · path เดิมทุกตัวด้านล่างไม่เปลี่ยน
       if (p.op === "hit_or_miss") return hitMissOp(cv, src, p, ctx);
       if (p.op === "regional_max" || p.op === "regional_min" || p.op === "h_maxima" || p.op === "extended_max") return regionalOp(cv, src, p, ctx);
+      if (Object.hasOwn(MORPH_5A, p.op)) return morphology5A(cv, src, p, ctx);
       if (p.op === "fill_holes") {
         // imfill semantics: เติมเฉพาะ "รู" (บริเวณ 0) ที่ปิดสนิท คือไม่ต่อกับขอบภาพเลยแม้แต่จุดเดียว
         // แนวทาง: (1) binarize ที่ 127 กันภาพเกรย์ที่ไม่ใช่ 0/255 ล้วน (2) เติมขอบ 0 หนา 1px รอบภาพ
@@ -7891,6 +7903,204 @@ export const OPS = {
   },
 
   // P-8 (2026-10-17) — ตัดสิน OK / NG: อ่านค่าล่าสุดของกล่องวัดบนสายหลัก (ctx.upstream จาก worker) เทียบเกณฑ์ · ภาพ = ภาพที่เข้ามา + กรอบเขียว/แดง + ป้าย
+  // IP batch 5A — ใช้แกน Extended Max เดียวกับ Morphology; watershed เดิมคงเดิม
+  watershed_marker: {
+    name: "Marker Watershed (แยกด้วย marker)",
+    needs: "any",
+    modeHint: "ใช้ยอดของระยะห่างจากขอบเป็นจุดเริ่มแยกวัตถุที่ติดกัน",
+    desc: "แยกวัตถุที่ติดกันด้วย marker จาก Extended Max บน Distance Transform · เลือกวัตถุมืดหรือสว่างให้ตรงภาพ · เพิ่ม h เพื่อลดยอดเล็กและลดจำนวนชิ้นที่แยก · ภาพรายละเอียดมากอาจช้า เหมาะกับภาพนิ่ง",
+    params: [
+      { key: "polarity", type: "select", label: "สีของวัตถุ", options: [{ value: "dark", label: "วัตถุมืดบนพื้นสว่าง" }, { value: "bright", label: "วัตถุสว่างบนพื้นมืด" }], default: "dark", desc: "เลือกด้านของ Otsu ที่เป็นวัตถุ" },
+      { key: "hHeight", type: "number", label: "ความสูง h ของ marker (px)", min: 1, max: 50, step: 1, default: 2, hint: "มาก = marker น้อยลง แยกน้อยลง" },
+      { key: "view", type: "select", label: "แสดงผลเป็น", options: [{ value: "boundaries", label: "เส้นแบ่ง (แดง) บนภาพเดิม" }, { value: "labels", label: "ระบายสีแต่ละวัตถุ" }], default: "boundaries", desc: "สีประจำวัตถุคงเดิมเมื่อ label เดิม" },
+    ],
+    apply(cv, src, p, ctx) {
+      if (isEmptyMat(src)) { if (ctx) { ctx.info = "ภาพว่าง"; ctx.values = scalarValues(OBJECT_FIELDS, []); } return src.clone(); }
+      const h = intIn(p.hHeight, 2, 1, 50);
+      const polarity = ownKey({ dark: true, bright: true }, p.polarity, "dark");
+      const view = ownKey({ boundaries: true, labels: true }, p.view, "boundaries");
+      let rgb = null, gray = null, fg = null, ker = null, dist = null, mask = null, bg = null, markers = null, dst = null;
+      try {
+        rgb = rgbIfNeeded(cv, src);
+        const x = rgb || src, W = x.cols, H = x.rows, N = W * H;
+        gray = new cv.Mat(); cv.cvtColor(x, gray, cv.COLOR_RGB2GRAY);
+        fg = new cv.Mat(); cv.threshold(gray, fg, 0, 255, (polarity === "dark" ? cv.THRESH_BINARY_INV : cv.THRESH_BINARY) + cv.THRESH_OTSU);
+        ker = cv.getStructuringElement(cv.MORPH_RECT, new cv.Size(3, 3));
+        cv.morphologyEx(fg, fg, cv.MORPH_OPEN, ker, new cv.Point(-1, -1), 2);
+        if (cv.countNonZero(fg) === 0) {
+          dst = x.clone();
+          if (ctx) { ctx.info = "ไม่พบวัตถุ · ลองเปลี่ยนสีของวัตถุ"; ctx.values = scalarValues(OBJECT_FIELDS, [0]); }
+        } else {
+          dist = new cv.Mat(); cv.distanceTransform(fg, dist, cv.DIST_L2, 5);
+          const d8 = new Int32Array(N);
+          { const dd = dist.data32F; for (let i = 0; i < N; i++) d8[i] = Math.min(255, Math.floor(dd[i] + 0.5)); }
+          const mm = extendedMaxMask(d8, W, H, h);
+          { const fd = fg.data; for (let i = 0; i < N; i++) if (!fd[i]) mm[i] = 0; }
+          mask = cv.matFromArray(H, W, cv.CV_8UC1, mm);
+          markers = new cv.Mat(); const objects = cv.connectedComponents(mask, markers, 8, cv.CV_32S) - 1;
+          bg = new cv.Mat(); cv.dilate(fg, bg, ker, new cv.Point(-1, -1), 3);
+          { const md = markers.data32S, bd = bg.data; for (let i = 0; i < N; i++) md[i] = !bd[i] ? 1 : mm[i] ? md[i] + 1 : 0; }
+          cv.watershed(x, markers);
+          dst = view === "boundaries" ? x.clone() : new cv.Mat(H, W, cv.CV_8UC3, new cv.Scalar(0));
+          const md = markers.data32S, od = dst.data, colors = new Map();
+          for (let i = 0; i < N; i++) {
+            const label = md[i];
+            if (view === "boundaries") { if (label === -1) od.set([255, 0, 0], i * 3); }
+            else if (label === -1) od.set([255, 255, 255], i * 3);
+            else if (label >= 2) {
+              if (!colors.has(label)) colors.set(label, markerLabelRGB(label));
+              od.set(colors.get(label), i * 3);
+            }
+          }
+          if (ctx) { ctx.info = `แยกได้ ${objects} วัตถุ · marker จาก Extended Max h = ${h}`; ctx.values = scalarValues(OBJECT_FIELDS, [objects]); }
+        }
+        const out = dst; dst = null; return out;
+      } finally { for (const m of [dst, markers, bg, mask, dist, ker, fg, gray, rgb]) if (m) m.delete(); }
+    },
+  },
+
+  seg_score: {
+    name: "Segmentation Score (IoU / Dice)",
+    needs: "any",
+    modeHint: "เทียบ mask ที่แบ่งได้ใน A กับ mask คำตอบใน B",
+    desc: "วัดความตรงกันของ mask สองภาพ · ทั้งคู่แปลงเป็นเทาแล้วใช้ค่า > 127 เป็นวัตถุ · B ต่างขนาดถูกปรับให้เท่า A ด้วย nearest-neighbor · ขาว = ตรงกัน แดง = เกิน ฟ้า = ขาด · IoU / Dice ยิ่งใกล้ 1 ยิ่งตรงกัน · ทุกอัตราส่วนที่ตัวหารเป็น 0 → ถือว่า 1 · ต่อ mask คำตอบที่ช่อง เข้า B",
+    params: [],
+    apply(cv, src, p, ctx) {
+      if (isEmptyMat(src)) { if (ctx) { ctx.info = "ภาพว่าง"; ctx.values = scalarValues(SEG_FIELDS, []); } return src.clone(); }
+      let ga = null, gb = null, matched = null, dst = null;
+      try {
+        if (!ctx || !ctx.src2 || isEmptyMat(ctx.src2)) {
+          dst = rgbIfNeeded(cv, src) || src.clone();
+          if (ctx) { ctx.info = ctx.src2 ? EMPTY_SRC2_INFO : NO_SRC2_INFO; delete ctx.values; }
+        } else {
+          ga = grayIfNeeded(cv, src); gb = grayIfNeeded(cv, ctx.src2);
+          const a = ga || src, b0 = gb || ctx.src2;
+          const resized = a.rows !== b0.rows || a.cols !== b0.cols;
+          if (resized) { matched = new cv.Mat(); cv.resize(b0, matched, new cv.Size(a.cols, a.rows), 0, 0, cv.INTER_NEAREST); }
+          const b = matched || b0, N = a.rows * a.cols;
+          dst = new cv.Mat(a.rows, a.cols, cv.CV_8UC3, new cv.Scalar(0));
+          const ad = a.data, bd = b.data, od = dst.data;
+          let tp = 0, fp = 0, fn = 0;
+          for (let i = 0; i < N; i++) {
+            const aa = ad[i] > 127, bb = bd[i] > 127;
+            if (aa && bb) { tp++; od.set([255, 255, 255], i * 3); }
+            else if (aa) { fp++; od.set([230, 60, 60], i * 3); }
+            else if (bb) { fn++; od.set([60, 140, 255], i * 3); }
+          }
+          const ratio = (n, d) => d === 0 ? 1 : n / d;
+          const iou = ratio(tp, tp + fp + fn), dice = ratio(2 * tp, 2 * tp + fp + fn), precision = ratio(tp, tp + fp), recall = ratio(tp, tp + fn);
+          if (ctx) {
+            ctx.info = `IoU ${fixed4(iou)} · Dice ${fixed4(dice)} · precision ${fixed4(precision)} · recall ${fixed4(recall)}` + (resized ? RESIZED_B_INFO : "");
+            ctx.values = scalarValues(SEG_FIELDS, [iou, dice, precision, recall, tp, fp, fn]);
+          }
+        }
+        const out = dst; dst = null; return out;
+      } finally { for (const m of [dst, matched, gb, ga]) if (m) m.delete(); }
+    },
+  },
+
+  lowlight_enhance: {
+    name: "Low-light Enhance (เพิ่มแสงภาพมืด)",
+    needs: "any",
+    modeHint: "กลับสี ลดหมอก แล้วกลับสีอีกครั้งเพื่อเพิ่มความสว่าง",
+    desc: "เพิ่มความสว่างในภาพมืดด้วย 255 − Dehaze(255 − ภาพ) · ใช้ dark channel และ guided filter ตัวเดียวกับ Dehaze · แนวเดียวกับ imlocalbrighten ของ MATLAB แต่รายละเอียดต่างกัน · เปิดคงบริเวณสว่างเพื่อผสมภาพเดิมตามความสว่างแต่ละพิกเซล · ภาพใหญ่หรือหน้าต่างกว้างอาจช้า",
+    params: [
+      { key: "amount", type: "number", label: "ปริมาณเพิ่มความสว่าง", min: 0.1, max: 1, step: 0.05, default: 1, hint: "มาก = เพิ่มความสว่างมากขึ้น" },
+      { key: "patch", type: "number", label: "ขนาดหน้าต่าง dark channel (px)", min: 3, max: 31, step: 2, default: 15, desc: "หน้าต่างใหญ่ช่วยประมาณบริเวณมืดที่กว้างขึ้น" },
+      { key: "refine", type: "boolean", label: "เกลี่ยแผนที่ตามขอบวัตถุ (guided filter)", default: true, desc: "ลดรอยบล็อกตามขอบวัตถุ" },
+      { key: "alphaBlend", type: "boolean", label: "คงบริเวณที่สว่างอยู่แล้วไว้", default: false, desc: "ส่วนสว่างใช้ภาพเดิมมาก ส่วนมืดใช้ภาพที่เพิ่มแสงมาก" },
+    ],
+    apply(cv, src, p, ctx) {
+      if (isEmptyMat(src)) { if (ctx) ctx.info = "ภาพว่าง"; return src.clone(); }
+      const amount = numIn(p.amount, 1, 0.1, 1), patch = ensureOdd(intIn(p.patch, 15, 3, 31));
+      const refine = boolOr(p.refine, true), blend = boolOr(p.alphaBlend, false);
+      let rgb = null, inv = null, dh = null, g = null, dst = null;
+      try {
+        rgb = dropAlpha(cv, src); const x = rgb || src;
+        inv = new cv.Mat(); cv.bitwise_not(x, inv);
+        dh = OPS.dehaze.apply(cv, inv, { amount, patch, refine, view: "result" });
+        dst = new cv.Mat(); cv.bitwise_not(dh, dst);
+        if (blend) {
+          g = grayIfNeeded(cv, x);
+          const gd = (g || x).data, xd = x.data, od = dst.data, ch = x.channels();
+          for (let i = 0; i < gd.length; i++) {
+            const a = gd[i] / 255;
+            for (let c = 0; c < ch; c++) { const j = i * ch + c; od[j] = Math.floor(a * xd[j] + (1 - a) * od[j] + 0.5); }
+          }
+        }
+        if (ctx) ctx.info = `เพิ่มแสง ${amount} · หน้าต่าง ${patch}×${patch}` + (refine ? " · เกลี่ยตามขอบ" : " · ไม่เกลี่ยตามขอบ") + (blend ? " · คงบริเวณสว่าง" : "");
+        const out = dst; dst = null; return out;
+      } finally { for (const m of [dst, g, dh, inv, rgb]) if (m) m.delete(); }
+    },
+  },
+
+  colorspace_inverse: {
+    name: "Convert Back to RGB (แปลงกลับสี)",
+    needs: "any",
+    modeHint: "ใช้ต่อจาก Color Space Convert โดยเลือกปริภูมิสีเดียวกัน",
+    desc: "แปลงค่า 3 ช่องแบบ 8 bit กลับเป็น RGB · วิธีใช้: Color Space Convert → ปรับช่องสี → Convert Back to RGB · เลือกปริภูมิเดียวกับตอนแปลงไป · การบีบค่า 8 bit และสีที่เกินขอบเขตทำให้กลับมาไม่เท่าภาพเดิมทุกค่า โดยเฉพาะ Lab / Luv / YUV / XYZ",
+    params: [], // ตั้งจาก colorspace.params หลังสร้าง OPS เพื่อใช้ตัวเลือกแหล่งเดียวกัน
+    apply(cv, src, p, ctx) {
+      if (isEmptyMat(src)) { if (ctx) ctx.info = "ภาพว่าง"; return src.clone(); }
+      const space = ownKey(INVERSE_CODES, p.space, "hsv");
+      let rgb = null, dst = null;
+      try {
+        dst = new cv.Mat();
+        if (src.channels() === 1) {
+          cv.cvtColor(src, dst, cv.COLOR_GRAY2RGB);
+          if (ctx) ctx.info = "ภาพเข้าเป็นภาพเทา ไม่มีข้อมูลสี 3 ช่องให้แปลงกลับ — ต่อจาก Color Space Convert";
+        } else {
+          rgb = dropAlpha(cv, src);
+          if (space === "hsv") {
+            // H uses OpenCV's 0..180 scale. Float64 + floor(x + .5) in both runtimes
+            // avoids the 8-bit HSV conversion rounding difference in OpenCV 4.x/5.x.
+            const x = rgb || src, data = x.data;
+            dst.create(x.rows, x.cols, cv.CV_8UC3);
+            const out = dst.data;
+            const order = [[0, 3, 1], [2, 0, 1], [1, 0, 3], [1, 2, 0], [3, 1, 0], [0, 1, 2]];
+            for (let i = 0; i < data.length; i += 3) {
+              const hue = data[i] / 30, sector = Math.floor(hue), f = hue - sector;
+              const s = data[i + 1] / 255, v = data[i + 2];
+              const tab = [v, v * (1 - s), v * (1 - s * f), v * (1 - s * (1 - f))];
+              const indices = order[sector % 6];
+              for (let c = 0; c < 3; c++) out[i + c] = Math.floor(tab[indices[c]] + 0.5);
+            }
+          } else cv.cvtColor(rgb || src, dst, cv[INVERSE_CODES[space]]);
+          if (ctx) ctx.info = `${space.toUpperCase()} → RGB · ค่า 8 bit อาจสูญเสียรายละเอียดสี`;
+        }
+        const out = dst; dst = null; return out;
+      } finally { if (dst) dst.delete(); if (rgb) rgb.delete(); }
+    },
+  },
+
+  euler_number: {
+    name: "Hole Count / Euler (นับรูในวัตถุ)",
+    needs: "any",
+    modeHint: "นับวัตถุและรูปิดสนิท แล้วคำนวณ Euler = วัตถุ − รู",
+    desc: "แปลงเป็นเทาและใช้ค่า > 127 เป็นวัตถุ เหมือน Region Properties · รูที่ต่อกับขอบภาพไม่นับ · วัตถุต่อกันแบบ 8 ทิศใช้พื้นหลัง 4 ทิศ และสลับกันเมื่อเลือก 4 ทิศ · เทาอ่อน = วัตถุ แดง = รู · เทียบ bweuler ของ MATLAB",
+    params: [{ key: "conn", type: "select", label: "การเชื่อมต่อของวัตถุ", options: [{ value: "8", label: "8 ทิศ (รวมมุมทแยง)" }, { value: "4", label: "4 ทิศ (บน ล่าง ซ้าย ขวา)" }], default: "8", hint: "ค่าเริ่มต้นเดียวกับ bweuler ของ MATLAB" }],
+    apply(cv, src, p, ctx) {
+      if (isEmptyMat(src)) { if (ctx) { ctx.info = "ภาพว่าง"; ctx.values = scalarValues(EULER_FIELDS, []); } return src.clone(); }
+      const conn = Number(ownKey({ 8: true, 4: true }, p.conn, "8"));
+      let g = null, bin = null, inv = null, fgLabels = null, bgLabels = null, dst = null;
+      try {
+        g = grayIfNeeded(cv, src); const x = g || src;
+        bin = new cv.Mat(); cv.threshold(x, bin, 127, 255, cv.THRESH_BINARY);
+        fgLabels = new cv.Mat(); const objects = cv.connectedComponents(bin, fgLabels, conn, cv.CV_32S) - 1;
+        inv = new cv.Mat(); cv.bitwise_not(bin, inv);
+        bgLabels = new cv.Mat(); const nb = cv.connectedComponents(inv, bgLabels, conn === 8 ? 4 : 8, cv.CV_32S);
+        const W = x.cols, H = x.rows, touches = new Uint8Array(nb);
+        { const ld = bgLabels.data32S; for (let y = 0; y < H; y++) for (let xx = 0; xx < W; xx++) if (!y || !xx || y === H - 1 || xx === W - 1) touches[ld[y * W + xx]] = 1; }
+        let holes = 0; for (let i = 1; i < nb; i++) if (!touches[i]) holes++;
+        dst = new cv.Mat(H, W, cv.CV_8UC3, new cv.Scalar(0));
+        const bd = bin.data, ld = bgLabels.data32S, od = dst.data;
+        for (let i = 0; i < W * H; i++) if (bd[i]) od.set([200, 200, 200], i * 3); else if (ld[i] && !touches[ld[i]]) od.set([230, 60, 60], i * 3);
+        if (ctx) { ctx.info = `วัตถุ ${objects} ชิ้น · รู ${holes} รู · Euler = ${objects - holes}`; ctx.values = scalarValues(EULER_FIELDS, [objects, holes, objects - holes]); }
+        const out = dst; dst = null; return out;
+      } finally { for (const m of [dst, bgLabels, fgLabels, inv, bin, g]) if (m) m.delete(); }
+    },
+  },
+
   pass_fail: {
     name: "Pass / Fail (ตัดสิน OK / NG)",
     needs: "any",
@@ -7903,6 +8113,8 @@ export const OPS = {
         { value: "roi_mean", label: "ความสว่างเฉลี่ยใน ROI (ต่อหลัง ROI Polygon)" },
         { value: "focus", label: "คะแนนความคม (ต่อหลัง Focus / Sharpness Score)" },
         { value: "de_mean", label: "ΔE เฉลี่ย (ต่อหลัง Color Difference ΔE)" },
+        { value: "iou", label: "IoU (ต่อหลัง Segmentation Score)" },
+        { value: "dice", label: "Dice (ต่อหลัง Segmentation Score)" },
       ], default: "count", desc: "เลือกค่าที่จะเอามาตัดสิน — ต้องต่อกล่องวัดชนิดที่ระบุในวงเล็บไว้ก่อนหน้ากล่องนี้" },
       { key: "cond", type: "select", label: "เงื่อนไขที่ถือว่าผ่าน", options: [
         { value: "range", label: "อยู่ในช่วง ต่ำสุด–สูงสุด (รวมขอบ)" },
@@ -7940,6 +8152,130 @@ export const OPS = {
 };
 
 // ---- ตัวช่วย/ตารางของ IP batch 4B ที่ต้องใช้ cv หรืออ้างจาก apply (function declaration ถูก hoist · const ใช้ตอนรันหลังโหลดโมดูลเสร็จ) ----
+// IP batch 5A — ค่า scalars และตารางเพื่อนบ้านไม่มี Mat และไม่มี state ข้ามเฟรม
+const OBJECT_FIELDS = [["objects", "จำนวนวัตถุ"]];
+const SEG_FIELDS = [["iou", "IoU"], ["dice", "Dice"], ["precision", "Precision"], ["recall", "Recall"], ["tp", "พิกเซลตรงกัน"], ["fp", "พิกเซลเกิน"], ["fn", "พิกเซลขาด"]];
+const EULER_FIELDS = [...OBJECT_FIELDS, ["holes", "จำนวนรู"], ["euler", "Euler number"]];
+const INVERSE_CODES = { hsv: "COLOR_HSV2RGB", hls: "COLOR_HLS2RGB", lab: "COLOR_Lab2RGB", ycrcb: "COLOR_YCrCb2RGB", xyz: "COLOR_XYZ2RGB", luv: "COLOR_Luv2RGB", yuv: "COLOR_YUV2RGB" };
+OPS.colorspace_inverse.params = [{ ...OPS.colorspace.params[0], desc: "เลือกปริภูมิเดียวกับ Color Space Convert ก่อนหน้า", hint: "ภาพเข้าต้องเก็บค่า 3 ช่องของปริภูมินี้" }];
+const fixed4 = (v) => (Math.floor(v * 10000 + 0.5) / 10000).toFixed(4);
+export function markerLabelRGB(label) {
+  const h = ((label - 2) * 137.508) % 360 / 60, c = 200 / 255, x = c * (1 - Math.abs(h % 2 - 1)), m = 1 - c;
+  const rgb = h < 1 ? [c, x, 0] : h < 2 ? [x, c, 0] : h < 3 ? [0, c, x] : h < 4 ? [0, x, c] : h < 5 ? [x, 0, c] : [c, 0, x];
+  return rgb.map((v) => Math.floor((v + m) * 255 + 0.5));
+}
+const MORPH_5A = { clean: true, majority: true, spur: true, thin: true, shrink: true, h_minima: true, extended_min: true };
+// E, NE, N, NW, W, SW, S, SE — Lam–Lee–Suen และ simple point 8/4 ใช้วงแหวนเดียวกัน
+const MORPH_RING = [[1, 0], [1, -1], [0, -1], [-1, -1], [-1, 0], [-1, 1], [0, 1], [1, 1]];
+function morph5ALuts() {
+  const thin = [new Uint8Array(256), new Uint8Array(256)], simple = new Uint8Array(256), count = new Uint8Array(256);
+  for (let mask = 0; mask < 256; mask++) {
+    const x = Array.from({ length: 9 }, (_, i) => (mask >> (i % 8)) & 1);
+    let X = 0, n1 = 0, n2 = 0;
+    for (let i = 0; i < 8; i += 2) { X += !x[i] && (x[i + 1] || x[i + 2]) ? 1 : 0; n1 += x[i] || x[i + 1]; n2 += x[i + 1] || x[i + 2]; }
+    count[mask] = x.slice(0, 8).reduce((a, b) => a + b, 0);
+    const g = X === 1 && Math.min(n1, n2) >= 2 && Math.min(n1, n2) <= 3;
+    thin[0][mask] = g && !((x[1] || x[2] || !x[7]) && x[0]) ? 1 : 0;
+    thin[1][mask] = g && !((x[5] || x[6] || !x[3]) && x[4]) ? 1 : 0;
+    const components = (value, conn) => {
+      const seen = new Uint8Array(8); let n = 0;
+      for (let i = 0; i < 8; i++) {
+        if (seen[i] || x[i] !== value) continue;
+        seen[i] = 1; const queue = [i]; let cardinal = i % 2 === 0;
+        for (let q = 0; q < queue.length; q++) for (let j = 0; j < 8; j++) {
+          if (seen[j] || x[j] !== value) continue;
+          const a = MORPH_RING[queue[q]], b = MORPH_RING[j], dx = Math.abs(a[0] - b[0]), dy = Math.abs(a[1] - b[1]);
+          if (conn === 8 ? Math.max(dx, dy) === 1 : dx + dy === 1) { seen[j] = 1; queue.push(j); cardinal ||= j % 2 === 0; }
+        }
+        if (value || cardinal) n++;
+      }
+      return n;
+    };
+    simple[mask] = components(1, 8) === 1 && components(0, 4) === 1 ? 1 : 0;
+  }
+  return { thin, simple, count };
+}
+export const MORPH_5A_LUT = morph5ALuts();
+// Binary input 0/255; padding 0. Shrink snapshots each directional border, then
+// checks/deletes in four parity subfields using the padded array coordinates.
+// Each subfield deletes in parallel; its pixels are never 8-adjacent.
+export function binaryMorph5A(data, w, h, op, iterations) {
+  const W = w + 2, a = new Uint8Array(W * (h + 2));
+  for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) a[(y + 1) * W + x + 1] = data[y * w + x] > 127 ? 1 : 0;
+  const off = [1, 1 - W, -W, -1 - W, -1, W - 1, W, W + 1];
+  const maskAt = (i) => a[i + 1] | a[i + 1 - W] << 1 | a[i - W] << 2 | a[i - 1 - W] << 3 | a[i - 1] << 4 | a[i - 1 + W] << 5 | a[i + W] << 6 | a[i + 1 + W] << 7;
+  const cap = op === "clean" ? 1 : iterations || (op === "spur" ? Math.max(w, h) : w * h);
+  let rounds = 0, removed = 0, added = 0;
+  for (; rounds < cap;) {
+    rounds++; let changed = false;
+    const steps = op === "thin" ? [0, 1] : op === "shrink" ? [2, 6, 0, 4] : [0];
+    for (const step of steps) {
+      if (op === "shrink") {
+        const candidates = [[], [], [], []];
+        for (let y = 1; y <= h; y++) for (let x = 1; x <= w; x++) {
+          const i = y * W + x;
+          if (a[i] && !a[i + off[step]]) candidates[(y & 1) * 2 + (x & 1)].push(i);
+        }
+        for (let k = 0; k < 4; k++) {
+          const changes = [];
+          for (const i of candidates[k]) {
+            if (!a[i]) continue;
+            const mask = maskAt(i);
+            if (MORPH_5A_LUT.count[mask] >= 1 && MORPH_5A_LUT.simple[mask]) changes.push(i);
+          }
+          for (const i of changes) a[i] = 0;
+          removed += changes.length;
+          if (changes.length) changed = true;
+        }
+        continue;
+      }
+      const changes = [];
+      for (let y = 1; y <= h; y++) for (let x = 1; x <= w; x++) {
+        const i = y * W + x;
+        if (!a[i] && op !== "majority") continue;
+        const mask = maskAt(i), n = MORPH_5A_LUT.count[mask];
+        const del = op === "clean" ? n === 0 : op === "spur" ? n === 1 : MORPH_5A_LUT.thin[step][mask];
+        if (op === "majority" ? a[i] !== (n + a[i] >= 5 ? 1 : 0) : del) {
+          changes.push(i);
+        }
+      }
+      for (const i of changes) { const old = a[i]; a[i] = op === "majority" ? 1 - a[i] : 0; if (old) removed++; else added++; }
+      if (changes.length) changed = true;
+    }
+    if (!changed) break;
+  }
+  const out = new Uint8Array(w * h);
+  for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) out[y * w + x] = a[(y + 1) * W + x + 1] * 255;
+  return { out, rounds, removed, added };
+}
+function morphology5A(cv, src, p, ctx) {
+  if (isEmptyMat(src)) { if (ctx) ctx.info = "ภาพว่าง"; return src.clone(); }
+  const op = p.op, h = intIn(p.hHeight, 10, 1, 255);
+  const iterations = op === "majority" ? intIn(p.iterations, 1, 1, 5) : intIn(p.iterations, 1, 0, 100);
+  let g = null, dst = null, mask = null, labels = null;
+  try {
+    g = grayIfNeeded(cv, src); const x = g || src, W = x.cols, H = x.rows;
+    let out, info;
+    if (op === "h_minima" || op === "extended_min") {
+      const inv = Int32Array.from(x.data, (v) => 255 - v);
+      out = op === "h_minima" ? Uint8Array.from(hMaximaImage(inv, W, H, h), (v) => 255 - v) : extendedMaxMask(inv, W, H, h);
+      if (op === "h_minima") info = `H-minima · ถมหุบขึ้น ${h} ระดับ`;
+      else {
+        mask = cv.matFromArray(H, W, cv.CV_8UC1, out); labels = new cv.Mat();
+        const n = cv.connectedComponents(mask, labels, 8, cv.CV_32S) - 1;
+        info = `Extended Min (h=${h}) · พบ ${n} บริเวณ (${cv.countNonZero(mask)} พิกเซล)`;
+      }
+    } else {
+      const r = binaryMorph5A(x.data, W, H, op, iterations); out = r.out;
+      const name = { clean: "ลบจุดเดี่ยว", majority: "เสียงข้างมาก", spur: "ตัดกิ่งเส้น", thin: "ทำให้บาง", shrink: "หดเป็นจุด" }[op];
+      info = `${name} · ลบ ${r.removed} พิกเซล` + (op === "majority" ? ` · เพิ่ม ${r.added} พิกเซล` : "") + ` · ${r.rounds} รอบ` + (iterations === 0 ? " (จนนิ่ง)" : "");
+    }
+    dst = cv.matFromArray(H, W, cv.CV_8UC1, out);
+    if (ctx) ctx.info = info;
+    const result = dst; dst = null; return result;
+  } finally { for (const m of [dst, labels, mask, g]) if (m) m.delete(); }
+}
+
 const ECC_FIELDS = [["ecc_ok", "จัดภาพสำเร็จ (1 = ใช่)"], ["ecc_rho", "ความเข้ากัน ρ (0–1)"], ["ecc_dx", "เลื่อนแนวนอน (px)"], ["ecc_dy", "เลื่อนแนวตั้ง (px)"], ["ecc_angle_deg", "หมุน (°)"], ["ecc_scale", "ขยาย (เท่า)"]];
 const ECC_MOTIONS = {
   translation: { th: "เลื่อนอย่างเดียว", code: "MOTION_TRANSLATION" },
@@ -8135,10 +8471,8 @@ function regionalOp(cv, src, p, ctx) {
     let mask, grey = null;
     if (op === "regional_max") mask = regionalMaxMask(I, W, H);
     else if (op === "regional_min") { for (let i = 0; i < N; i++) I[i] = 255 - I[i]; mask = regionalMaxMask(I, W, H); }
-    else {
-      grey = hMaximaImage(I, W, H, h);
-      mask = op === "extended_max" ? regionalMaxMask(grey, W, H) : null;
-    }
+    else if (op === "extended_max") mask = extendedMaxMask(I, W, H, h);
+    else { grey = hMaximaImage(I, W, H, h); mask = null; }
     const count = (a) => { let c = 0; for (let i = 0; i < N; i++) if (a[i]) c++; return c; };
     const comps = (a) => {
       maskM = cv.matFromArray(H, W, cv.CV_8UC1, a);
@@ -8210,9 +8544,24 @@ const MORPH_SPLIT = [
   { op: "remove_small", name: "Remove Small (ลบวัตถุเล็ก)",
     modeHint: "ลบวัตถุขาวที่มีพื้นที่น้อยกว่าเกณฑ์ทิ้ง",
     desc: "ลบวัตถุขาวที่มีพื้นที่น้อยกว่าเกณฑ์ 'พื้นที่ขั้นต่ำ' ทิ้ง — ต่างจาก Opening ตรงที่ไม่ทำให้วัตถุที่เหลือเปลี่ยนรูป ใช้ล้างจุด noise ก่อนนับวัตถุ" },
+  { op: "clean", name: "Clean (ลบจุดเดี่ยว)",
+    modeHint: "ลบจุดขาวที่ไม่มีเพื่อนบ้านขาว 8 ทิศ ทำหนึ่งรอบ",
+    desc: "ลบเฉพาะจุดเดี่ยว โดยไม่ลบปลายเส้นที่มีเพื่อนบ้าน · ใช้ค่า > 127 เป็นวัตถุ นอกภาพเป็นดำ" },
+  { op: "majority", name: "Majority (เสียงข้างมาก)",
+    modeHint: "ขาวเมื่อในหน้าต่าง 3×3 มีขาวอย่างน้อย 5 จุด",
+    desc: "ลดจุดรบกวนด้วยเสียงข้างมากใน 3×3 รวมตัวกลาง · ทำซ้ำตามจำนวนรอบ หยุดก่อนเมื่อนิ่ง นอกภาพเป็นดำ" },
   { op: "skeleton", name: "Skeleton (เส้นแกนกลาง)",
     modeHint: "ลดวัตถุขาวให้เหลือเส้นแกนกลางหนา 1 พิกเซล",
     desc: "ลดวัตถุขาวให้เหลือเส้นแกนกลางหนา 1 พิกเซล (Zhang-Suen) ที่ความละเอียดเต็ม — ช้ากว่า operation อื่นในหมวดนี้ (วัตถุยิ่งหนายิ่งช้า ภาพ 1080p ที่มีก้อนใหญ่ราว 0.3 วินาที เหมาะกับภาพนิ่งมากกว่ากล้องสด) ไม่มีพารามิเตอร์ให้ปรับ · ถ้าเส้นแกนกลางไปวิ่งอยู่ในพื้นหลังแทนที่จะอยู่ในวัตถุ แปลว่าพื้นหลังเป็นสีขาว ให้สลับขาว-ดำ (Invert) มาก่อน เพราะ op นี้คิดว่าพิกเซลขาวคือ 'วัตถุ' เสมอ (นอกขอบภาพนับเป็นพื้นหลัง)" },
+  { op: "spur", name: "Spur (ตัดกิ่งเส้น)",
+    modeHint: "ลบจุดปลายที่มีเพื่อนบ้านขาวพอดีหนึ่งจุด",
+    desc: "ตัดปลายเส้นพร้อมกันทั้งภาพต่อรอบ · จุดเดี่ยวไม่ถูกลบ · 0 = จนนิ่ง ไม่เกินด้านยาวของภาพ ใช้ค่า > 127" },
+  { op: "thin", name: "Thin (ทำให้บาง)",
+    modeHint: SLOW_MODE_HINT + " · Lam–Lee–Suen · 0 = จนนิ่ง",
+    desc: "ทำวัตถุขาวให้บางด้วย Lam–Lee–Suen สองขั้นย่อย ต่างจาก Skeleton ที่ใช้ Zhang-Suen · รักษาการเชื่อมต่อและปลายเส้นบาง · ภาพก้อนหนาอาจช้า ควรใช้ภาพนิ่ง" },
+  { op: "shrink", name: "Shrink (หดเป็นจุด)",
+    modeHint: SLOW_MODE_HINT + " · รักษาจำนวนวัตถุและรู · 0 = จนนิ่ง",
+    desc: "หดขอบ N/S/E/W ด้วย simple point แบบ 8/4 · ลบพร้อมกันในแต่ละกลุ่มพิกเซลสลับ 2×2 เพื่อรักษา Euler · วัตถุไม่มีรูเหลือจุด วัตถุมีรูเหลือวงรอบรู · ภาพก้อนหนาอาจช้า ควรใช้ภาพนิ่ง" },
   { op: "reconstruct_open", name: "Recon. Opening (คงรูปร่าง)",
     modeHint: "เหมือน Opening แต่รักษาขอบวัตถุที่รอดไว้แม่นกว่า (ไม่มุมมน)",
     desc: "เหมือน Opening แต่รักษาขอบวัตถุที่รอดไว้แม่นกว่า (ไม่มุมมน): กัดภาพเป็น marker แล้วคืนรูปร่างเดิมให้ทุกวัตถุที่ยังเหลือ marker อยู่ — ขนาด kernel/จำนวนรอบ คือขนาดกัดตอนสร้าง marker (ใช้ kernel สี่เหลี่ยมเสมอ จึงไม่มีตัวเลือกรูปร่าง)" },
@@ -8234,9 +8583,15 @@ const MORPH_SPLIT = [
   { op: "h_maxima", name: "H-maxima (ตัดยอดต่ำกว่า h)",
     modeHint: "ผลเป็นภาพเทา: ยอดทุกยอดถูกกดลง h ระดับ ยอดที่สูงไม่ถึง h หายไป",
     desc: "ผลเป็นภาพเทา: ยอดทุกยอดถูกกดลง h ระดับ ยอดที่สูงไม่ถึง h หายไป — ใช้ค่า 'ความสูง h' กรอง noise เล็ก ๆ ออกจากยอด · นับแบบ 8-connected" },
+  { op: "h_minima", name: "H-minima (ถมหุบตื้นกว่า h)",
+    modeHint: "ถมหุบตื้นในภาพเทา ไม่ตัดที่ 127",
+    desc: "กลับสี → H-maxima → กลับสี · ถมหุบตื้นกว่า h ด้วย reconstruction แบบ 8 ทิศ ผลเป็นภาพเทา" },
   { op: "extended_max", name: "Extended Max (ยอดสูง ≥ h)",
     modeHint: "= Regional Maxima ของ H-maxima · ใช้ทำ marker ให้ Watershed",
     desc: "= Regional Maxima ของ H-maxima: เก็บเฉพาะยอดที่สูงกว่ารอบข้างอย่างน้อย h ระดับ ผลเป็นภาพขาว-ดำ ใช้ทำ marker ให้ Watershed แยกวัตถุที่ติดกัน — เพิ่ม h เมื่อภาพมี noise มาก · นับแบบ 8-connected" },
+  { op: "extended_min", name: "Extended Min (หุบลึก ≥ h)",
+    modeHint: "หาตำแหน่งหุบหลังถมหุบตื้นด้วย h",
+    desc: "Regional Max ของ H-maxima บนภาพกลับสี · ใช้ภาพเทา ไม่ตัดที่ 127 ผลเป็น 0/255 ตรงหุบ แบบ 8 ทิศ" },
 ];
 export const MORPH_OP_IDS = MORPH_SPLIT.map((m) => "morph_" + m.op);
 // ข้อความ param ของตัวใหม่ (ตัดวลี "ใช้กับ X เท่านั้น/ไม่มีผลกับ Y" ที่ใช้แยกตัวในแผงเดิมออก เพราะตอนนี้ param แสดงเฉพาะตัวที่ใช้จริง)
@@ -8251,6 +8606,11 @@ const MORPH_PARAM_TWEAK = {
 };
 // reconstruct_open ใช้ ksize/iterations เหมือนกัน แต่ความหมายคือขนาด/จำนวนรอบกัดตอนสร้าง marker → label ต่างจากตัวอื่น
 const MORPH_PARAM_TWEAK_BY_OP = {
+  spur: { iterations: { min: 0, max: 100, default: 1, hint: "0 = จนนิ่ง", desc: "ทำซ้ำตามจำนวนรอบ · 0 = ทำจนภาพไม่เปลี่ยน" } },
+  thin: { iterations: { min: 0, max: 100, default: 0, hint: "0 = จนนิ่ง", desc: "ทำซ้ำตามจำนวนรอบ · 0 = ทำจนภาพไม่เปลี่ยน" } },
+  shrink: { iterations: { min: 0, max: 100, default: 0, hint: "0 = จนนิ่ง", desc: "ทำซ้ำตามจำนวนรอบ · 0 = ทำจนภาพไม่เปลี่ยน" } },
+  h_minima: { hHeight: { label: "ความลึก h", desc: "ถมหุบตื้นกว่า h ระดับ (0–255)" } },
+  extended_min: { hHeight: { label: "ความลึก h", desc: "หาตำแหน่งหุบหลังถมหุบตื้นกว่า h ระดับ" } },
   reconstruct_open: {
     ksize: { label: "ขนาด kernel (กัด marker)", desc: "ขนาดตัวแปรงที่ใช้กัดตอนสร้าง marker — ใหญ่ = วัตถุเล็กถูกตัดทิ้งมากขึ้น" },
     iterations: { label: "จำนวนรอบกัด marker", desc: "จำนวนรอบกัดตอนสร้าง marker — มาก = วัตถุบาง/เล็กยิ่งถูกตัดทิ้ง" },
@@ -8466,25 +8826,25 @@ export const FILTERS = {
   // tests/category-merge.test.mjs ล็อกให้ตรงกัน — เพิ่ม op ใหม่ในหมวดแล้วต้องมาเพิ่มที่นี่ด้วย ไม่งั้นเทสต์ล้ม
   // กลุ่มเก่าด้านบน (color_space, colour, image_adjust, ...) คงไว้เป็น legacy ให้เทมเพลต/โปรเจกต์เก่า แต่ palette ไม่ชี้มาแล้ว
   color_tools: mergeGroup("Color", "Color",
-    ["grayscale", "colorspace", "channel_split", "rgb_adjust", "color_inrange", "kmeans_segment", "slic", "white_balance", "invert", "pseudocolor"], "grayscale"),
+    ["grayscale", "colorspace", "colorspace_inverse", "channel_split", "rgb_adjust", "color_inrange", "kmeans_segment", "slic", "white_balance", "invert", "pseudocolor"], "grayscale"),
 
   enhance_tools: mergeGroup("Enhance", "Enhance",
-    ["brightness_contrast", "gamma", "hist_equalize", "clahe", "contrast_stretch", "flatfield_correction", "quantize", "unsharp", "laplacian_sharpen", "custom_kernel", "dehaze"], "brightness_contrast"),
+    ["brightness_contrast", "gamma", "hist_equalize", "clahe", "contrast_stretch", "flatfield_correction", "quantize", "unsharp", "laplacian_sharpen", "custom_kernel", "dehaze", "lowlight_enhance"], "brightness_contrast"),
 
   filter_denoise: mergeGroup("Filter & Denoise", "Filter & Denoise",
     ["salt_pepper_noise", "gaussian_noise", "median_blur", "gaussian_blur", "box_blur", "bilateral", "wiener_filter", "guided_filter", "nlm_denoise", "deconv_wiener", "deconv_lucy"], "salt_pepper_noise"),
 
   segment_edge: mergeGroup("Segment & Edge", "Segmentation & Edge",
-    ["binary_threshold", "otsu_threshold", "adaptive_threshold", "multi_otsu_threshold", "canny", "sobel", "laplacian_edge", "scharr_edge", "prewitt_edge", "roberts_edge", "log_edge", "watershed", "grabcut", "region_growing"], "binary_threshold"),
+    ["binary_threshold", "otsu_threshold", "adaptive_threshold", "multi_otsu_threshold", "canny", "sobel", "laplacian_edge", "scharr_edge", "prewitt_edge", "roberts_edge", "log_edge", "watershed", "watershed_marker", "grabcut", "region_growing"], "binary_threshold"),
 
   analysis_detect: mergeGroup("Analyze / Detect", "Analysis & Detection",
-    ["find_contours", "connected_components", "distance_transform", "local_std_filter", "local_entropy_filter", "gabor_filter", "glcm", "focus_score", "regionprops", "feret", "line_profile", "shape_filter", "bounding_boxes", "hough_circles", "hough_lines", "harris_corners", "shi_tomasi_corners", "orb_keypoints", "akaze_keypoints", "fast_keypoints", "pass_fail"], "find_contours"),
+    ["find_contours", "connected_components", "distance_transform", "local_std_filter", "local_entropy_filter", "gabor_filter", "glcm", "focus_score", "regionprops", "euler_number", "feret", "line_profile", "shape_filter", "bounding_boxes", "hough_circles", "hough_lines", "harris_corners", "shi_tomasi_corners", "orb_keypoints", "akaze_keypoints", "fast_keypoints", "pass_fail"], "find_contours"),
 
   // name (ชื่อบนการ์ด node, ถูกตัดที่ ~92px) ของ 2 กลุ่มข้างบนย่อให้พอดี · group (ชิปหมวดใน detail-panel/สี) ยังเป็นชื่อเต็มเหมือนหมวด palette
 
   // PSNR/SSIM รับภาพ 2 ใบ → inputs:2 (ช่อง "เข้า B" ใน editor.js)
   image_quality: mergeGroup("Image Quality", "Image Quality",
-    ["psnr", "ssim", "delta_e"], "psnr", [], { inputs: 2 }),
+    ["psnr", "ssim", "delta_e", "seg_score"], "psnr", [], { inputs: 2 }),
 
   // Motion ทั้งสามจำ state ข้ามเฟรม → stateful:true · เปลี่ยนวิธี = params เปลี่ยน → getNodeState (fingerprint) reset+dispose state เก่าเอง
   motion: mergeGroup("Motion", "Motion",

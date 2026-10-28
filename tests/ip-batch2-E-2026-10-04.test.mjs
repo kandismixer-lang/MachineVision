@@ -1034,7 +1034,7 @@ test('ipE-20. (static structure) the 2 ops exist with needs any / gray (no "mode
 test('ipE-21. palette-panel.js: COLOR = grayscale, colorspace, channel_split, rgb_adjust, color_inrange, kmeans_segment, slic, white_balance, invert; FREQUENCY DOMAIN = fft_magnitude, fft_filter, bandpass_notch; 12 sections; OP_TO_FILTER resolves each new op to its host node; each new tile is in exactly one section; the 2 glyphs (⊞ ◙) differ from every other OP_ICON, every GROUP_ICON and the 📊/📌 markers and appear nowhere in app.js / detail-panel.js / editor.js', () => {
   assert.equal(TOOL_SECTIONS.length, 12);
   // op ใหม่ batch 4 ต่อท้าย — ห้ามสลับลำดับเดิม (IP batch 4A เพิ่ม pseudocolor)
-  assert.deepEqual(TOOL_SECTIONS.find((s) => s.title === 'COLOR').ops.slice(0, 9), ['grayscale', 'colorspace', 'channel_split', 'rgb_adjust', 'color_inrange', 'kmeans_segment', 'slic', 'white_balance', 'invert']);
+  assert.deepEqual(TOOL_SECTIONS.find((s) => s.title === 'COLOR').ops.slice(0, 10), ['grayscale', 'colorspace', 'colorspace_inverse', 'channel_split', 'rgb_adjust', 'color_inrange', 'kmeans_segment', 'slic', 'white_balance', 'invert']);
   assert.deepEqual(TOOL_SECTIONS.find((s) => s.title === 'FREQUENCY DOMAIN').ops.slice(0, 3), ['fft_magnitude', 'fft_filter', 'bandpass_notch']);
   for (const id of NEW_OPS) {
     // 2026-10-07: palette ชี้กลุ่มระดับหมวด (HOST = กลุ่มเดิม ยังคงไว้ใน FILTERS)

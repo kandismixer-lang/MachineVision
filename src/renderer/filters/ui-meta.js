@@ -108,6 +108,8 @@ export const OP_ICON = {
   morph_erode: "⊖", morph_dilate: "◼", morph_open: "◌", morph_close: "▣", morph_gradient: "◭", morph_tophat: "⌃", morph_blackhat: "⌄",
   morph_fill_holes: "⬤", morph_clear_border: "⊠", morph_remove_small: "∴",
   morph_skeleton: "🦴", morph_reconstruct_open: "⥀", morph_convex_hull: "⬣", morph_endpoints_branchpoints: "⋔", morph_hit_or_miss: "⊘",
+  watershed_marker: "♜", seg_score: "⩓", lowlight_enhance: "☾", colorspace_inverse: "⥂", euler_number: "♧",
+  morph_clean: "⸭", morph_majority: "⠶", morph_spur: "⤙", morph_thin: "⫶", morph_shrink: "⤒", morph_h_minima: "⋎", morph_extended_min: "⌑",
   morph_regional_max: "▲", morph_regional_min: "▽", morph_h_maxima: "△", morph_extended_max: "⌂",
   // ใหม่ (Tier 2, 18d) — เช็คทุกตัวกับ glyph เดิมทั้งหมดด้านบน และกับ GROUP_ICON ใน ui-meta.js แล้วไม่ชนกันเลย
   mog2: "🎞", // ฟิล์มหลายเฟรม สื่อ "ต้องดูหลายเฟรมต่อเนื่อง"
@@ -145,7 +147,7 @@ function psfCardText(p) {
 const IMARITH_LABEL = { add: "A + B", subtract: "A − B", multiply: "A × B ÷ 255", divide: "A ÷ B × 255" };
 const LOGICAL_LABEL = { and: "A AND B", or: "A OR B", xor: "A XOR B", a_and_not_b: "A AND NOT B" };
 // ชื่อสั้นของ metric ของ pass_fail บนการ์ด (key ตรงกับ PASS_FAIL_METRICS ใน registry.js)
-const PASS_FAIL_SHORT = { count: "จำนวนวัตถุ", area_sum: "พื้นที่รวม", area_max: "พื้นที่ใหญ่สุด", roi_mean: "สว่างใน ROI", focus: "ความคม", de_mean: "ΔE เฉลี่ย" };
+const PASS_FAIL_SHORT = { count: "จำนวนวัตถุ", area_sum: "พื้นที่รวม", area_max: "พื้นที่ใหญ่สุด", roi_mean: "สว่างใน ROI", focus: "ความคม", de_mean: "ΔE เฉลี่ย", iou: "IoU", dice: "Dice" };
 function ownOr(table, key, fallback) {
   return Object.hasOwn(table, key) ? table[key] : table[fallback];
 }
@@ -162,6 +164,11 @@ function mmTail(opId, p) {
 export const OP_PRIMARY = {
   grayscale: () => "BGR → เทา (Gray)",
   colorspace: (p) => "BGR → " + (p.space || "HSV").toUpperCase(),
+  colorspace_inverse: (p) => `${ownOr({ hsv: "HSV", hls: "HLS", lab: "LAB", ycrcb: "YCRCB", xyz: "XYZ", luv: "LUV", yuv: "YUV" }, p.space, "hsv")} → RGB`,
+  watershed_marker: (p) => `${p.polarity === "bright" ? "วัตถุสว่าง" : "วัตถุมืด"} · h=${pnum("watershed_marker", "hHeight", p.hHeight, { int: true })}`,
+  seg_score: () => "IoU / Dice · A เทียบ mask คำตอบ B",
+  lowlight_enhance: (p) => `เพิ่มแสง ${pnum("lowlight_enhance", "amount", p.amount)}` + (boolOr(p.alphaBlend, false) ? " · คงส่วนสว่าง" : ""),
+  euler_number: (p) => `Euler = วัตถุ − รู · ${p.conn === "4" || p.conn === 4 ? 4 : 8} ทิศ`,
   channel_split: (p) => "ช่อง: " + (p.channel || "R").toUpperCase(),
   rgb_adjust: (p) => `R ${p.rGain ?? 1} · G ${p.gGain ?? 1} · B ${p.bGain ?? 1}`,
   brightness_contrast: (p) => `คอนทราสต์ ${p.alpha ?? 1.2} · สว่าง ${p.beta ?? 0}`,
@@ -207,6 +214,10 @@ export const OP_PRIMARY = {
     : p.op === "regional_min" ? "Regional Minima"
     : p.op === "h_maxima" ? `H-maxima h=${pnum("morphology", "hHeight", p.hHeight, { int: true })}`
     : p.op === "extended_max" ? `Extended Maxima h=${pnum("morphology", "hHeight", p.hHeight, { int: true })}`
+    : p.op === "clean" ? "ลบจุดเดี่ยว (8 ทิศ)"
+    : p.op === "majority" ? `Majority · ${pnum("morph_majority", "iterations", p.iterations, { int: true })} รอบ`
+    : ["spur", "thin", "shrink"].includes(p.op) ? `${{ spur: "ตัดกิ่งเส้น", thin: "ทำให้บาง", shrink: "หดเป็นจุด" }[p.op]} · ${pnum("morph_" + p.op, "iterations", p.iterations, { int: true }) === 0 ? "จนนิ่ง" : pnum("morph_" + p.op, "iterations", p.iterations, { int: true }) + " รอบ"}`
+    : p.op === "h_minima" || p.op === "extended_min" ? `${p.op === "h_minima" ? "ถมหุบขึ้น" : "บริเวณหุบต่ำ"} h=${pnum("morphology", "hHeight", p.hHeight, { int: true })}`
     : (p.op || "erode") + " · k=" + (p.ksize ?? 5)
   ),
   binary_threshold: (p) => "thresh: " + (p.thresh ?? 127),
@@ -414,19 +425,19 @@ export const OPTION_GROUPS = {
   // Morphology แยกเครื่องมือ (2026-10-18) — 4 กลุ่ม ลำดับกลุ่ม/ตัวเลือก = ลำดับใน dropdown จริง (morph_tools)
   "morph_tools.mode": [
     ["พื้นฐาน", ["morph_erode", "morph_dilate", "morph_open", "morph_close", "morph_gradient", "morph_tophat", "morph_blackhat"]],
-    ["ทำความสะอาด", ["morph_fill_holes", "morph_clear_border", "morph_remove_small"]],
-    ["รูปร่าง", ["morph_skeleton", "morph_reconstruct_open", "morph_convex_hull", "morph_endpoints_branchpoints", "morph_hit_or_miss"]],
-    ["ยอด/หุบ", ["morph_regional_max", "morph_regional_min", "morph_h_maxima", "morph_extended_max"]],
+    ["ทำความสะอาด", ["morph_fill_holes", "morph_clear_border", "morph_remove_small", "morph_clean", "morph_majority"]],
+    ["รูปร่าง", ["morph_skeleton", "morph_spur", "morph_thin", "morph_shrink", "morph_reconstruct_open", "morph_convex_hull", "morph_endpoints_branchpoints", "morph_hit_or_miss"]],
+    ["ยอด/หุบ", ["morph_regional_max", "morph_regional_min", "morph_h_maxima", "morph_h_minima", "morph_extended_max", "morph_extended_min"]],
   ],
   "morphology.op": [
     ["พื้นฐาน — กัด / พอก", ["erode", "dilate", "open", "close"]],
     ["ดึงขอบ / ส่วนสว่าง-มืดเฉพาะที่", ["gradient", "tophat", "blackhat"]],
-    ["เก็บกวาดวัตถุขาว-ดำ", ["remove_small", "fill_holes", "clear_border", "reconstruct_open", "convex_hull"]],
-    ["เส้นแกนกลางและลายเฉพาะ", ["skeleton", "endpoints_branchpoints", "hit_or_miss"]],
-    ["หายอด / หุบ (ทำ marker ให้ Watershed)", ["regional_max", "regional_min", "h_maxima", "extended_max"]],
+    ["เก็บกวาดวัตถุขาว-ดำ", ["remove_small", "clean", "majority", "fill_holes", "clear_border", "reconstruct_open", "convex_hull"]],
+    ["เส้นแกนกลางและลายเฉพาะ", ["skeleton", "spur", "thin", "shrink", "endpoints_branchpoints", "hit_or_miss"]],
+    ["หายอด / หุบ (ทำ marker ให้ Watershed)", ["regional_max", "regional_min", "h_maxima", "h_minima", "extended_max", "extended_min"]],
   ],
   "analysis_detect.mode": [
-    ["วัตถุ — หา / นับ / วัด", ["find_contours", "connected_components", "bounding_boxes", "regionprops", "shape_filter", "feret", "distance_transform", "line_profile"]],
+    ["วัตถุ — หา / นับ / วัด", ["find_contours", "connected_components", "bounding_boxes", "regionprops", "euler_number", "shape_filter", "feret", "distance_transform", "line_profile"]],
     ["หาเส้นตรง / วงกลม", ["hough_lines", "hough_circles"]],
     ["หาจุดมุม / จุดเด่น", ["harris_corners", "shi_tomasi_corners", "fast_keypoints", "orb_keypoints", "akaze_keypoints"]],
     ["ลายพื้นผิวและความคม", ["local_std_filter", "local_entropy_filter", "gabor_filter", "glcm", "focus_score"]],
@@ -435,12 +446,12 @@ export const OPTION_GROUPS = {
   "segment_edge.mode": [
     ["แยกขาว-ดำ (Threshold)", ["binary_threshold", "otsu_threshold", "adaptive_threshold", "multi_otsu_threshold"]],
     ["หาขอบ (Edge)", ["canny", "sobel", "scharr_edge", "prewitt_edge", "roberts_edge", "laplacian_edge", "log_edge"]],
-    ["แยกวัตถุเป็นชิ้น", ["watershed", "grabcut", "region_growing"]],
+    ["แยกวัตถุเป็นชิ้น", ["watershed", "watershed_marker", "grabcut", "region_growing"]],
   ],
   "enhance_tools.mode": [
     ["ความสว่าง / คอนทราสต์", ["brightness_contrast", "gamma", "contrast_stretch", "hist_equalize", "clahe", "flatfield_correction"]],
     ["ความคม", ["unsharp", "laplacian_sharpen", "custom_kernel"]],
-    ["งานเฉพาะทาง", ["dehaze", "quantize"]],
+    ["งานเฉพาะทาง", ["dehaze", "lowlight_enhance", "quantize"]],
   ],
   "filter_denoise.mode": [
     ["ทำภาพเสียเพื่อทดลอง (ใส่ noise)", ["salt_pepper_noise", "gaussian_noise"]],
@@ -448,7 +459,7 @@ export const OPTION_GROUPS = {
     ["แก้ภาพเบลอ (รู้ PSF)", ["deconv_wiener", "deconv_lucy"]],
   ],
   "color_tools.mode": [
-    ["แปลง / ดูช่องสี", ["grayscale", "invert", "colorspace", "channel_split", "pseudocolor"]],
+    ["แปลง / ดูช่องสี", ["grayscale", "invert", "colorspace", "colorspace_inverse", "channel_split", "pseudocolor"]],
     ["ปรับสี", ["rgb_adjust", "white_balance"]],
     ["เลือก / แบ่งตามสี", ["color_inrange", "kmeans_segment", "slic"]],
   ],
@@ -472,6 +483,8 @@ export const OPTION_GROUPS = {
     ["HSV", ["h", "s", "v"]],
   ],
 };
+
+OPTION_GROUPS["colorspace_inverse.space"] = OPTION_GROUPS["colorspace.space"];
 
 // คืน [[หัวข้อ, [option object, ...]], ...] สำหรับ select ตัวนี้ (option object = ตัวเดียวกับใน param.options)
 // ไม่มีตารางของ select นี้ → null (วาดแบบเรียงเรียบเหมือนเดิม) · value ที่ตารางไม่รู้จัก → กลุ่ม "อื่น ๆ" ท้ายสุด

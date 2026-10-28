@@ -910,7 +910,7 @@ test('ipA-16. palette-panel.js: both new ENHANCE ops are listed in the ENHANCE s
   const morph = TOOL_SECTIONS.find((s) => s.title === 'MORPHOLOGY');
   // 2026-10-18: Morphology แยกเป็น 19 เครื่องมือ (morph_*) — op "ใหม่" ของ batch นี้ (fill_holes/clear_border ฯลฯ) จึงมีแถวบน palette ของตัวเองแล้ว (ดู tests/morph-split.test.mjs)
   assert.deepEqual(morph.ops.map((o) => OP_TO_FILTER[o]), morph.ops.map(() => 'morph_tools'), 'MORPHOLOGY section = one node (morph_tools) with the 19 operations as tools');
-  assert.equal(morph.ops.length, 19);
+  assert.equal(morph.ops.length, 26);
 });
 
 // ===================================================================

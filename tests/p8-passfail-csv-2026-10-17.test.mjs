@@ -220,7 +220,7 @@ test('p8-pf-7. mm: with a mm/px scale on regionprops the area metrics use area_m
 });
 
 test('p8-pf-8. every metric reads its own field: roi_mean / focus / de_mean (scalars) and the six metric ids exist', () => {
-  assert.deepEqual(Object.keys(PASS_FAIL_METRICS), ['count', 'area_sum', 'area_max', 'roi_mean', 'focus', 'de_mean']);
+  assert.deepEqual(Object.keys(PASS_FAIL_METRICS), ['count', 'area_sum', 'area_max', 'roi_mean', 'focus', 'de_mean', 'iou', 'dice']);
   assert.equal(V({ metric: 'roi_mean', cond: 'range', lo: 100, hi: 120 }, SC('roi_polygon', 'roi_mean', 110.5)).result, 'OK');
   assert.equal(V({ metric: 'de_mean', cond: 'le', hi: 2.3 }, SC('delta_e', 'de_mean', 2.3)).result, 'OK');
   assert.equal(V({ metric: 'de_mean', cond: 'le', hi: 2.3 }, SC('delta_e', 'de_mean', 2.31)).result, 'NG');

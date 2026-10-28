@@ -1140,7 +1140,7 @@ test('ip3-T1. (static structure) 2 new ops exist with needs any / gray and no "m
   assert.deepEqual(modes('shape_analysis'), ['find_contours', 'connected_components', 'distance_transform', 'local_std_filter', 'local_entropy_filter', 'regionprops', 'feret', 'line_profile']);
   assert.deepEqual(sectionOps('ENHANCE').slice(4, 8), ['contrast_stretch', 'flatfield_correction', 'quantize', 'unsharp']);
   const ad = sectionOps('ANALYSIS & DETECTION');
-  assert.deepEqual(ad.slice(ad.indexOf('regionprops'), ad.indexOf('regionprops') + 5), ['regionprops', 'feret', 'line_profile', 'shape_filter', 'bounding_boxes']);
+  assert.deepEqual(ad.slice(ad.indexOf('regionprops'), ad.indexOf('regionprops') + 6), ['regionprops', 'euler_number', 'feret', 'line_profile', 'shape_filter', 'bounding_boxes']);
   assert.deepEqual(modes('enhance_tools'), sectionOps('ENHANCE')); assert.deepEqual(modes('analysis_detect'), ad);
   assert.equal(defaultParams('enhance_tools').mode, 'brightness_contrast'); assert.equal(defaultParams('analysis_detect').mode, 'find_contours');
   for (const id of NEW_OPS) { const dp = defaultParams(OP_TO_FILTER[id]); for (const p of OPS[id].params) assert.deepEqual(dp[`${id}__${p.key}`], p.default, `${id}__${p.key}`); }

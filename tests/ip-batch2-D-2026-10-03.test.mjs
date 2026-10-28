@@ -1129,7 +1129,7 @@ test('ipD-19. (static structure) the 3 ops exist with needs gray / any / any (no
 
 test('ipD-20. palette-panel.js: ANALYSIS & DETECTION has feret, line_profile right after regionprops; GEOMETRY = crop, roi_polygon, resize, rotate, flip, perspective_warp, undistort, translate_shear; OP_TO_FILTER resolves each new op to its host node; each new tile is in exactly one section; the 3 glyphs (⌀ 〽 ⬠) differ from every other OP_ICON, every GROUP_ICON and the 📊/📌 markers, and appear nowhere in app.js / detail-panel.js', () => {
   const ana = TOOL_SECTIONS.find((s) => s.title === 'ANALYSIS & DETECTION').ops;
-  assert.deepEqual(ana.slice(ana.indexOf('regionprops'), ana.indexOf('regionprops') + 3), ['regionprops', 'feret', 'line_profile']);
+  assert.deepEqual(ana.slice(ana.indexOf('regionprops'), ana.indexOf('regionprops') + 4), ['regionprops', 'euler_number', 'feret', 'line_profile']);
   assert.deepEqual(TOOL_SECTIONS.find((s) => s.title === 'GEOMETRY').ops, ['crop', 'roi_polygon', 'resize', 'rotate', 'flip', 'perspective_warp', 'undistort', 'translate_shear']);
   for (const id of NEW_OPS) {
     // 2026-10-07: palette ชี้กลุ่มระดับหมวด (HOST = กลุ่มเดิม ยังคงไว้ใน FILTERS)
