@@ -767,7 +767,7 @@ test('ipB-10. palette-panel.js: the IMAGE ARITHMETIC section lists the 3 origina
   assert.deepEqual(sec.ops.slice(0, 7), ['imabsdiff', 'imfuse', 'mask', 'imarith', 'logical_ops', 'inpaint', 'hist_match']);
   for (const id of NEW_OPS) assert.equal(OP_TO_FILTER[id], 'image_arithmetic');
   for (const id of NEW_OPS) assert.equal(TOOL_SECTIONS.filter((s) => s.ops.includes(id)).length, 1, `${id} must appear in exactly one section`);
-  const src = fs.readFileSync(new URL('../src/renderer/ui/palette-panel.js', import.meta.url), 'utf8');
+  const src = fs.readFileSync(new URL('../src/renderer/filters/ui-meta.js', import.meta.url), 'utf8');
   const body = src.slice(src.indexOf('const OP_ICON = {'), src.indexOf('};', src.indexOf('const OP_ICON = {')));
   const icons = {};
   for (const m of body.matchAll(/([a-z_0-9]+): "([^"]+)"/g)) icons[m[1]] = m[2];

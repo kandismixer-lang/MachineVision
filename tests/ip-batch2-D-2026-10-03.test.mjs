@@ -1136,7 +1136,7 @@ test('ipD-20. palette-panel.js: ANALYSIS & DETECTION has feret, line_profile rig
     assert.equal(OP_TO_FILTER[id], { feret: 'analysis_detect', line_profile: 'analysis_detect', roi_polygon: 'geometry' }[id]);
     assert.equal(TOOL_SECTIONS.filter((s) => s.ops.includes(id)).length, 1);
   }
-  const src = readSrc('ui/palette-panel.js');
+  const src = readSrc('filters/ui-meta.js');
   const body = src.slice(src.indexOf('const OP_ICON = {'), src.indexOf('};', src.indexOf('const OP_ICON = {')));
   const icons = {};
   for (const m of body.matchAll(/([a-z_0-9]+): "([^"]+)"/g)) icons[m[1]] = m[2];
@@ -1165,7 +1165,7 @@ test('ipD-21. ui-meta.js OP_PRIMARY uses the clamped values the ops really use (
   assert.equal(OP_PRIMARY.roi_polygon({ points: 2, view: 'constructor' }), 'ROI 3 จุด · ตัดนอกกรอบ');
   const meta = readSrc('filters/ui-meta.js');
   for (const id of NEW_OPS) {
-    const start = meta.indexOf(`\n  ${id}: `);
+    const start = meta.indexOf(`\n  ${id}: `, meta.indexOf("export const OP_PRIMARY = {"));
     assert.ok(start > 0);
     const next = /\n {2}(\/\/|[a-z_0-9]+: )/g;
     next.lastIndex = start + 1;

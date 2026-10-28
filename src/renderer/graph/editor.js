@@ -7,8 +7,7 @@ import "litegraph.js/css/litegraph.css";
 import { FILTERS, defaultParams, GROUP_COLORS, migrateLegacyStep } from "../filters/registry.js";
 import { computeFit, findFreeSpot, applyFit, isViewUntouched, planInsert, formatZoom } from "./layout-math.js";
 import { canvasBufferSizeDpr, dotGridRange, flowT, flowDotCount, visibleAreaOf, isFlowLink, createFlowLoop, buildStepIds } from "../ui/phase3-math.js";
-import { GROUP_ICON, OP_PRIMARY, currentOpId, localParamsFor, contrastOn } from "../filters/ui-meta.js";
-import { OP_ICON } from "../ui/palette-panel.js";
+import { GROUP_ICON, OP_ICON, OP_PRIMARY, currentOpId, localParamsFor, shortToolName, contrastOn } from "../filters/ui-meta.js";
 import { graphColors, onThemeChange } from "../ui/theme.js";
 
 // ---- node card สไตล์ Arctic Blue ----
@@ -76,12 +75,15 @@ function registerCardColors(Ctor, accent) {
   paintCardClass(Ctor, accent);
 }
 
-// ชื่อบนกระดานตัดวงเล็บอังกฤษออก ให้สั้น (palette ยังใช้ชื่อเต็ม) — ตัด … ตอนวาด (ellipsisText)
+// ชื่อบนกระดานตัดวงเล็บอังกฤษออก ให้สั้นเหมือน palette — ตัด … ตอนวาด (ellipsisText)
 function titleOf(node) {
+  if (node.__mvTitleRaw === node.title && node.__mvTitle != null) return node.__mvTitle;
   const raw = String(node.title == null ? "" : node.title);
   // ตัดอีโมจิ/สัญลักษณ์นำหน้า ("📷 แหล่งภาพ") — ไอคอนอยู่ในกล่องแล้ว · เลขขั้น "1. " ขึ้นต้นด้วยตัวเลขจึงไม่โดนตัด
-  const t = raw.replace(/\s*\([^)]*\)\s*/g, " ").replace(/^[^\p{L}\p{N}]+/u, "").trim();
-  return t || raw;
+  const t = shortToolName(raw).replace(/^[^\p{L}\p{N}]+/u, "").trim();
+  node.__mvTitleRaw = node.title;
+  node.__mvTitle = t || raw;
+  return node.__mvTitle;
 }
 
 // พอร์ตวางที่ขอบการ์ด: เข้า = ขอบซ้าย (x=0) · ออก = ขอบขวา (x=w) · กลางความสูงกล่องไอคอน/preview
@@ -121,7 +123,7 @@ function installCardHooks(Ctor, layout) {
 // ไฟสามดวง: ซ้าย→ขวา = แดง (error) · เหลือง (ยังไม่อยู่ใน pipeline) · เขียว (อยู่ใน pipeline)
 // ไม่พึ่งสีอย่างเดียว: ดวงที่ติดเป็นวงกลมทึบ ที่เหลือเป็นวงโปร่ง · ปิดอยู่ = วงโปร่งสีเทาทั้งสามดวง
 function drawTrafficLight(ctx, cx, cy, lit, step) { // lit: "err" | "idle" | "run" | null (ปิดอยู่) · cx = กึ่งกลางดวงที่สอง
-  const cols = [gc().err, NC_YELLOW, gc().statusOn];
+  const g = gc();
   const idx = lit === "err" ? 0 : lit === "idle" ? 1 : lit === "run" ? 2 : -1;
   ctx.save();
   ctx.lineWidth = 1.2;
@@ -129,11 +131,12 @@ function drawTrafficLight(ctx, cx, cy, lit, step) { // lit: "err" | "idle" | "ru
     ctx.beginPath();
     ctx.arc(cx + (i - 1) * step, cy, 3.5, 0, Math.PI * 2);
     if (i === idx) {
-      ctx.fillStyle = cols[i];
+      const color = i === 0 ? g.err : i === 1 ? NC_YELLOW : g.statusOn;
+      ctx.fillStyle = color;
       ctx.fill();
-      ctx.strokeStyle = cols[i];
+      ctx.strokeStyle = color;
     } else {
-      ctx.strokeStyle = lit == null ? gc().statusOff : gc().statusIdle;
+      ctx.strokeStyle = lit == null ? g.statusOff : g.statusIdle;
     }
     ctx.stroke();
   }
@@ -415,9 +418,9 @@ function registerNodeTypes(onGraphChange) {
       this.__mvInPipeline = false;
       styleSlots(this);
     }
-    // ชื่อบนกระดานตัดวงเล็บอังกฤษออก ให้สั้น ไม่ล้น (palette ยังใช้ชื่อเต็ม)
+    // ชื่อบนกระดานตัดวงเล็บอังกฤษออก ให้สั้น ไม่ล้น (ชื่อเต็มอยู่ใน tooltip ของ palette)
     registerCardColors(FilterNode, colors.title);
-    FilterNode.title = def.name.replace(/\s*\([^)]*\)\s*/g, "").trim();
+    FilterNode.title = shortToolName(def.name);
     FilterNode.prototype.filterId = id;
     FilterNode.prototype.onConnectionsChange = onGraphChange;
     FilterNode.prototype.onPropertyChanged = onGraphChange;
@@ -1040,14 +1043,12 @@ export function createGraphEditor(canvasEl, cb) {
     src.pos = [40, 80];
     let prev = src;
     let x = src.pos[0] + NC_W + NC_GAP;
-    let lastX = null;
     for (const raw of steps) {
       const step = migrateLegacyStep(raw); // เทมเพลตเก่าอ้างกลุ่มเก่า (dropdown ไม่ครบหมวด) → ย้ายไปกลุ่มระดับหมวดที่ครบ
       const n = LiteGraph.createNode("filters/" + step.id);
       if (!n) continue; // กัน id ผิด (createNode คืน null)
       if (step.params) Object.assign(n.properties, step.params);
       n.pos = [x, 80];
-      lastX = x;
       x += NC_W + NC_GAP;
       graph.add(n);
       prev.connect(0, n, 0); // out → in (source/filter output ต่อได้หลายเส้น)

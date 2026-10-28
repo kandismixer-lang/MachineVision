@@ -25,7 +25,6 @@ export const WIDTH_PRESETS = {
 const px = (s) => parseFloat(s) || 0;
 
 let live = null; // instance ปัจจุบันของ initLayoutResize (เมนู "มุมมอง" เรียกผ่าน setStageRatio / setPanelWidth)
-const subscribers = new Set(); // แจ้งเมื่อสถานะซ่อน/แสดงแผงเปลี่ยน (เมนู/คีย์ลัด/ปุ่มอัปเดต aria)
 
 // ตั้งสัดส่วนจอผลลัพธ์ : กระดาน (0.1–0.9) แล้วบันทึกเหมือนการลาก · คืน false ถ้ายังไม่พร้อม (ไม่ใช่ ui-v2)
 export function setStageRatio(r) { return live ? live.setStageRatio(r) : false; }
@@ -34,13 +33,11 @@ export function setPanelWidth(which, w) { return live ? live.setPanelWidth(which
 // ซ่อน/แสดงแถบเครื่องมือ (which="palette") หรือแผงขวา ("props") — เหลือ rail 32px ให้กดเปิดกลับ · ความกว้างเดิมที่ผู้ใช้ตั้งไว้ถูกเก็บและคืนตอนเปิด
 export function setPanelCollapsed(which, hidden) { return live ? live.setPanelCollapsed(which, hidden) : false; }
 export function togglePanel(which) { return live ? live.togglePanel(which) : false; }
-export function isPanelCollapsed(which) { return live ? live.isPanelCollapsed(which) : false; }
-export function onPanelCollapseChange(fn) { subscribers.add(fn); return () => subscribers.delete(fn); }
 
 export function initLayoutResize() {
   const noop = {
     reset() {}, setStageRatio() { return false; }, setPanelWidth() { return false; }, snapshot() { return null; },
-    setPanelCollapsed() { return false; }, togglePanel() { return false; }, isPanelCollapsed() { return false; },
+    setPanelCollapsed() { return false; }, togglePanel() { return false; },
   };
   if (!document.body.classList.contains("ui-v2")) return noop;
   const ws = document.querySelector(".workspace");
@@ -299,7 +296,6 @@ export function initLayoutResize() {
       for (const w of ["palette", "props"]) if (isHidden(w)) {
         state[HIDDEN[w]] = false;
         els.add(ws);
-        for (const fn of [...subscribers]) { try { fn(w, false); } catch (e) { console.error(e); } }
       }
       applyCollapsedDom();
       if (railFocus) panelEl[railFocus].querySelector("[data-collapse]")?.focus();
@@ -310,11 +306,8 @@ export function initLayoutResize() {
       els.add(w === "stage" ? center : ws);
     }
     if (!els.size) return;
-    clearTimeout(saveTimer);
-    save(state);
-    clearTimeout(animTimer);
-    ws.classList.remove("lr-animating");
-    center.classList.remove("lr-animating");
+    persistNow();
+    stopAnim();
     for (const el of els) el.classList.add("lr-animating");
     animTimer = setTimeout(() => { ws.classList.remove("lr-animating"); center.classList.remove("lr-animating"); }, 200);
     render();
@@ -471,6 +464,7 @@ export function initLayoutResize() {
   }
   function setPanelWidthImpl(which, w) {
     if (!(which in panelEl) || !(typeof w === "number" && Number.isFinite(w)) || drag) return false;
+    if (isHidden(which)) setPanelCollapsedImpl(which, false);
     stopAnim();
     if (measurable()) {
       const ctx = startContext(which);
@@ -502,7 +496,6 @@ export function initLayoutResize() {
     animTimer = setTimeout(() => ws.classList.remove("lr-animating"), 200);
     applyCollapsedDom();
     render();
-    for (const fn of [...subscribers]) { try { fn(which, hidden); } catch (e) { console.error(e); } }
     // โฟกัส: ซ่อน → ไปที่ปุ่มเปิดบน rail · เปิด → กลับไปที่ปุ่มซ่อนของแผง (ถ้ามี) ไม่ให้โฟกัสหลุด
     if (hidden) rails[which]?.querySelector("button")?.focus();
     else if (rails[which]?.contains(document.activeElement)) panelEl[which].querySelector("[data-collapse]")?.focus();
@@ -511,7 +504,6 @@ export function initLayoutResize() {
   live = {
     setPanelCollapsed: setPanelCollapsedImpl,
     togglePanel: (w) => setPanelCollapsedImpl(w, !isHidden(w)),
-    isPanelCollapsed: isHidden,
     reset,
     setStageRatio: setStageRatioImpl,
     setPanelWidth: setPanelWidthImpl,

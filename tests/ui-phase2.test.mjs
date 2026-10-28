@@ -63,9 +63,10 @@ class El {
     return out;
   }
   one(cls) { return this.all(cls)[0] || null; }
+  querySelector(sel) { return sel.startsWith('.') ? this.one(sel.slice(1)) : null; }
 }
 
-const env = { focused: null, docListeners: [] };
+const env = { focused: null, docListeners: [], modal: null };
 
 // เรียกฟังก์ชันภายใต้ document/localStorage ปลอม แล้วคืนของจริงเสมอ
 function withDom(fn, store) {
@@ -73,7 +74,8 @@ function withDom(fn, store) {
   const prev = { doc: globalThis.document, ls: globalThis.localStorage, now: Date.now };
   env.focused = null;
   env.docListeners = [];
-  globalThis.document = { createElement: (t) => new El(t), addEventListener: (t, fn) => { env.docListeners.push([t, fn]); }, get activeElement() { return env.focused; } };
+  env.modal = null;
+  globalThis.document = { createElement: (t) => new El(t), querySelector: (sel) => sel === '.modal-overlay' ? env.modal : null, addEventListener: (t, fn, capture) => { env.docListeners.push([t, fn, capture]); }, get activeElement() { return env.focused; } };
   if (store) globalThis.localStorage = store;
   // เวลาเดินหน้าเอง 1 วินาทีต่อการเรียก → throttle ของ detail-panel ทาสีทันที ไม่ทิ้ง setTimeout จริงค้าง
   let t = 5_000_000;
@@ -334,7 +336,7 @@ test('p2-d3 toolMatches: ไม่สนตัวพิมพ์ · ค้นจ
 });
 
 // ---- palette แบบ popup (แทน accordion เดิม) ----
-const DOC_ESC = { key: 'Escape' };
+const DOC_ESC = { key: 'Escape', preventDefault() {}, stopImmediatePropagation() {} };
 function mkPal() {
   const container = new El('div');
   const added = [];
@@ -425,9 +427,47 @@ test('p2-d4d popup: เปิดด้วยคีย์บอร์ด → โ�
     head.click(); // ปิด
     head.fire('click', { detail: 0 }); // คีย์บอร์ด
     assert.equal(env.focused, t.popRows()[0]);
-    t.popup().fire('keydown', DOC_ESC);
+    t.fireDoc('keydown', DOC_ESC);
     assert.equal(t.popup().hidden, true);
     assert.equal(env.focused, head, 'Esc คืนโฟกัสให้หัวหมวด');
+  }, makeStore());
+});
+
+test('p2-d4d2 Esc: listener เดียวใน capture · ปิดเฉพาะชั้น palette ที่มีโฟกัส · modal ได้สิทธิ์ก่อน', () => {
+  withDom(() => {
+    const t = mkPal();
+    t.pal.render(); // render ซ้ำไม่ผูก listener เพิ่ม
+    const heads = t.container.all('pal-head');
+    assert.deepEqual(env.docListeners.filter(([type]) => type === 'keydown').map(([, , capture]) => capture), [true]);
+    assert.ok(heads.every((head) => !head._listeners.keydown));
+    assert.ok(!t.popup()._listeners.keydown);
+    const head = heads[1];
+    const escape = () => {
+      const calls = [];
+      t.fireDoc('keydown', { key: 'Escape', preventDefault() { calls.push('prevent'); }, stopImmediatePropagation() { calls.push('stop'); } });
+      return calls;
+    };
+    assert.deepEqual(escape(), [], 'popup ปิดอยู่ → ไม่กิน Esc');
+    head.click();
+    new El('canvas').focus();
+    assert.deepEqual(escape(), [], 'โฟกัสนอก palette → ให้ชั้นอื่นรับ Esc');
+    assert.equal(t.popup().hidden, false);
+    head.focus();
+    env.modal = new El('div');
+    assert.deepEqual(escape(), [], 'มี modal → ไม่กิน Esc');
+    assert.equal(t.popup().hidden, false);
+    env.modal = null;
+    // โฟกัสในหัวหมวด / ช่องค้นหา / popup / body / ไม่มีโฟกัส → ปิดและหยุด Esc
+    document.body = new El('body');
+    head.click(); // ปิด popup ก่อนเริ่มแต่ละกรณี
+    for (const focus of [() => head, () => t.container.one('palette-search'), () => t.popRows()[0], () => document.body, () => null]) {
+      head.click();
+      const active = focus();
+      env.focused = active;
+      assert.deepEqual(escape(), ['prevent', 'stop']);
+      assert.equal(t.popup().hidden, true);
+      if (active === head || active?.className === 'tool-row') assert.equal(env.focused, head);
+    }
   }, makeStore());
 });
 

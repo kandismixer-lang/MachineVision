@@ -1,6 +1,6 @@
 // Panel ซ้าย: palette ของ node — คลิกเพื่อเพิ่มลงผืนกราฟ (สไตล์ Node-RED)
 import { FILTERS, OPS, GROUP_COLORS } from "../filters/registry.js";
-import { GROUP_ICON, contrastOn } from "../filters/ui-meta.js";
+import { GROUP_ICON, OP_ICON, shortToolName, contrastOn } from "../filters/ui-meta.js";
 
 export const TOOL_SECTIONS = [
   { title: "COLOR", ops: ["grayscale", "colorspace", "channel_split", "rgb_adjust", "color_inrange", "kmeans_segment", "slic", "white_balance", "invert", "pseudocolor"] },
@@ -26,75 +26,6 @@ const VISIBLE_FILTER_IDS = [
   "frequency", "image_arithmetic",
   "image_registration", "image_quality", "motion",
 ];
-
-export const OP_ICON = {
-  grayscale: "◐", colorspace: "🎨", channel_split: "◉", rgb_adjust: "🎚", color_inrange: "🌈", invert: "◑",
-  kmeans_segment: "⬡", white_balance: "⚖",
-  brightness_contrast: "☀", gamma: "γ", hist_equalize: "▥", clahe: "▦", unsharp: "✦", laplacian_sharpen: "◇",
-  custom_kernel: "◫",
-  // ใหม่ (2026-10-01, IP batch ENHANCE/MORPHOLOGY) — เช็คแล้วไม่ชนกับ glyph ใดในไฟล์นี้หรือ GROUP_ICON
-  contrast_stretch: "↔", // ลูกศรซ้าย-ขวา สื่อ "ยืดช่วง"
-  flatfield_correction: "🔆", // ดวงอาทิตย์มีรัศมี สื่อ "แก้แสง"
-  // ใหม่ (2026-10-14, IP batch 3) — เช็คแล้วไม่ชนกับ OP_ICON / GROUP_ICON / NC_ICON_FALLBACK
-  quantize: "≣", // แถบซ้อนกัน สื่อ "ระดับสี"
-  shape_filter: "⛛", // กรวยกรอง สื่อ "คัดวัตถุ"
-  crop: "⛝", resize: "⤢", rotate: "↻", flip: "⇋", perspective_warp: "⏢", undistort: "⊙",
-  salt_pepper_noise: "⁙", median_blur: "●", gaussian_blur: "✺", box_blur: "▧", bilateral: "◎",
-  binary_threshold: "◩", otsu_threshold: "◧", adaptive_threshold: "◨", multi_otsu_threshold: "◪",
-  canny: "⌁", sobel: "∿", laplacian_edge: "◈", scharr_edge: "∾",
-  watershed: "≋", grabcut: "✂", find_contours: "⌬", connected_components: "⠿", distance_transform: "◔",
-  // ใหม่ (2026-09-30) — เช็คทุก glyph กับของเดิมทั้งไฟล์และกับ GROUP_ICON ใน ui-meta.js แล้วไม่ชนกันเลย
-  prewitt_edge: "⊿", // สามเหลี่ยมมุมฉาก สื่อ "ความชัน" แบบตรงไปตรงมา
-  roberts_edge: "⋱", // จุดเรียงแนวทแยง สื่อ kernel 2x2 ตามแนวทแยง
-  log_edge: "⊚", // วงกลมซ้อน สื่อ "หมวกเม็กซิกัน" ของ LoG
-  region_growing: "🪄", // ไม้กายสิทธิ์ = Magic Wand ตรงตัว
-  local_std_filter: "▒", local_entropy_filter: "▓",
-  // ใหม่ (Tier 2, 18c) — เช็คแล้วว่าไม่ชนกับ glyph ใดข้างบนทั้งหมด (~59 ตัว), 📏 (ไม้บรรทัด) สื่อ "การวัดค่า"
-  regionprops: "📏",
-  bounding_boxes: "□", hough_circles: "○", hough_lines: "╱", harris_corners: "⌖", shi_tomasi_corners: "✛",
-  orb_keypoints: "✧", akaze_keypoints: "◆", fast_keypoints: "✪",
-  fft_magnitude: "▨", fft_filter: "⬒",
-  imabsdiff: "Δ", // ใหม่ (Tier 2, 18a) — เช็คแล้วว่าไม่ชนกับ glyph ใดข้างบน, Δ สื่อ "ความต่าง" ตรงตัว
-  // ใหม่ (Tier 2, 18b) — เช็คทุกตัวกับ glyph เดิมทั้งหมดด้านบน (~57 ตัว) แล้วไม่ชนกันเลย:
-  imfuse: "⊕", // วงกลม+บวก สื่อ "รวม/ผสม" สองภาพเข้าด้วยกัน
-  mask: "⬚", // สี่เหลี่ยมประ สื่อ "หน้ากาก/พื้นที่ตัดออก"
-  template_matching: "⌕", // แว่นขยาย-สแกน สื่อ "ค้นหา" — จงใจไม่ใช้ 🎯 (ชนกับ GROUP_ICON.object_detection ในไฟล์ ui-meta.js)
-  psnr: "📶", // สัญญาณ สื่อ "signal-to-noise"
-  ssim: "≈", // ประมาณเท่ากัน สื่อ "ความคล้าย/โครงสร้างใกล้เคียงกัน"
-  // ใหม่ (2026-10-02, IP batch 2 ชิ้น B) — เช็คทุกตัวกับ glyph เดิมทั้งไฟล์และ GROUP_ICON ใน ui-meta.js แล้วไม่ชน
-  // (± ของ GROUP_ICON.image_arithmetic จงใจไม่ใช้ซ้ำ)
-  imarith: "÷", // เครื่องหมายหาร สื่อ "บวก/ลบ/คูณ/หาร"
-  logical_ops: "∧", // AND ของตรรกศาสตร์
-  inpaint: "🩹", // พลาสเตอร์ สื่อ "ซ่อมรอย"
-  hist_match: "📈", // เส้นกราฟขาขึ้น สื่อ "CDF สะสม" — ไม่ใช้ 📊 เพราะ app.js/detail-panel.js ใช้นำหน้าข้อความผลลัพธ์ (debugger 2026-10-03)
-  // ใหม่ (2026-10-03, IP batch 2 ชิ้น C) — เช็คทุกตัวกับ glyph เดิมทั้งไฟล์, GROUP_ICON ใน ui-meta.js และ app.js/detail-panel.js แล้วไม่ชน
-  gaussian_noise: "░", // แรเงาเม็ดละเอียด สื่อ "เกรนทั่วภาพ" (▒/▓ ของ local_std/entropy เข้มกว่า แยกด้วยตาได้)
-  wiener_filter: "◍", // วงกลมมีเส้นแนวตั้งด้านใน สื่อ "เกลี่ยแบบเลือกบริเวณ" (ต่างจาก ◉/◎/● ของกลุ่ม blur)
-  translate_shear: "▱", // สี่เหลี่ยมด้านขนาน = รูปทรงของสี่เหลี่ยมที่ถูก shear ตรงตัว
-  // ใหม่ (2026-10-03, IP batch 2 ชิ้น D) — เช็คทุกตัวกับ glyph เดิมทั้งไฟล์, GROUP_ICON และ app.js/detail-panel.js แล้วไม่ชน
-  feret: "⌀", // สัญลักษณ์เส้นผ่านศูนย์กลาง สื่อ "วัดความกว้างแบบคาลิปเปอร์"
-  line_profile: "〽", // เส้นกราฟขึ้นลง สื่อ "กราฟความสว่างตามเส้น" (ไม่ใช่ 〰 ของ GROUP_ICON.frequency)
-  roi_polygon: "⬠", // ห้าเหลี่ยม สื่อ "บริเวณหลายเหลี่ยม" (ต่างจาก ⏢ perspective_warp / ⬡ kmeans)
-  // ใหม่ (2026-10-04, IP batch 2 ชิ้น E) — เช็คแล้วไม่ชนกับ OP_ICON / GROUP_ICON / app.js / detail-panel.js / editor.js (🧩 ถูกใช้เป็น fallback ใน editor.js จึงไม่เลือก)
-  slic: "⊞", // ตารางสี่เหลี่ยมแบ่งช่อง สื่อ "แบ่งภาพเป็นก้อนตามตาราง"
-  bandpass_notch: "◙", // วงกลมซ้อนในกรอบ สื่อ "วงแหวนความถี่ที่เลือกเก็บ/ตัด"
-  // ใหม่ (2026-10-15, IP batch 4A) — เช็คแล้วไม่ชนกับ OP_ICON / GROUP_ICON / NC_ICON_FALLBACK (🧩) / 📊 / 📌
-  guided_filter: "≀", pseudocolor: "🌡", focus_score: "⦿", delta_e: "◬", roi_apply: "⊡",
-  // ใหม่ (2026-10-15, IP batch 4B) — เช็คแล้วไม่ชนกับ OP_ICON / GROUP_ICON / NC_ICON_FALLBACK (🧩) / 📊 / 📌
-  deconv_wiener: "⟲", deconv_lucy: "⌾", ecc_register: "⧉", gabor_filter: "⋈", glcm: "⧈", nlm_denoise: "✣", dehaze: "🌫", dct_jpeg: "⬗",
-  // ใหม่ (2026-10-17, P-8) — ✔ สื่อ "ผ่าน" · เช็คแล้วไม่ชนกับ OP_ICON / GROUP_ICON / NC_ICON_FALLBACK (🧩)
-  pass_fail: "✔",
-  // ใหม่ (2026-10-18, Morphology แยกเครื่องมือ) — เช็คแล้วไม่ชนกับ OP_ICON / GROUP_ICON / NC_ICON_FALLBACK (🧩) / 📊 / 📌 และไม่มีใน src ที่อื่น
-  // (morphology "▣" เดิมถูกเอาออก: ตัว legacy ไม่อยู่บน palette แล้ว)
-  morph_erode: "⊖", morph_dilate: "◼", morph_open: "◌", morph_close: "▣", morph_gradient: "◭", morph_tophat: "⌃", morph_blackhat: "⌄",
-  morph_fill_holes: "⬤", morph_clear_border: "⊠", morph_remove_small: "∴",
-  morph_skeleton: "🦴", morph_reconstruct_open: "⥀", morph_convex_hull: "⬣", morph_endpoints_branchpoints: "⋔", morph_hit_or_miss: "⊘",
-  morph_regional_max: "▲", morph_regional_min: "▽", morph_h_maxima: "△", morph_extended_max: "⌂",
-  // ใหม่ (Tier 2, 18d) — เช็คทุกตัวกับ glyph เดิมทั้งหมดด้านบน และกับ GROUP_ICON ใน ui-meta.js แล้วไม่ชนกันเลย
-  mog2: "🎞", // ฟิล์มหลายเฟรม สื่อ "ต้องดูหลายเฟรมต่อเนื่อง"
-  farneback_optical_flow: "⇶", // ลูกศรสามเส้นขนานกัน สื่อ "การไหลทั้งภาพ" (dense flow)
-  pyrlk_optical_flow: "⤳", // ลูกศรหางคลื่น สื่อ "เส้นทางของจุดที่ถูกติดตาม" (sparse flow)
-};
 
 export const OP_TO_FILTER = {};
 for (const filterId of VISIBLE_FILTER_IDS) {
@@ -156,12 +87,6 @@ export function toolMatches(name, opId, query) {
   const q = String(query || "").trim().toLowerCase();
   if (!q) return true;
   return String(name || "").toLowerCase().includes(q) || String(opId || "").toLowerCase().includes(q);
-}
-
-// ชื่อสั้นบน tile/การ์ด: ตัดส่วนในวงเล็บออก (กติกาเดียวกับป้ายชื่อบนกระดาน) — ชื่อเต็มอยู่ใน tooltip
-export function shortToolName(name) {
-  const raw = String(name == null ? "" : name);
-  return raw.replace(/\s*\([^)]*\)\s*/g, " ").trim() || raw;
 }
 
 // cb: onAdd(filterId, opId) — each visible tile is one concrete Function,
@@ -254,7 +179,7 @@ export function createPalettePanel(container, cb) {
     pop.el.hidden = false;
     for (const x of sections) x.head.setAttribute("aria-expanded", x === s ? "true" : "false");
     positionPopup();
-    if (byKeyboard) { const first = pop.list.children.find ? pop.list.children.find((c) => c.className === "tool-row") : pop.list.querySelector(".tool-row"); (first || pop.close).focus(); }
+    if (byKeyboard) { const first = pop.list.querySelector(".tool-row"); (first || pop.close).focus(); }
   }
 
   // restoreFocus: Esc → ถ้าโฟกัสอยู่ใน popup/หัวหมวดที่เปิด ให้กลับไปที่หัวหมวด (ไม่แย่งโฟกัสจากที่อื่น)
@@ -276,6 +201,11 @@ export function createPalettePanel(container, cb) {
 
   function onEscape(ev) {
     if (!openSection || !ev || ev.key !== "Escape") return;
+    if (typeof document === "undefined" || document.querySelector(".modal-overlay")) return;
+    const active = document.activeElement;
+    if (active && active !== document.body && !within(pop && pop.el, active) && !within(container, active)) return;
+    ev.preventDefault();
+    ev.stopImmediatePropagation();
     closePopup(true);
   }
   function onOutsidePointer(ev) {
@@ -286,7 +216,7 @@ export function createPalettePanel(container, cb) {
   }
   // listener ระดับหน้าต่าง: ผูกครั้งเดียวตอนสร้าง panel (render() ถูกเรียกซ้ำได้) · ไม่มี document/window (test) → ข้าม
   if (typeof document !== "undefined" && typeof document.addEventListener === "function") {
-    document.addEventListener("keydown", onEscape);
+    document.addEventListener("keydown", onEscape, true);
     document.addEventListener("pointerdown", onOutsidePointer, true);
   }
   if (typeof window !== "undefined" && typeof window.addEventListener === "function") {
@@ -319,7 +249,6 @@ export function createPalettePanel(container, cb) {
     const list = document.createElement("div");
     list.className = "pal-list pal-pop-list";
     el.append(head, list);
-    el.addEventListener("keydown", onEscape);
     return { el, title, count, list, close };
   }
 
@@ -522,7 +451,6 @@ export function createPalettePanel(container, cb) {
 
       const s = { title: section.title, section, color, wrap, head, list, countEl, rows };
       head.addEventListener("click", (ev) => onHeadClick(s, ev));
-      head.addEventListener("keydown", onEscape);
       wrap.append(head, list);
       container.appendChild(wrap);
       sections.push(s);

@@ -340,7 +340,7 @@ test('mp-7. codegen: Python of morph_<op> (standalone AND inside morph_tools) ==
 
 // ---------------------------------------------------------------------------
 test('mp-8. icons: 19 OP_ICON glyphs + GROUP_ICON.morph_tools are unique across OP_ICON/GROUP_ICON, not the 🧩/📊/📌 markers, and appear nowhere else in src', () => {
-  const pal = fs.readFileSync(new URL('../src/renderer/ui/palette-panel.js', import.meta.url), 'utf8');
+  const pal = fs.readFileSync(new URL('../src/renderer/filters/ui-meta.js', import.meta.url), 'utf8');
   const body = pal.slice(pal.indexOf('const OP_ICON = {'), pal.indexOf('};', pal.indexOf('const OP_ICON = {')));
   const icons = Object.fromEntries([...body.matchAll(/([a-z_0-9]+): "([^"]+)"/g)].map((m) => [m[1], m[2]]));
   const all = Object.entries(icons);

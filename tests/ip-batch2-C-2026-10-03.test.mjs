@@ -791,7 +791,7 @@ test('ipC-9. palette-panel.js: FILTER & DENOISE = salt_pepper_noise, gaussian_no
     assert.equal(OP_TO_FILTER[id], { gaussian_noise: 'filter_denoise', wiener_filter: 'filter_denoise', translate_shear: 'geometry' }[id]);
     assert.equal(TOOL_SECTIONS.filter((s) => s.ops.includes(id)).length, 1, `${id} must appear in exactly one section`);
   }
-  const src = fs.readFileSync(new URL('../src/renderer/ui/palette-panel.js', import.meta.url), 'utf8');
+  const src = fs.readFileSync(new URL('../src/renderer/filters/ui-meta.js', import.meta.url), 'utf8');
   const body = src.slice(src.indexOf('const OP_ICON = {'), src.indexOf('};', src.indexOf('const OP_ICON = {')));
   const icons = {};
   for (const m of body.matchAll(/([a-z_0-9]+): "([^"]+)"/g)) icons[m[1]] = m[2];

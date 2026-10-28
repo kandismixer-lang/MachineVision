@@ -1139,18 +1139,22 @@ test('ipe-29. wiring: every new op is on the palette, resolves to a registered f
   assert.match(OP_PRIMARY.prewitt_edge({}), /BOTH/);
   assert.match(OP_PRIMARY.roberts_edge({ dir: 'd1' }), /D1/);
 
-  // glyph ต้องไม่ซ้ำกับตัวใดในไฟล์ palette-panel.js/ui-meta.js (อ่านแบบ static เพราะ OP_ICON ไม่ได้ export)
+  // glyph ต้องไม่ซ้ำกับตัวใดในไฟล์ palette-panel.js/ui-meta.js (แยกตาราง OP_ICON ออกจากส่วนที่เหลือ)
+  const iconStart = uiMetaSource.indexOf('const OP_ICON = {');
+  const iconEnd = uiMetaSource.indexOf('};', iconStart) + 2;
+  const iconSource = uiMetaSource.slice(iconStart, iconEnd);
+  const otherSource = paletteSource + uiMetaSource.slice(0, iconStart) + uiMetaSource.slice(iconEnd);
   const icons = {};
-  for (const m of paletteSource.matchAll(/^\s{2}([a-z0-9_]+): "([^"]+)",/gm)) icons[m[1]] = m[2];
-  for (const m of paletteSource.matchAll(/([a-z0-9_]+): "([^"]+)"/g)) if (!icons[m[1]]) icons[m[1]] = m[2];
-  for (const id of NEW_OPS) assert.ok(icons[id], `${id}: no OP_ICON entry in palette-panel.js`);
+  for (const m of iconSource.matchAll(/^\s{2}([a-z0-9_]+): "([^"]+)",/gm)) icons[m[1]] = m[2];
+  for (const m of iconSource.matchAll(/([a-z0-9_]+): "([^"]+)"/g)) if (!icons[m[1]]) icons[m[1]] = m[2];
+  for (const id of NEW_OPS) assert.ok(icons[id], `${id}: no OP_ICON entry in ui-meta.js`);
   const glyphs = Object.values(icons);
   for (const id of NEW_OPS) {
     const g = icons[id];
-    assert.equal(glyphs.filter((x) => x === g).length, 1, `${id}: glyph "${g}" is used more than once in palette-panel.js`);
-    const inUiMeta = [...uiMetaSource.matchAll(/: "([^"]+)",/g)].map((m) => m[1]).filter((x) => x === g);
+    assert.equal(glyphs.filter((x) => x === g).length, 1, `${id}: glyph "${g}" is used more than once in OP_ICON`);
+    const elsewhere = [...otherSource.matchAll(/: "([^"]+)"/g)].map((m) => m[1]).filter((x) => x === g);
     // ui-meta มี GROUP_ICON.region_growing = glyph เดียวกันโดยตั้งใจ (single-op group: filterId = opId)
-    assert.ok(inUiMeta.length <= (id === 'region_growing' ? 1 : 0), `${id}: glyph "${g}" collides with a GROUP_ICON in ui-meta.js`);
+    assert.ok(elsewhere.length <= (id === 'region_growing' ? 1 : 0), `${id}: glyph "${g}" collides with another glyph in palette-panel.js/ui-meta.js`);
   }
 
   // กล่อง Edge Detection ต้องมีครบ 7 วิธี และ mode ที่เลือกได้ต้องครอบ op ใหม่ทั้ง 3

@@ -320,6 +320,7 @@ class El {
   click() { this.fire('click'); }
   focus() { } select() { }
   all(cls, out = []) { for (const c of this.children) { if (c._cls.split(' ').includes(cls)) out.push(c); c.all(cls, out); } return out; }
+  querySelector(sel) { return sel.startsWith('.') ? this.all(sel.slice(1))[0] || null : null; }
 }
 function withDom(fn, store) {
   const had = { doc: Object.prototype.hasOwnProperty.call(globalThis, 'document'), ls: Object.prototype.hasOwnProperty.call(globalThis, 'localStorage') };

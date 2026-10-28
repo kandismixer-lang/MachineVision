@@ -46,6 +46,81 @@ export const GROUP_ICON = {
   morph_tools: "⬓",
 };
 
+export const OP_ICON = {
+  grayscale: "◐", colorspace: "🎨", channel_split: "◉", rgb_adjust: "🎚", color_inrange: "🌈", invert: "◑",
+  kmeans_segment: "⬡", white_balance: "⚖",
+  brightness_contrast: "☀", gamma: "γ", hist_equalize: "▥", clahe: "▦", unsharp: "✦", laplacian_sharpen: "◇",
+  custom_kernel: "◫",
+  // ใหม่ (2026-10-01, IP batch ENHANCE/MORPHOLOGY) — เช็คแล้วไม่ชนกับ glyph ใดในไฟล์นี้หรือ GROUP_ICON
+  contrast_stretch: "↔", // ลูกศรซ้าย-ขวา สื่อ "ยืดช่วง"
+  flatfield_correction: "🔆", // ดวงอาทิตย์มีรัศมี สื่อ "แก้แสง"
+  // ใหม่ (2026-10-14, IP batch 3) — เช็คแล้วไม่ชนกับ OP_ICON / GROUP_ICON / NC_ICON_FALLBACK
+  quantize: "≣", // แถบซ้อนกัน สื่อ "ระดับสี"
+  shape_filter: "⛛", // กรวยกรอง สื่อ "คัดวัตถุ"
+  crop: "⛝", resize: "⤢", rotate: "↻", flip: "⇋", perspective_warp: "⏢", undistort: "⊙",
+  salt_pepper_noise: "⁙", median_blur: "●", gaussian_blur: "✺", box_blur: "▧", bilateral: "◎",
+  binary_threshold: "◩", otsu_threshold: "◧", adaptive_threshold: "◨", multi_otsu_threshold: "◪",
+  canny: "⌁", sobel: "∿", laplacian_edge: "◈", scharr_edge: "∾",
+  watershed: "≋", grabcut: "✂", find_contours: "⌬", connected_components: "⠿", distance_transform: "◔",
+  // ใหม่ (2026-09-30) — เช็คทุก glyph กับของเดิมทั้งไฟล์และกับ GROUP_ICON ใน ui-meta.js แล้วไม่ชนกันเลย
+  prewitt_edge: "⊿", // สามเหลี่ยมมุมฉาก สื่อ "ความชัน" แบบตรงไปตรงมา
+  roberts_edge: "⋱", // จุดเรียงแนวทแยง สื่อ kernel 2x2 ตามแนวทแยง
+  log_edge: "⊚", // วงกลมซ้อน สื่อ "หมวกเม็กซิกัน" ของ LoG
+  region_growing: "🪄", // ไม้กายสิทธิ์ = Magic Wand ตรงตัว
+  local_std_filter: "▒", local_entropy_filter: "▓",
+  // ใหม่ (Tier 2, 18c) — เช็คแล้วว่าไม่ชนกับ glyph ใดข้างบนทั้งหมด (~59 ตัว), 📏 (ไม้บรรทัด) สื่อ "การวัดค่า"
+  regionprops: "📏",
+  bounding_boxes: "□", hough_circles: "○", hough_lines: "╱", harris_corners: "⌖", shi_tomasi_corners: "✛",
+  orb_keypoints: "✧", akaze_keypoints: "◆", fast_keypoints: "✪",
+  fft_magnitude: "▨", fft_filter: "⬒",
+  imabsdiff: "Δ", // ใหม่ (Tier 2, 18a) — เช็คแล้วว่าไม่ชนกับ glyph ใดข้างบน, Δ สื่อ "ความต่าง" ตรงตัว
+  // ใหม่ (Tier 2, 18b) — เช็คทุกตัวกับ glyph เดิมทั้งหมดด้านบน (~57 ตัว) แล้วไม่ชนกันเลย:
+  imfuse: "⊕", // วงกลม+บวก สื่อ "รวม/ผสม" สองภาพเข้าด้วยกัน
+  mask: "⬚", // สี่เหลี่ยมประ สื่อ "หน้ากาก/พื้นที่ตัดออก"
+  template_matching: "⌕", // แว่นขยาย-สแกน สื่อ "ค้นหา" — จงใจไม่ใช้ 🎯 (ชนกับ GROUP_ICON.object_detection ในไฟล์ ui-meta.js)
+  psnr: "📶", // สัญญาณ สื่อ "signal-to-noise"
+  ssim: "≈", // ประมาณเท่ากัน สื่อ "ความคล้าย/โครงสร้างใกล้เคียงกัน"
+  // ใหม่ (2026-10-02, IP batch 2 ชิ้น B) — เช็คทุกตัวกับ glyph เดิมทั้งไฟล์และ GROUP_ICON ใน ui-meta.js แล้วไม่ชน
+  // (± ของ GROUP_ICON.image_arithmetic จงใจไม่ใช้ซ้ำ)
+  imarith: "÷", // เครื่องหมายหาร สื่อ "บวก/ลบ/คูณ/หาร"
+  logical_ops: "∧", // AND ของตรรกศาสตร์
+  inpaint: "🩹", // พลาสเตอร์ สื่อ "ซ่อมรอย"
+  hist_match: "📈", // เส้นกราฟขาขึ้น สื่อ "CDF สะสม" — ไม่ใช้ 📊 เพราะ app.js/detail-panel.js ใช้นำหน้าข้อความผลลัพธ์ (debugger 2026-10-03)
+  // ใหม่ (2026-10-03, IP batch 2 ชิ้น C) — เช็คทุกตัวกับ glyph เดิมทั้งไฟล์, GROUP_ICON ใน ui-meta.js และ app.js/detail-panel.js แล้วไม่ชน
+  gaussian_noise: "░", // แรเงาเม็ดละเอียด สื่อ "เกรนทั่วภาพ" (▒/▓ ของ local_std/entropy เข้มกว่า แยกด้วยตาได้)
+  wiener_filter: "◍", // วงกลมมีเส้นแนวตั้งด้านใน สื่อ "เกลี่ยแบบเลือกบริเวณ" (ต่างจาก ◉/◎/● ของกลุ่ม blur)
+  translate_shear: "▱", // สี่เหลี่ยมด้านขนาน = รูปทรงของสี่เหลี่ยมที่ถูก shear ตรงตัว
+  // ใหม่ (2026-10-03, IP batch 2 ชิ้น D) — เช็คทุกตัวกับ glyph เดิมทั้งไฟล์, GROUP_ICON และ app.js/detail-panel.js แล้วไม่ชน
+  feret: "⌀", // สัญลักษณ์เส้นผ่านศูนย์กลาง สื่อ "วัดความกว้างแบบคาลิปเปอร์"
+  line_profile: "〽", // เส้นกราฟขึ้นลง สื่อ "กราฟความสว่างตามเส้น" (ไม่ใช่ 〰 ของ GROUP_ICON.frequency)
+  roi_polygon: "⬠", // ห้าเหลี่ยม สื่อ "บริเวณหลายเหลี่ยม" (ต่างจาก ⏢ perspective_warp / ⬡ kmeans)
+  // ใหม่ (2026-10-04, IP batch 2 ชิ้น E) — เช็คแล้วไม่ชนกับ OP_ICON / GROUP_ICON / app.js / detail-panel.js / editor.js (🧩 ถูกใช้เป็น fallback ใน editor.js จึงไม่เลือก)
+  slic: "⊞", // ตารางสี่เหลี่ยมแบ่งช่อง สื่อ "แบ่งภาพเป็นก้อนตามตาราง"
+  bandpass_notch: "◙", // วงกลมซ้อนในกรอบ สื่อ "วงแหวนความถี่ที่เลือกเก็บ/ตัด"
+  // ใหม่ (2026-10-15, IP batch 4A) — เช็คแล้วไม่ชนกับ OP_ICON / GROUP_ICON / NC_ICON_FALLBACK (🧩) / 📊 / 📌
+  guided_filter: "≀", pseudocolor: "🌡", focus_score: "⦿", delta_e: "◬", roi_apply: "⊡",
+  // ใหม่ (2026-10-15, IP batch 4B) — เช็คแล้วไม่ชนกับ OP_ICON / GROUP_ICON / NC_ICON_FALLBACK (🧩) / 📊 / 📌
+  deconv_wiener: "⟲", deconv_lucy: "⌾", ecc_register: "⧉", gabor_filter: "⋈", glcm: "⧈", nlm_denoise: "✣", dehaze: "🌫", dct_jpeg: "⬗",
+  // ใหม่ (2026-10-17, P-8) — ✔ สื่อ "ผ่าน" · เช็คแล้วไม่ชนกับ OP_ICON / GROUP_ICON / NC_ICON_FALLBACK (🧩)
+  pass_fail: "✔",
+  // ใหม่ (2026-10-18, Morphology แยกเครื่องมือ) — เช็คแล้วไม่ชนกับ OP_ICON / GROUP_ICON / NC_ICON_FALLBACK (🧩) / 📊 / 📌 และไม่มีใน src ที่อื่น
+  // (morphology "▣" เดิมถูกเอาออก: ตัว legacy ไม่อยู่บน palette แล้ว)
+  morph_erode: "⊖", morph_dilate: "◼", morph_open: "◌", morph_close: "▣", morph_gradient: "◭", morph_tophat: "⌃", morph_blackhat: "⌄",
+  morph_fill_holes: "⬤", morph_clear_border: "⊠", morph_remove_small: "∴",
+  morph_skeleton: "🦴", morph_reconstruct_open: "⥀", morph_convex_hull: "⬣", morph_endpoints_branchpoints: "⋔", morph_hit_or_miss: "⊘",
+  morph_regional_max: "▲", morph_regional_min: "▽", morph_h_maxima: "△", morph_extended_max: "⌂",
+  // ใหม่ (Tier 2, 18d) — เช็คทุกตัวกับ glyph เดิมทั้งหมดด้านบน และกับ GROUP_ICON ใน ui-meta.js แล้วไม่ชนกันเลย
+  mog2: "🎞", // ฟิล์มหลายเฟรม สื่อ "ต้องดูหลายเฟรมต่อเนื่อง"
+  farneback_optical_flow: "⇶", // ลูกศรสามเส้นขนานกัน สื่อ "การไหลทั้งภาพ" (dense flow)
+  pyrlk_optical_flow: "⤳", // ลูกศรหางคลื่น สื่อ "เส้นทางของจุดที่ถูกติดตาม" (sparse flow)
+};
+
+// ชื่อสั้นบน tile/การ์ด: ตัดส่วนในวงเล็บออก (กติกาเดียวกับป้ายชื่อบนกระดาน) — ชื่อเต็มอยู่ใน tooltip
+export function shortToolName(name) {
+  const raw = String(name == null ? "" : name);
+  return raw.replace(/\s*\([^)]*\)\s*/g, " ").trim() || raw;
+}
+
 // ค่าตัวเลขที่การ์ดโชว์ ต้องเป็น "ค่าที่ op ใช้จริง" ไม่ใช่ค่าดิบใน properties — ไฟล์โปรเจกต์ที่แก้มือ
 // (หรือ import มาจากเวอร์ชันที่ช่วงค่าต่างไป) ใส่ history: 9999 ได้ แต่ registry clamp เหลือ 2000 ก่อนส่งเข้า
 // OpenCV เสมอ ถ้าการ์ดโชว์ 9999 ผู้ใช้จะอ่านค่าที่ไม่ตรงกับสิ่งที่โปรแกรมทำ · min/max/default อ่านจาก OPS
@@ -311,8 +386,11 @@ export function hexA(hex, a) {
 
 // สีตัวอักษร/ไอคอนที่อ่านออกบนพื้น hex นั้น (ขาวบนสีเข้ม · เกือบดำบนสีสว่าง เช่น เหลือง/เขียวอ่อน) — ใช้กับกล่องไอคอนแบบ KNIME
 // (palette tile + การ์ดบนกระดาน) · อิงความสว่างสัมพัทธ์ WCAG; hex ผิดรูปแบบ → ขาว
+const contrastCache = new Map(); // สีหมวดมีไม่กี่ค่า → คำนวณครั้งเดียว ไม่ทำซ้ำทุกเฟรม
 export function contrastOn(hex) {
-  if (!hex || hex[0] !== "#") return "#ffffff";
+  const cached = contrastCache.get(hex);
+  if (cached) return cached;
+  if (!hex || hex[0] !== "#") { contrastCache.set(hex, "#ffffff"); return "#ffffff"; }
   const h = hex.slice(1);
   const full = h.length === 3 ? h.split("").map((c) => c + c).join("") : h;
   const ch = [0, 2, 4].map((i) => {
@@ -320,7 +398,9 @@ export function contrastOn(hex) {
     return v <= 0.03928 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4);
   });
   const L = 0.2126 * ch[0] + 0.7152 * ch[1] + 0.0722 * ch[2];
-  return L > 0.4 ? "#1a1a1a" : "#ffffff";
+  const color = L > 0.4 ? "#1a1a1a" : "#ffffff";
+  contrastCache.set(hex, color);
+  return color;
 }
 
 // ---------------------------------------------------------------------------

@@ -281,7 +281,7 @@ test('p8-reg-3. ui-meta: optgroup table lists pass_fail (not under "อื่น
   assert.equal(OP_PRIMARY.pass_fail({ metric: 'focus', cond: 'ge', lo: 80 }), 'ความคม ผ่านเมื่อ ≥ 80');
   assert.equal(OP_PRIMARY.pass_fail({ metric: 'de_mean', cond: 'le', hi: 2.3 }), 'ΔE เฉลี่ย ผ่านเมื่อ ≤ 2.3');
   assert.equal(OP_PRIMARY.pass_fail({ metric: 'constructor', cond: 'eq', lo: 3 }), 'จำนวนวัตถุ ผ่านเมื่อ = 3');
-  assert.match(readSrc('ui/palette-panel.js'), /pass_fail: "✔"/);
+  assert.match(readSrc('filters/ui-meta.js'), /pass_fail: "✔"/);
 });
 
 test('p8-reg-4. opIdOfStep: merged node → mode (or the default when absent) · single node → id', () => {

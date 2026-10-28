@@ -657,7 +657,7 @@ test('ip4b-S1. (static structure) the 8 new ops exist with the right needs and h
 });
 
 test('ip4b-S2. (static) the 8 new OP_ICON glyphs are distinct from every other OP_ICON / GROUP_ICON glyph and from the markers 🧩 / 📊 / 📌, and appear nowhere in app.js / detail-panel.js / editor.js; OP_PRIMARY card text exists for every new op / operation and reads the clamped values', () => {
-  const src = readSrc('ui/palette-panel.js');
+  const src = readSrc('filters/ui-meta.js');
   const body = src.slice(src.indexOf('const OP_ICON = {'), src.indexOf('};', src.indexOf('const OP_ICON = {')));
   const icons = {}; for (const m of body.matchAll(/([a-z_0-9]+): "([^"]+)"/g)) icons[m[1]] = m[2];
   for (const id of NEW_OPS) assert.equal(icons[id], NEW_ICONS[id], `${id} icon`);

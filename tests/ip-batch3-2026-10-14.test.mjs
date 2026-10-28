@@ -1163,13 +1163,13 @@ test('ip3-T1. (static structure) 2 new ops exist with needs any / gray and no "m
 test('ip3-T2. icons: quantize "≣" and shape_filter "⛛" are unique against OP_ICON, GROUP_ICON, app.js, detail-panel.js and editor.js; the OP_ICON table has them once', () => {
   const icons = { quantize: '≣', shape_filter: '⛛' };
   for (const [id, glyph] of Object.entries(icons)) {
-    assert.ok(new RegExp(`\\b${id}: "${glyph}"`).test(SRC_PAL), `${id} icon in palette-panel`);
-    assert.equal(SRC_PAL.split(glyph).length - 1, 1, `${glyph} appears once in palette-panel.js`);
+    assert.ok(new RegExp(`\\b${id}: "${glyph}"`).test(SRC_UI), `${id} icon in ui-meta`);
+    assert.equal(SRC_UI.split(glyph).length - 1, 1, `${glyph} appears once in ui-meta.js`);
     assert.ok(!Object.values(GROUP_ICON).includes(glyph), `${glyph} vs GROUP_ICON`);
-    for (const f of ['app.js', 'ui/detail-panel.js', 'graph/editor.js', 'filters/ui-meta.js']) assert.ok(!readSrc(f).includes(glyph), `${glyph} in ${f}`);
+    for (const f of ['app.js', 'ui/detail-panel.js', 'graph/editor.js', 'ui/palette-panel.js']) assert.ok(!readSrc(f).includes(glyph), `${glyph} in ${f}`);
   }
   assert.notEqual(icons.quantize, icons.shape_filter);
-  const table = SRC_PAL.slice(SRC_PAL.indexOf('const OP_ICON = {'), SRC_PAL.indexOf('};', SRC_PAL.indexOf('const OP_ICON = {')));
+  const table = SRC_UI.slice(SRC_UI.indexOf('const OP_ICON = {'), SRC_UI.indexOf('};', SRC_UI.indexOf('const OP_ICON = {')));
   const glyphs = [...table.matchAll(/\b[a-z_0-9]+: "([^"]+)"/g)].map((m) => m[1]);
   assert.equal(glyphs.filter((x) => x === '≣').length, 1); assert.equal(glyphs.filter((x) => x === '⛛').length, 1);
   assert.ok(!['🧩', '📊', '📌'].includes('≣') && !['🧩', '📊', '📌'].includes('⛛'));
