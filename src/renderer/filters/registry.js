@@ -1533,6 +1533,7 @@ export const PASS_FAIL_METRICS = {
   de_mean: { op: "delta_e", th: "Color Difference ΔE", pick: (v) => pfScalar(v, "de_mean") },
   iou: { op: "seg_score", th: "Segmentation Score", pick: (v) => pfScalar(v, "iou") },
   dice: { op: "seg_score", th: "Segmentation Score", pick: (v) => pfScalar(v, "dice") },
+  piqe: { op: "piqe", th: "PIQE", pick: (v) => pfScalar(v, "piqe") },
 };
 // เกณฑ์แสดงบนข้อความ: ปัด 2 ตำแหน่งแล้วตัดศูนย์ท้าย (0.30000000000000004 → 0.3 · 1 → 1)
 export const pfNum = (x) => String(Math.round(x * 100) / 100);
@@ -8101,6 +8102,294 @@ export const OPS = {
     },
   },
 
+  // IP batch 5B — additive operations; existing operation bodies stay unchanged.
+  image_pyramid: {
+    name: "Image Pyramid (พีระมิดภาพ ย่อ/ขยายทีละขั้น)",
+    needs: "any",
+    modeHint: "ย่อหรือขยายด้วย Gaussian แล้วดูทีละขั้นหรือเรียงทุกขั้น",
+    desc: "สร้างภาพหลายขนาดด้วย Gaussian 5×5 ของ OpenCV เหมือน impyramid · Laplacian แสดงรายละเอียดที่หายไปด้วยค่าสีเทากลาง 128 · ภาพเทายังคงเป็นเทา · หยุดย่อเมื่อด้านใดเล็กกว่า 2 px และหยุดขยายก่อนเกิน 4096 px · ภาพเรียงวางชิดบน เว้น 4 px บนพื้นดำ",
+    params: [
+      { key: "kind", type: "select", label: "ชนิดพีระมิด", options: [{ value: "gaussian", label: "Gaussian (ภาพเบลอย่อลง)" }, { value: "laplacian", label: "Laplacian (รายละเอียดที่หายไปในแต่ละขั้น)" }], default: "gaussian", desc: "Gaussian ดูภาพหลายขนาด · Laplacian ดูรายละเอียดของแต่ละขั้น" },
+      { key: "direction", visibleWhen: [{ key: "kind", in: ["gaussian"] }], type: "select", label: "ทิศทาง", options: [{ value: "reduce", label: "ย่อ (Reduce)" }, { value: "expand", label: "ขยาย (Expand)" }], default: "reduce", hint: "แต่ละขั้นย่อครึ่งหนึ่งหรือขยายสองเท่า" },
+      { key: "levels", type: "number", label: "จำนวนขั้น", min: 1, max: 5, step: 1, default: 1, hint: "หยุดก่อนเมื่อภาพเล็กเกินไปหรือขยายเกินขอบเขต" },
+      { key: "view", type: "select", label: "ภาพที่แสดง", options: [{ value: "level", label: "เฉพาะขั้นสุดท้าย" }, { value: "mosaic", label: "ทุกขั้นเรียงกัน" }], default: "level", desc: "ภาพเรียงอาจแสดงไม่ครบถ้าความกว้างรวมเกิน 4096 px" },
+    ],
+    apply(cv, src, p, ctx) {
+      if (isEmptyMat(src)) { if (ctx) { ctx.info = "ภาพว่าง"; ctx.values = scalarValues(PYRAMID_FIELDS, []); } return src.clone(); }
+      const kind = ownKey({ gaussian: true, laplacian: true }, p.kind, "gaussian");
+      const direction = kind === "laplacian" ? "reduce" : ownKey({ reduce: true, expand: true }, p.direction, "reduce");
+      const levels = intIn(p.levels, 1, 1, 5), view = ownKey({ level: true, mosaic: true }, p.view, "level");
+      const owned = [];
+      const mat = (...args) => { const m = new cv.Mat(...args); owned.push(m); return m; };
+      let dst = null;
+      try {
+        const alpha = dropAlpha(cv, src);
+        if (alpha) owned.push(alpha);
+        const input = alpha || src, gs = [input], ls = [];
+        let stop = "";
+        for (let k = 0; k < levels; k++) {
+          const prev = gs[gs.length - 1];
+          if (direction === "reduce" && (prev.cols < 2 || prev.rows < 2)) { stop = ` · หยุดที่ขั้น ${k}: ภาพเล็กเกินย่อต่อ`; break; }
+          if (direction === "expand" && Math.max(prev.cols * 2, prev.rows * 2) > 4096) { stop = ` · หยุดที่ขั้น ${k}: ขยายต่อจะเกิน 4096 px`; break; }
+          const next = mat();
+          if (direction === "reduce") cv.pyrDown(prev, next);
+          else cv.pyrUp(prev, next);
+          gs.push(next);
+          if (kind === "laplacian") {
+            const up = mat(), a = mat(), b = mat(), delta = mat(), tile = mat();
+            cv.pyrUp(next, up, new cv.Size(prev.cols, prev.rows));
+            prev.convertTo(a, cv.CV_16S);
+            up.convertTo(b, cv.CV_16S);
+            cv.subtract(a, b, delta);
+            delta.convertTo(tile, cv.CV_8U, 1, 128);
+            ls.push(tile);
+          }
+        }
+        if (kind === "laplacian" && !ls.length) ls.push(mat(input.rows, input.cols, input.type(), new cv.Scalar(128, 128, 128, 128)));
+        const tiles = kind === "laplacian" ? ls : gs, last = tiles[tiles.length - 1];
+        if (view === "level") dst = last.clone();
+        else {
+          const shown = [];
+          let width = 0, height = 0;
+          for (const tile of tiles) {
+            const nextWidth = width + (shown.length ? 4 : 0) + tile.cols;
+            if (shown.length && nextWidth > 4096) { stop += ` · แสดง ${shown.length}/${tiles.length} ภาพ: ความกว้างรวมเกิน 4096 px`; break; }
+            shown.push(tile);
+            width = nextWidth;
+            height = Math.max(height, tile.rows);
+          }
+          dst = new cv.Mat(height, width, input.type(), new cv.Scalar(0));
+          const od = dst.data, ch = input.channels();
+          let offset = 0;
+          for (const tile of shown) {
+            const td = tile.data;
+            for (let y = 0; y < tile.rows; y++) od.set(td.subarray(y * tile.cols * ch, (y + 1) * tile.cols * ch), (y * width + offset) * ch);
+            offset += tile.cols + 4;
+          }
+        }
+        if (ctx) {
+          ctx.info = `${kind === "laplacian" ? "Laplacian" : "Gaussian"} ${direction === "reduce" ? "ย่อ" : "ขยาย"} ${gs.length - 1} ขั้น: ${input.cols}×${input.rows} → ${last.cols}×${last.rows}` + stop;
+          ctx.values = scalarValues(PYRAMID_FIELDS, [gs.length - 1, last.cols, last.rows]);
+        }
+        const out = dst; dst = null; return out;
+      } finally { if (dst) dst.delete(); for (const m of owned) m.delete(); }
+    },
+  },
+
+  frangi_vesselness: {
+    name: "Ridge / Vesselness (Frangi · หาเส้น/รอยแตก/เส้นเลือด)",
+    needs: "gray",
+    modeHint: SLOW_MODE_HINT + " · Frangi หลายความหนา ภาพใหญ่หรือ σ กว้างใช้เวลามาก",
+    desc: "เน้นเส้นหรือรอยแตกจากความโค้งของภาพหลายขนาด คล้าย fibermetric · สว่าง = เป็นเส้นมาก · เลือกเส้นมืดเพื่อหารอยแตกบนผิว · ต่อ Otsu หรือ Binary Threshold เพื่อได้ mask ของเส้น · beta ต่ำช่วยลดก้อนกลม · σ ใหญ่หรือภาพใหญ่ใช้เวลามาก",
+    params: [
+      { key: "polarity", type: "select", label: "สีของเส้น", options: [{ value: "bright", label: "เส้นสว่างบนพื้นมืด" }, { value: "dark", label: "เส้นมืดบนพื้นสว่าง (รอยแตก)" }], default: "bright", hint: "เลือกตามความสว่างของเส้นเทียบกับพื้นหลัง" },
+      { key: "sigmaMin", type: "number", label: "ความหนาเส้นเล็กสุด (σ, px)", min: 1, max: 8, step: 0.5, default: 1, hint: "เริ่มหาเส้นที่ขนาดนี้ แล้วเพิ่มทีละ 0.5" },
+      { key: "sigmaMax", type: "number", label: "ความหนาเส้นใหญ่สุด (σ, px)", min: 1, max: 10, step: 0.5, default: 3, desc: "ถ้าน้อยกว่าค่าต้นจะสลับสองค่าให้เอง" },
+      { key: "beta", type: "number", label: "ความไวต่อก้อนกลม (beta)", min: 0.1, max: 2, step: 0.05, default: 0.5, hint: "น้อย = ตัดก้อนกลมออกมากขึ้น" },
+    ],
+    apply(cv, src, p, ctx) {
+      if (isEmptyMat(src)) { if (ctx) { ctx.info = "ภาพว่าง"; ctx.values = scalarValues(RIDGE_FIELDS, []); } return src.clone(); }
+      let lo = numIn(p.sigmaMin, 1, 1, 8), hi = numIn(p.sigmaMax, 3, 1, 10);
+      if (lo > hi) [lo, hi] = [hi, lo];
+      const beta = numIn(p.beta, 0.5, 0.1, 2), polarity = ownKey({ bright: true, dark: true }, p.polarity, "bright");
+      const nSteps = Math.floor((hi - lo) / 0.5 + 1e-9);
+      let gray = null, input = null, blur = null, xx = null, yy = null, xy = null, dst = null;
+      try {
+        gray = grayIfNeeded(cv, src);
+        const x = gray || src, n = x.rows * x.cols, data = x.data;
+        const best = new Float64Array(n), l1 = new Float64Array(n), l2 = new Float64Array(n);
+        // A constant has exactly zero Hessian; avoid normalizing floating cancellation noise.
+        const constant = data.every((v) => v === data[0]);
+        if (!constant) {
+          input = cv.matFromArray(x.rows, x.cols, cv.CV_64FC1, Float64Array.from(data, (v) => v / 255));
+          blur = new cv.Mat(); xx = new cv.Mat(); yy = new cv.Mat(); xy = new cv.Mat();
+          for (let k = 0; k <= nSteps; k++) {
+            const sigma = lo + 0.5 * k, size = 2 * Math.ceil(3 * sigma) + 1, scale = sigma * sigma;
+            cv.GaussianBlur(input, blur, new cv.Size(size, size), sigma, sigma, cv.BORDER_REPLICATE);
+            cv.Sobel(blur, xx, cv.CV_64F, 2, 0, 3, 1, 0, cv.BORDER_REPLICATE);
+            cv.Sobel(blur, yy, cv.CV_64F, 0, 2, 3, 1, 0, cv.BORDER_REPLICATE);
+            cv.Sobel(blur, xy, cv.CV_64F, 1, 1, 3, 1, 0, cv.BORDER_REPLICATE);
+            const xd = xx.data64F, yd = yy.data64F, zd = xy.data64F;
+            let maxS = 0;
+            for (let i = 0; i < n; i++) {
+              const a = xd[i] * scale, b = yd[i] * scale, d = zd[i] * scale;
+              const diff = a - b, tmp = Math.sqrt(diff * diff + 4 * d * d);
+              const u = (a + b + tmp) / 2, v = (a + b - tmp) / 2;
+              const ordered = Math.abs(u) <= Math.abs(v);
+              l1[i] = ordered ? u : v; l2[i] = ordered ? v : u;
+              const s = Math.sqrt(l1[i] * l1[i] + l2[i] * l2[i]);
+              if (s > maxS) maxS = s;
+            }
+            const c = 0.5 * maxS;
+            if (!c) continue;
+            for (let i = 0; i < n; i++) {
+              const a = l1[i], b = l2[i];
+              if (!b || (polarity === "bright" ? b > 0 : b < 0)) continue;
+              const ratio = a / b, rb2 = ratio * ratio, s2 = a * a + b * b;
+              const v = Math.exp(-rb2 / (2 * beta * beta)) * (1 - Math.exp(-s2 / (2 * c * c)));
+              if (v > best[i]) best[i] = v;
+            }
+          }
+        }
+        let maxV = 0, count = 0;
+        for (const v of best) if (v > maxV) maxV = v;
+        dst = new cv.Mat(x.rows, x.cols, cv.CV_8UC1, new cv.Scalar(0));
+        const outData = dst.data;
+        for (let i = 0; i < n; i++) {
+          outData[i] = maxV ? Math.floor(best[i] / maxV * 255 + 0.5) : 0;
+          if (outData[i] >= 128) count++;
+        }
+        if (ctx) {
+          ctx.info = `Frangi σ ${lo}–${hi} (${nSteps + 1} ขนาด) · ${polarity === "bright" ? "เส้นสว่าง" : "เส้นมืด"}` + (!maxV ? " · ไม่พบโครงสร้างเส้น" : "");
+          ctx.values = scalarValues(RIDGE_FIELDS, [Math.floor(maxV * 10000 + 0.5) / 10000, count / n * 100]);
+        }
+        const out = dst; dst = null; return out;
+      } finally { for (const m of [dst, xy, yy, xx, blur, input, gray]) if (m) m.delete(); }
+    },
+  },
+
+  anisotropic_diffusion: {
+    name: "Anisotropic Diffusion (ลดนอยส์แต่คงขอบ · Perona–Malik)",
+    needs: "any",
+    modeHint: SLOW_MODE_HINT + " · เกลี่ยนอยส์ 4 ทิศทางโดยลดการเกลี่ยข้ามขอบวัตถุ",
+    desc: "ลดนอยส์แต่คงขอบด้วย Perona–Malik คล้าย imdiffusefilt · ทำแยกแต่ละช่องสี · แต่ละรอบใช้ค่าจากรอบก่อนพร้อมกันทั้งภาพ · kappa ต่ำเก็บขอบความต่างน้อยไว้ด้วย ค่าสูงเกลี่ยได้มากขึ้น · เพิ่มรอบเพื่อให้พื้นเรียบขึ้น · ภาพใหญ่และจำนวนรอบมากใช้เวลามาก",
+    params: [
+      { key: "iterations", type: "number", label: "จำนวนรอบ", min: 1, max: 50, step: 1, default: 10, hint: "มาก = เรียบมากขึ้นและใช้เวลามากขึ้น" },
+      { key: "kappa", type: "number", label: "ความต่างระดับสีที่ถือว่าเป็นขอบ (κ)", min: 1, max: 100, step: 1, default: 20, desc: "ความต่างต่ำกว่า κ ถูกเกลี่ยมาก ความต่างสูงถูกเก็บไว้มาก" },
+      { key: "conduction", type: "select", label: "วิธีลดการเกลี่ยที่ขอบ", options: [{ value: "exponential", label: "Exponential (เก็บขอบคม)" }, { value: "quadratic", label: "Quadratic (เกลี่ยพื้นที่กว้าง)" }], default: "exponential", hint: "เริ่มด้วย Exponential แล้วเปรียบเทียบขอบที่ได้" },
+    ],
+    apply(cv, src, p, ctx) {
+      if (isEmptyMat(src)) { if (ctx) ctx.info = "ภาพว่าง"; return src.clone(); }
+      const iterations = intIn(p.iterations, 10, 1, 50), kappa = numIn(p.kappa, 20, 1, 100);
+      const conduction = ownKey({ exponential: true, quadratic: true }, p.conduction, "exponential");
+      let alpha = null, dst = null;
+      try {
+        alpha = dropAlpha(cv, src);
+        const x = alpha || src, w = x.cols, h = x.rows, ch = x.channels(), stride = w * ch;
+        let current = Float64Array.from(x.data), next = new Float64Array(current.length);
+        const flux = conduction === "exponential" ? (d) => { const r = d / kappa; return Math.exp(-(r * r)) * d; } : (d) => { const r = d / kappa; return (1 / (1 + r * r)) * d; };
+        for (let k = 0; k < iterations; k++) {
+          for (let y = 0; y < h; y++) for (let xx = 0; xx < w; xx++) for (let c = 0; c < ch; c++) {
+            const i = y * stride + xx * ch + c, v = current[i];
+            const dn = y ? current[i - stride] - v : 0, ds = y + 1 < h ? current[i + stride] - v : 0;
+            const de = xx + 1 < w ? current[i + ch] - v : 0, dw = xx ? current[i - ch] - v : 0;
+            next[i] = v + 0.25 * (flux(dn) + flux(ds) + flux(de) + flux(dw));
+          }
+          [current, next] = [next, current];
+        }
+        dst = new cv.Mat(h, w, x.type());
+        const data = dst.data;
+        for (let i = 0; i < data.length; i++) data[i] = Math.max(0, Math.min(255, Math.floor(current[i] + 0.5)));
+        if (ctx) ctx.info = `Perona–Malik ${iterations} รอบ · κ = ${kappa} · ${conduction === "exponential" ? "เอ็กซ์โพเนนเชียล" : "กำลังสอง"}`;
+        const out = dst; dst = null; return out;
+      } finally { if (dst) dst.delete(); if (alpha) alpha.delete(); }
+    },
+  },
+
+  debayer: {
+    name: "Debayer / Demosaic (แปลงภาพดิบจากเซนเซอร์เป็นภาพสี)",
+    needs: "any",
+    modeHint: "แปลงภาพดิบ Bayer8 เป็นสี หรือจำลองภาพดิบเพื่อทดลอง",
+    desc: "เซนเซอร์กล้องสีส่วนใหญ่ใช้ฟิลเตอร์ Bayer แต่ละพิกเซลเห็นแค่ 1 สี · ภาพ machine vision แบบ raw (Bayer8) ต้อง debayer ก่อน · ถ้าเพี้ยนเขียวหรือม่วงให้ลองเปลี่ยน pattern · ทดลองด้วย mosaic → demosaic · ภาพสีที่เข้า demosaic จะแปลงเป็นเทาก่อน",
+    params: [
+      { key: "mode", type: "select", label: "การแปลง", options: [{ value: "demosaic", label: "Debayer: ภาพดิบ → ภาพสี" }, { value: "mosaic", label: "จำลองภาพดิบจากภาพสี (เพื่อทดลอง)" }], default: "demosaic", hint: "เลือกจำลองเพื่อทดสอบ Bayer pattern ด้วยภาพสีทั่วไป" },
+      { key: "pattern", type: "select", label: "ลำดับฟิลเตอร์สี Bayer", options: [{ value: "rggb", label: "RGGB (R มุมซ้ายบน)" }, { value: "bggr", label: "BGGR (B มุมซ้ายบน)" }, { value: "grbg", label: "GRBG (G มุมซ้ายบน R อยู่ขวา)" }, { value: "gbrg", label: "GBRG (G มุมซ้ายบน B อยู่ขวา)" }], default: "rggb", desc: "ต้องตรงกับเซนเซอร์กล้องหรือขั้นที่จำลองภาพดิบ" },
+      { key: "method", visibleWhen: [{ key: "mode", in: ["demosaic"] }], type: "select", label: "วิธีเติมสี", options: [{ value: "bilinear", label: "Bilinear (เร็ว)" }, { value: "ea", label: "Edge-aware (ลดสีเพี้ยนที่ขอบ)" }], default: "bilinear", hint: "Bilinear เร็วสุด · Edge-aware ช้ากว่าเล็กน้อยแต่สีที่ขอบเพี้ยนน้อยกว่า" },
+    ],
+    apply(cv, src, p, ctx) {
+      if (isEmptyMat(src)) { if (ctx) ctx.info = "ภาพว่าง"; return src.clone(); }
+      const mode = ownKey({ demosaic: true, mosaic: true }, p.mode, "demosaic");
+      const pattern = ownKey(BAYER_TILES, p.pattern, "rggb"), method = ownKey({ bilinear: true, ea: true }, p.method, "bilinear");
+      let alpha = null, gray = null, dst = null;
+      try {
+        alpha = dropAlpha(cv, src);
+        const x = alpha || src;
+        dst = new cv.Mat();
+        if (mode === "mosaic") {
+          dst.create(x.rows, x.cols, cv.CV_8UC1);
+          const ch = x.channels(), data = x.data, out = dst.data, tile = BAYER_TILES[pattern];
+          for (let y = 0; y < x.rows; y++) for (let xx = 0; xx < x.cols; xx++) {
+            const i = y * x.cols + xx;
+            out[i] = data[i * ch + (ch === 1 ? 0 : tile[(y % 2) * 2 + xx % 2])];
+          }
+          if (ctx) ctx.info = `จำลองภาพดิบ ${pattern.toUpperCase()} (1 ช่อง)`;
+        } else {
+          gray = grayIfNeeded(cv, x);
+          const raw = gray || x, prefix = BAYER_CODES[pattern];
+          // opencv.js 4.10 COLOR_Bayer*2RGB_VNG ให้ผลเลื่อน 2 แถว + สีเพี้ยน จึงไม่รองรับ VNG (Bilinear/EA ตรงกับ cv2)
+          cv.cvtColor(raw, dst, cv[`COLOR_${prefix}2RGB${method === "ea" ? "_EA" : ""}`]);
+          if (ctx) ctx.info = `Debayer ${pattern.toUpperCase()} · ${method === "ea" ? "Edge-aware" : "Bilinear"}`;
+        }
+        const out = dst; dst = null; return out;
+      } finally { for (const m of [dst, gray, alpha]) if (m) m.delete(); }
+    },
+  },
+
+  piqe: {
+    name: "PIQE (คะแนนคุณภาพภาพ ไม่ต้องมีภาพอ้างอิง)",
+    needs: "any",
+    modeHint: "วัดภาพเดียว 0–100 ค่าต่ำ = คุณภาพดี พร้อมระบายบริเวณที่มีปัญหา",
+    desc: "ประเมินคุณภาพภาพโดยไม่ต้องมีภาพอ้างอิงตามแนว Venkatanath (2015) · ไม่ใช้ภาพ B · คะแนนอาจไม่ตรงกับ MATLAB ทุกหลัก · ค่าต่ำ = คุณภาพดี · ใช้บล็อก 16×16 ตัดเศษขอบขวา/ล่างทิ้ง · แดง = รอยบล็อก ฟ้า = นอยส์ ม่วง = ทั้งสอง · ถ้าไม่มีบริเวณที่มีรายละเอียดพอจะประเมินจะได้คะแนน 100 จากสูตร ไม่ได้แปลว่าภาพแย่",
+    params: [],
+    apply(cv, src, p, ctx) {
+      if (isEmptyMat(src)) { if (ctx) { ctx.info = "ภาพว่าง"; ctx.values = scalarValues(PIQE_FIELDS, []); } return src.clone(); }
+      let gray = null, input = null, square = null, mean = null, meanSquare = null, dst = null;
+      try {
+        dst = rgbIfNeeded(cv, src) || src.clone();
+        if (src.cols < 16 || src.rows < 16) {
+          if (ctx) { ctx.info = "ภาพเล็กกว่า 16×16 ประเมินไม่ได้"; ctx.values = scalarValues(PIQE_FIELDS, []); }
+        } else {
+          gray = grayIfNeeded(cv, src);
+          const x = gray || src, w = x.cols, h = x.rows;
+          input = new cv.Mat(); x.convertTo(input, cv.CV_64F);
+          square = new cv.Mat(h, w, cv.CV_64FC1);
+          const id = input.data64F, sd = square.data64F;
+          for (let i = 0; i < id.length; i++) sd[i] = id[i] * id[i];
+          mean = new cv.Mat(); meanSquare = new cv.Mat();
+          cv.GaussianBlur(input, mean, new cv.Size(7, 7), 7 / 6, 7 / 6, cv.BORDER_REPLICATE);
+          cv.GaussianBlur(square, meanSquare, new cv.Size(7, 7), 7 / 6, 7 / 6, cv.BORDER_REPLICATE);
+          const md = mean.data64F, qd = meanSquare.data64F, mscn = new Float64Array(id.length);
+          for (let i = 0; i < id.length; i++) mscn[i] = (id[i] - md[i]) / (Math.sqrt(Math.abs(qd[i] - md[i] * md[i])) + 1);
+          let active = 0, artifactCount = 0, noiseCount = 0, distortion = 0;
+          const od = dst.data;
+          for (let by = 0; by + 16 <= h; by += 16) for (let bx = 0; bx + 16 <= w; bx += 16) {
+            const block = [], center = [], surround = [];
+            for (let y = 0; y < 16; y++) for (let xx = 0; xx < 16; xx++) {
+              const v = mscn[(by + y) * w + bx + xx];
+              block.push(v);
+              (xx === 7 || xx === 8 ? center : surround).push(v);
+            }
+            const variance = variance5B(block);
+            if (variance <= 0.1) continue;
+            active++;
+            const edges = [block.slice(0, 16), block.slice(240), Array.from({ length: 16 }, (_, i) => block[i * 16]), Array.from({ length: 16 }, (_, i) => block[i * 16 + 15])];
+            let artifact = false;
+            for (const edge of edges) for (let k = 0; k <= 10; k++) if (Math.sqrt(variance5B(edge.slice(k, k + 6))) < 0.1) artifact = true;
+            const sc = Math.sqrt(variance5B(center)), ss = Math.sqrt(variance5B(surround)), denom = Math.max(sc, ss);
+            const beta = denom ? Math.abs(sc - ss) / denom : 0;
+            const noise = Math.sqrt(variance) > 2 * beta;
+            if (artifact) { artifactCount++; distortion += 1 - variance; }
+            if (noise) { noiseCount++; distortion += variance; }
+            if (artifact || noise) {
+              const color = artifact && noise ? [170, 80, 220] : artifact ? [230, 60, 60] : [60, 140, 255];
+              for (let y = by; y < by + 16; y++) for (let xx = bx; xx < bx + 16; xx++) for (let c = 0; c < 3; c++) {
+                const i = (y * w + xx) * 3 + c;
+                od[i] = Math.floor((3 * od[i] + 2 * color[c] + 2) / 5);
+              }
+            }
+          }
+          const score = Math.max(0, Math.min(100, (distortion + 1) / (active + 1) * 100));
+          const grade = score <= 20 ? "ดีมาก" : score <= 35 ? "ดี" : score <= 50 ? "พอใช้" : score <= 80 ? "แย่" : "แย่มาก";
+          if (ctx) {
+            ctx.info = `PIQE = ${fixed2(score)} (${grade}) · active ${active} block · artifact ${artifactCount} · noise ${noiseCount}` + (!active ? " · ไม่มีบริเวณที่มีรายละเอียดพอจะประเมิน (คะแนน 100 จากสูตร ไม่ได้แปลว่าภาพแย่)" : "");
+            ctx.values = scalarValues(PIQE_FIELDS, [score, active, artifactCount, noiseCount]);
+          }
+        }
+        const out = dst; dst = null; return out;
+      } finally { for (const m of [dst, meanSquare, mean, square, input, gray]) if (m) m.delete(); }
+    },
+  },
+
   pass_fail: {
     name: "Pass / Fail (ตัดสิน OK / NG)",
     needs: "any",
@@ -8115,6 +8404,7 @@ export const OPS = {
         { value: "de_mean", label: "ΔE เฉลี่ย (ต่อหลัง Color Difference ΔE)" },
         { value: "iou", label: "IoU (ต่อหลัง Segmentation Score)" },
         { value: "dice", label: "Dice (ต่อหลัง Segmentation Score)" },
+        { value: "piqe", label: "PIQE (ต่อหลัง PIQE · ค่าต่ำ = คุณภาพดี)" },
       ], default: "count", desc: "เลือกค่าที่จะเอามาตัดสิน — ต้องต่อกล่องวัดชนิดที่ระบุในวงเล็บไว้ก่อนหน้ากล่องนี้" },
       { key: "cond", type: "select", label: "เงื่อนไขที่ถือว่าผ่าน", options: [
         { value: "range", label: "อยู่ในช่วง ต่ำสุด–สูงสุด (รวมขอบ)" },
@@ -8155,6 +8445,20 @@ export const OPS = {
 // IP batch 5A — ค่า scalars และตารางเพื่อนบ้านไม่มี Mat และไม่มี state ข้ามเฟรม
 const OBJECT_FIELDS = [["objects", "จำนวนวัตถุ"]];
 const SEG_FIELDS = [["iou", "IoU"], ["dice", "Dice"], ["precision", "Precision"], ["recall", "Recall"], ["tp", "พิกเซลตรงกัน"], ["fp", "พิกเซลเกิน"], ["fn", "พิกเซลขาด"]];
+const PYRAMID_FIELDS = [["pyr_levels", "จำนวนขั้นที่ทำได้"], ["pyr_width", "ความกว้างขั้นสุดท้าย"], ["pyr_height", "ความสูงขั้นสุดท้าย"]];
+const RIDGE_FIELDS = [["ridge_max", "การตอบสนองเส้นก่อนปรับสเกล"], ["ridge_pct", "พิกเซลเส้นสว่างอย่างน้อย 128 (%)"]];
+const PIQE_FIELDS = [["piqe", "คะแนน PIQE"], ["piqe_active", "บล็อกที่มีรายละเอียด"], ["piqe_artifact", "บล็อกที่มีรอย"], ["piqe_noise", "บล็อกที่มีนอยส์"]];
+const BAYER_TILES = { rggb: [0, 1, 1, 2], bggr: [2, 1, 1, 0], grbg: [1, 0, 2, 1], gbrg: [1, 2, 0, 1] };
+const BAYER_CODES = { rggb: "BayerBG", bggr: "BayerRG", grbg: "BayerGB", gbrg: "BayerGR" };
+// Two passes, row-major addition, N-1 divisor — emitted Python uses this exact order.
+function variance5B(values) {
+  let sum = 0;
+  for (const v of values) sum += v;
+  const mean = sum / values.length;
+  let ss = 0;
+  for (const v of values) { const d = v - mean; ss += d * d; }
+  return ss / (values.length - 1);
+}
 const EULER_FIELDS = [...OBJECT_FIELDS, ["holes", "จำนวนรู"], ["euler", "Euler number"]];
 const INVERSE_CODES = { hsv: "COLOR_HSV2RGB", hls: "COLOR_HLS2RGB", lab: "COLOR_Lab2RGB", ycrcb: "COLOR_YCrCb2RGB", xyz: "COLOR_XYZ2RGB", luv: "COLOR_Luv2RGB", yuv: "COLOR_YUV2RGB" };
 OPS.colorspace_inverse.params = [{ ...OPS.colorspace.params[0], desc: "เลือกปริภูมิเดียวกับ Color Space Convert ก่อนหน้า", hint: "ภาพเข้าต้องเก็บค่า 3 ช่องของปริภูมินี้" }];
@@ -8789,7 +9093,7 @@ export const FILTERS = {
   // IP batch 2 ชิ้น D เพิ่ม roi_polygon · 2026-10-07: เรียง dropdown ให้ตรงกับ palette (roi_polygon ต่อจาก crop) —
   // mode เก็บเป็นชื่อ op (ไม่ใช่ index) โปรเจกต์/เทมเพลตเก่าจึงไม่กระทบ · default "resize" เหมือนเดิม
   geometry: mergeGroup("Geometry", "Geometry",
-    ["crop", "roi_polygon", "resize", "rotate", "flip", "perspective_warp", "undistort", "translate_shear"], "resize"),
+    ["crop", "roi_polygon", "resize", "image_pyramid", "rotate", "flip", "perspective_warp", "undistort", "translate_shear"], "resize"),
 
   frequency: mergeGroup("Frequency Domain", "Frequency Domain",
     ["fft_magnitude", "fft_filter", "bandpass_notch", "dct_jpeg"], "fft_magnitude"),
@@ -8826,16 +9130,16 @@ export const FILTERS = {
   // tests/category-merge.test.mjs ล็อกให้ตรงกัน — เพิ่ม op ใหม่ในหมวดแล้วต้องมาเพิ่มที่นี่ด้วย ไม่งั้นเทสต์ล้ม
   // กลุ่มเก่าด้านบน (color_space, colour, image_adjust, ...) คงไว้เป็น legacy ให้เทมเพลต/โปรเจกต์เก่า แต่ palette ไม่ชี้มาแล้ว
   color_tools: mergeGroup("Color", "Color",
-    ["grayscale", "colorspace", "colorspace_inverse", "channel_split", "rgb_adjust", "color_inrange", "kmeans_segment", "slic", "white_balance", "invert", "pseudocolor"], "grayscale"),
+    ["grayscale", "colorspace", "colorspace_inverse", "debayer", "channel_split", "rgb_adjust", "color_inrange", "kmeans_segment", "slic", "white_balance", "invert", "pseudocolor"], "grayscale"),
 
   enhance_tools: mergeGroup("Enhance", "Enhance",
     ["brightness_contrast", "gamma", "hist_equalize", "clahe", "contrast_stretch", "flatfield_correction", "quantize", "unsharp", "laplacian_sharpen", "custom_kernel", "dehaze", "lowlight_enhance"], "brightness_contrast"),
 
   filter_denoise: mergeGroup("Filter & Denoise", "Filter & Denoise",
-    ["salt_pepper_noise", "gaussian_noise", "median_blur", "gaussian_blur", "box_blur", "bilateral", "wiener_filter", "guided_filter", "nlm_denoise", "deconv_wiener", "deconv_lucy"], "salt_pepper_noise"),
+    ["salt_pepper_noise", "gaussian_noise", "median_blur", "gaussian_blur", "box_blur", "bilateral", "wiener_filter", "guided_filter", "anisotropic_diffusion", "nlm_denoise", "deconv_wiener", "deconv_lucy"], "salt_pepper_noise"),
 
   segment_edge: mergeGroup("Segment & Edge", "Segmentation & Edge",
-    ["binary_threshold", "otsu_threshold", "adaptive_threshold", "multi_otsu_threshold", "canny", "sobel", "laplacian_edge", "scharr_edge", "prewitt_edge", "roberts_edge", "log_edge", "watershed", "watershed_marker", "grabcut", "region_growing"], "binary_threshold"),
+    ["binary_threshold", "otsu_threshold", "adaptive_threshold", "multi_otsu_threshold", "canny", "sobel", "laplacian_edge", "scharr_edge", "prewitt_edge", "roberts_edge", "log_edge", "frangi_vesselness", "watershed", "watershed_marker", "grabcut", "region_growing"], "binary_threshold"),
 
   analysis_detect: mergeGroup("Analyze / Detect", "Analysis & Detection",
     ["find_contours", "connected_components", "distance_transform", "local_std_filter", "local_entropy_filter", "gabor_filter", "glcm", "focus_score", "regionprops", "euler_number", "feret", "line_profile", "shape_filter", "bounding_boxes", "hough_circles", "hough_lines", "harris_corners", "shi_tomasi_corners", "orb_keypoints", "akaze_keypoints", "fast_keypoints", "pass_fail"], "find_contours"),
@@ -8844,7 +9148,7 @@ export const FILTERS = {
 
   // PSNR/SSIM รับภาพ 2 ใบ → inputs:2 (ช่อง "เข้า B" ใน editor.js)
   image_quality: mergeGroup("Image Quality", "Image Quality",
-    ["psnr", "ssim", "delta_e", "seg_score"], "psnr", [], { inputs: 2 }),
+    ["psnr", "ssim", "delta_e", "seg_score", "piqe"], "psnr", [], { inputs: 2 }),
 
   // Motion ทั้งสามจำ state ข้ามเฟรม → stateful:true · เปลี่ยนวิธี = params เปลี่ยน → getNodeState (fingerprint) reset+dispose state เก่าเอง
   motion: mergeGroup("Motion", "Motion",

@@ -3306,6 +3306,211 @@ const GEN = {
     ], ["objects = holes = euler = None"]);
   } },
 
+  // IP batch 5B: float64, explicit arithmetic order and half-up byte conversion.
+  image_pyramid: { needs: "any", out: "same", gen: (p) => {
+    const kind = p.kind === "laplacian" ? "laplacian" : "gaussian";
+    const expand = kind === "gaussian" && p.direction === "expand", mosaic = p.view === "mosaic";
+    const levels = Math.round(clampNum(p.levels, 1, 1, 5));
+    return guarded5A([
+      "img = img[:, :, :3] if img.ndim == 3 else img",
+      "pyr_input = img",
+      "pyr_g, pyr_l = [img], []",
+      `for pyr_k in range(${levels}):`,
+      "    prev = pyr_g[-1]",
+      ...(expand ? [
+        "    if max(prev.shape[0] * 2, prev.shape[1] * 2) > 4096:",
+        "        print(f'pyramid stopped at level {pyr_k}: expansion would exceed 4096 px')",
+        "        break",
+        "    nxt = cv2.pyrUp(prev)",
+      ] : [
+        "    if min(prev.shape[:2]) < 2:",
+        "        print(f'pyramid stopped at level {pyr_k}: too small to reduce')",
+        "        break",
+        "    nxt = cv2.pyrDown(prev)",
+      ]),
+      "    pyr_g.append(nxt)",
+      ...(kind === "laplacian" ? [
+        "    up = cv2.pyrUp(nxt, dstsize=(prev.shape[1], prev.shape[0]))",
+        "    delta = prev.astype(np.int16) - up.astype(np.int16)",
+        "    pyr_l.append(np.clip(delta + 128, 0, 255).astype(np.uint8))",
+        "if not pyr_l:",
+        "    pyr_l.append(np.full_like(pyr_input, 128))",
+      ] : []),
+      `pyr_tiles = ${kind === "laplacian" ? "pyr_l" : "pyr_g"}`,
+      "pyr_last = pyr_tiles[-1]",
+      "pyr_levels = len(pyr_g) - 1",
+      "pyr_height, pyr_width = pyr_last.shape[:2]",
+      ...(mosaic ? [
+        "shown, width, height = [], 0, 0",
+        "for tile in pyr_tiles:",
+        "    next_width = width + (4 if shown else 0) + tile.shape[1]",
+        "    if shown and next_width > 4096:",
+        "        print(f'pyramid mosaic: showing {len(shown)}/{len(pyr_tiles)} images (4096 px limit)')",
+        "        break",
+        "    shown.append(tile)",
+        "    width, height = next_width, max(height, tile.shape[0])",
+        "img = np.zeros((height, width) + pyr_input.shape[2:], np.uint8)",
+        "offset = 0",
+        "for tile in shown:",
+        "    img[:tile.shape[0], offset:offset + tile.shape[1]] = tile",
+        "    offset += tile.shape[1] + 4",
+      ] : ["img = pyr_last.copy()"]),
+      `print(f'${kind === "laplacian" ? "Laplacian" : "Gaussian"} ${expand ? "expand" : "reduce"} {pyr_levels} levels: {pyr_input.shape[1]}x{pyr_input.shape[0]} -> {pyr_width}x{pyr_height}')`,
+    ], ["pyr_levels = pyr_width = pyr_height = None"]);
+  } },
+
+  frangi_vesselness: { needs: "any", out: "gray", gen: (p, ctx) => {
+    let lo = clampNum(p.sigmaMin, 1, 1, 8), hi = clampNum(p.sigmaMax, 3, 1, 10);
+    if (lo > hi) [lo, hi] = [hi, lo];
+    const beta = clampNum(p.beta, 0.5, 0.1, 2), dark = p.polarity === "dark";
+    const nSteps = Math.floor((hi - lo) / 0.5 + 1e-9);
+    return guarded5A([
+      `img = img if img.ndim == 2 else cv2.cvtColor(img[:, :, :3], ${pyGrayCode(ctx)})`,
+      "ridge_input = img.astype(np.float64) / 255",
+      "ridge_best = np.zeros(img.shape, np.float64)",
+      "# A constant has an exactly zero Hessian; ignore floating cancellation noise.",
+      "if not np.all(img == img.flat[0]):",
+      `    for ridge_k in range(${nSteps + 1}):`,
+      `        sigma = ${lo} + 0.5 * ridge_k`,
+      "        size = 2 * int(np.ceil(3 * sigma)) + 1",
+      "        scale = sigma * sigma",
+      "        g = cv2.GaussianBlur(ridge_input, (size, size), sigma, sigmaY=sigma, borderType=cv2.BORDER_REPLICATE)",
+      "        a = cv2.Sobel(g, cv2.CV_64F, 2, 0, ksize=3, borderType=cv2.BORDER_REPLICATE) * scale",
+      "        b = cv2.Sobel(g, cv2.CV_64F, 0, 2, ksize=3, borderType=cv2.BORDER_REPLICATE) * scale",
+      "        d = cv2.Sobel(g, cv2.CV_64F, 1, 1, ksize=3, borderType=cv2.BORDER_REPLICATE) * scale",
+      "        diff = a - b",
+      "        tmp = np.sqrt(diff * diff + 4 * d * d)",
+      "        u, v = (a + b + tmp) / 2, (a + b - tmp) / 2",
+      "        ordered = np.abs(u) <= np.abs(v)",
+      "        l1, l2 = np.where(ordered, u, v), np.where(ordered, v, u)",
+      "        c = 0.5 * float(np.max(np.sqrt(l1 * l1 + l2 * l2)))",
+      "        if c == 0:",
+      "            continue",
+      "        ratio = np.divide(l1, l2, out=np.zeros_like(l1), where=l2 != 0)",
+      "        rb2, s2 = ratio * ratio, l1 * l1 + l2 * l2",
+      `        response = np.exp(-rb2 / (2 * ${beta} * ${beta})) * (1 - np.exp(-s2 / (2 * c * c)))`,
+      `        response[(l2 == 0) | (l2 ${dark ? "<" : ">"} 0)] = 0`,
+      "        ridge_best = np.maximum(ridge_best, response)",
+      "ridge_raw_max = float(np.max(ridge_best))",
+      "img = np.floor(ridge_best / ridge_raw_max * 255 + 0.5).astype(np.uint8) if ridge_raw_max else np.zeros(img.shape, np.uint8)",
+      "ridge_max = float(np.floor(ridge_raw_max * 10000 + 0.5) / 10000)",
+      "ridge_pct = int(np.count_nonzero(img >= 128)) / img.size * 100",
+      `print('Frangi sigma ${lo}-${hi} (${nSteps + 1} scales), ${dark ? "dark" : "bright"}' + ('; no ridge structure' if ridge_raw_max == 0 else ''))`,
+      "print(f'ridge_max = {ridge_max:.4f}, ridge_pct = {ridge_pct:.12g}')",
+    ], ["ridge_max = ridge_pct = None"]);
+  } },
+
+  anisotropic_diffusion: { needs: "any", out: "same", gen: (p) => {
+    const iterations = Math.round(clampNum(p.iterations, 10, 1, 50)), kappa = clampNum(p.kappa, 20, 1, 100);
+    const quadratic = p.conduction === "quadratic";
+    return guarded5A([
+      "img = img[:, :, :3] if img.ndim == 3 else img",
+      "diff_current = img.astype(np.float64)",
+      `for diff_k in range(${iterations}):`,
+      "    pad = np.pad(diff_current, ((1, 1), (1, 1)) + ((0, 0),) * (diff_current.ndim - 2), mode='edge')",
+      "    dn = pad[:-2, 1:-1] - diff_current",
+      "    ds = pad[2:, 1:-1] - diff_current",
+      "    de = pad[1:-1, 2:] - diff_current",
+      "    dw = pad[1:-1, :-2] - diff_current",
+      "    fluxes = []",
+      "    for delta in (dn, ds, de, dw):",
+      `        ratio = delta / ${kappa}`,
+      `        conduction = ${quadratic ? "1 / (1 + ratio * ratio)" : "np.exp(-(ratio * ratio))"}`,
+      "        fluxes.append(conduction * delta)",
+      "    diff_current = diff_current + 0.25 * (fluxes[0] + fluxes[1] + fluxes[2] + fluxes[3])",
+      "img = np.clip(np.floor(diff_current + 0.5), 0, 255).astype(np.uint8)",
+      `print('Perona-Malik ${iterations} iterations, kappa = ${kappa}, ${quadratic ? "quadratic" : "exponential"}')`,
+    ]);
+  } },
+
+  debayer: { needs: "any", outOf: (p) => p.mode === "mosaic" ? "gray" : "color", bgrChannelOrder: true, gen: (p, ctx) => {
+    const patterns = { rggb: [0, 1, 1, 2], bggr: [2, 1, 1, 0], grbg: [1, 0, 2, 1], gbrg: [1, 2, 0, 1] };
+    const pattern = Object.hasOwn(patterns, p.pattern) ? p.pattern : "rggb";
+    const code = { rggb: "BayerBG", bggr: "BayerRG", grbg: "BayerGB", gbrg: "BayerGR" }[pattern];
+    const method = p.method === "ea" ? "ea" : "bilinear";
+    if (p.mode === "mosaic") return guarded5A([
+      "if img.ndim == 3:",
+      `    raw_rgb = img[:, :, :3]${isMirrored(ctx) ? "[:, :, ::-1]" : ""}`,
+      "    raw = np.empty(img.shape[:2], np.uint8)",
+      `    tile = ${JSON.stringify(patterns[pattern])}`,
+      "    for y in range(2):",
+      "        for x in range(2):",
+      "            raw[y::2, x::2] = raw_rgb[y::2, x::2, tile[y * 2 + x]]",
+      "    img = raw",
+      "else:",
+      "    img = img.copy()",
+      `print('simulated ${pattern.toUpperCase()} raw (1 channel)')`,
+    ]);
+    return guarded5A([
+      `raw = img if img.ndim == 2 else cv2.cvtColor(img[:, :, :3], ${pyGrayCode(ctx)})`,
+      `img = cv2.cvtColor(raw, cv2.COLOR_${code}2BGR${method === "ea" ? "_EA" : ""})`,
+      `print('Debayer ${pattern.toUpperCase()} ${method === "ea" ? "Edge-aware" : "Bilinear"}')`,
+    ]);
+  } },
+
+  piqe: { needs: "any", out: "color", bgrChannelOrder: true, gen: (p, ctx) => guarded5A([
+    `piqe_gray = img if img.ndim == 2 else cv2.cvtColor(img[:, :, :3], ${pyGrayCode(ctx)})`,
+    "img = cv2.cvtColor(img, cv2.COLOR_GRAY2BGR) if img.ndim == 2 else img[:, :, :3].copy()",
+    ...(!isMirrored(ctx) ? ["img = np.ascontiguousarray(img[:, :, ::-1])"] : []),
+    "if min(piqe_gray.shape[:2]) < 16:",
+    "    print('image smaller than 16x16: cannot evaluate PIQE')",
+    "else:",
+    "    def piqe_variance(values):",
+    "        total = 0.0",
+    "        for value in values:",
+    "            total += value",
+    "        mean = total / len(values)",
+    "        ss = 0.0",
+    "        for value in values:",
+    "            delta = value - mean",
+    "            ss += delta * delta",
+    "        return ss / (len(values) - 1)",
+    "    image = piqe_gray.astype(np.float64)",
+    "    square = image * image",
+    "    mean = cv2.GaussianBlur(image, (7, 7), 7 / 6, sigmaY=7 / 6, borderType=cv2.BORDER_REPLICATE)",
+    "    mean_square = cv2.GaussianBlur(square, (7, 7), 7 / 6, sigmaY=7 / 6, borderType=cv2.BORDER_REPLICATE)",
+    "    mscn = (image - mean) / (np.sqrt(np.abs(mean_square - mean * mean)) + 1)",
+    "    piqe_active = piqe_artifact = piqe_noise = 0",
+    "    distortion = 0.0",
+    "    height, width = image.shape",
+    "    for by in range(0, height - 15, 16):",
+    "        for bx in range(0, width - 15, 16):",
+    "            tile = mscn[by:by + 16, bx:bx + 16]",
+    "            block = tile.ravel().tolist()",
+    "            center = tile[:, 7:9].ravel().tolist()",
+    "            surround = np.concatenate((tile[:, :7], tile[:, 9:]), axis=1).ravel().tolist()",
+    "            variance = piqe_variance(block)",
+    "            if variance <= 0.1:",
+    "                continue",
+    "            piqe_active += 1",
+    "            edges = [block[:16], block[240:], block[::16], block[15::16]]",
+    "            artifact = False",
+    "            for edge in edges:",
+    "                for k in range(11):",
+    "                    if np.sqrt(piqe_variance(edge[k:k + 6])) < 0.1:",
+    "                        artifact = True",
+    "            sc = float(np.sqrt(piqe_variance(center)))",
+    "            ss = float(np.sqrt(piqe_variance(surround)))",
+    "            denom = max(sc, ss)",
+    "            beta = abs(sc - ss) / denom if denom else 0",
+    "            noise = np.sqrt(variance) > 2 * beta",
+    "            if artifact:",
+    "                piqe_artifact += 1",
+    "                distortion += 1 - variance",
+    "            if noise:",
+    "                piqe_noise += 1",
+    "                distortion += variance",
+    "            if artifact or noise:",
+    "                color = (220, 80, 170) if artifact and noise else (60, 60, 230) if artifact else (255, 140, 60)",
+    "                pixels = img[by:by + 16, bx:bx + 16].astype(np.int32)",
+    "                img[by:by + 16, bx:bx + 16] = ((3 * pixels + 2 * np.array(color, np.int32) + 2) // 5).astype(np.uint8)",
+    "    piqe = max(0.0, min(100.0, (distortion + 1) / (piqe_active + 1) * 100))",
+    "    grade = 'excellent' if piqe <= 20 else 'good' if piqe <= 35 else 'fair' if piqe <= 50 else 'poor' if piqe <= 80 else 'bad'",
+    "    print(f'PIQE = {np.floor(piqe * 100 + 0.5) / 100:.2f} ({grade}), active {piqe_active} blocks, artifact {piqe_artifact}, noise {piqe_noise}')",
+    "    if piqe_active == 0:",
+    "        print('no region has enough detail to evaluate (100 from the formula does not mean poor quality)')",
+  ], ["piqe = piqe_active = piqe_artifact = piqe_noise = None"]) },
+
   dehaze: { needs: "any", out: "same", outOf: (p) => (p.view === "transmission" || p.view === "dark" ? "gray" : "same"), gen: (p, ctx) => {
     const omega = clampNum(p.amount, 0.95, 0.1, 1), ps = odd(clampNum(p.patch, 15, 3, 31));
     const refine = boolOr(p.refine, true);
@@ -3436,8 +3641,8 @@ function appOnlyHeader(appOnly) {
 // ข้อจำกัดที่รู้ (ยอมรับ): template_matching (ไม่มี template / ใหญ่เกินภาพ) และ psnr/ssim (ไม่ได้ต่อ B) แอปคืนภาพโดยไม่มี values แต่ที่นี่ยังนับเป็น
 // "กล่องวัดล่าสุด" เสมอ — ผลคือ Python ตัดสิน NG (กล่องผิดชนิด) ในกรณีที่แอปจะใช้ค่าของกล่องวัดก่อนหน้า · เอนเอียงไปทาง NG (fail-safe)
 export const PF_VALUE_OPS = new Set(["regionprops", "template_matching", "psnr", "ssim", "mog2", "farneback_optical_flow", "pyrlk_optical_flow", "feret",
-  "line_profile", "shape_filter", "roi_polygon", "slic", "focus_score", "delta_e", "roi_apply", "ecc_register", "gabor_filter", "glcm", "dehaze", "dct_jpeg", "watershed_marker", "seg_score", "euler_number"]);
-const PF_PY_SOURCES = { regionprops: true, roi_polygon: true, focus_score: true, seg_score: true };
+  "line_profile", "shape_filter", "roi_polygon", "slic", "focus_score", "delta_e", "roi_apply", "ecc_register", "gabor_filter", "glcm", "dehaze", "dct_jpeg", "watershed_marker", "seg_score", "euler_number", "image_pyramid", "frangi_vesselness", "piqe"]);
+const PF_PY_SOURCES = { regionprops: true, roi_polygon: true, focus_score: true, seg_score: true, piqe: true };
 // บรรทัดท้ายขั้นวัด: เก็บค่าที่ pass_fail ต้องใช้ลง `pf_up` ทันที (ตัวแปรของขั้นวัดอาจถูกทับโดยขั้นถัดไป) · เรียกเมื่อ pipeline มี pass_fail เท่านั้น
 function pfSnapshotLines(opId, local, ctx) {
   if (!PF_VALUE_OPS.has(opId)) return [];
@@ -3450,6 +3655,7 @@ function pfSnapshotLines(opId, local, ctx) {
   if (opId === "roi_polygon") return ["pf_up = {'value': roi_mean}  # ค่าให้ขั้น Pass / Fail"];
   if (opId === "focus_score") return ["pf_up = {'value': score}  # ค่าให้ขั้น Pass / Fail"];
   if (opId === "seg_score") return ["pf_up = {'iou': iou, 'dice': dice}  # ค่าให้ขั้น Pass / Fail"];
+  if (opId === "piqe") return ["pf_up = {'value': piqe}  # ค่าให้ขั้น Pass / Fail"];
   return [];
 }
 const hasPassFail = (pipeline) => pipeline.some((st) => resolveOp(st).opId === "pass_fail");
@@ -3467,7 +3673,7 @@ function activeSteps(pipeline) {
 // เดียวกับที่ FILTERS[step.id] ใช้เช็ค — ยืนยันแล้วจาก tracePipeline ของ editor.js)
 export function buildPythonCode(pipeline, opts = {}) {
   pipeline = activeSteps(pipeline);
-  const has2Image = (pipeline || []).some((step) => step && FILTERS[step.id] && FILTERS[step.id].inputs === 2);
+  const has2Image = (pipeline || []).some((step) => step && usesSecondImage(step));
   if (has2Image) return buildPythonCode2Image(pipeline, opts);
 
   const name = opts.displayName || "ผลลัพธ์";
@@ -3571,6 +3777,18 @@ if __name__ == "__main__":
 // ใช้ img_b ตัวเดียวกับสายนั้นเป็นภาพที่สอง (ไม่ได้ใช้ src2 ของตัวเอง) · ตอนนี้ op สองภาพซ้อนกันได้ลึกเท่าที่กราฟมี: ภาพ B ของระดับ d
 // ชื่อ img_b (d=1) / img_b2 / img_b3 … (ดู bImageVar) · step สองภาพที่ไม่มี src2 เลย = แอปคืนภาพ A เดิม (passthroughNoSrc2) Python จึงข้ามขั้นนั้น
 const bImageVar = (depth) => (depth <= 1 ? "img_b" : `img_b${depth}`);
+// PIQE lives in a two-input category but measures A alone, even when B is connected.
+const usesSecondImage = (step) => FILTERS[step.id]?.inputs === 2 && resolveOp(step).opId !== "piqe";
+const BATCH5B_OPS = new Set(["image_pyramid", "frangi_vesselness", "anisotropic_diffusion", "debayer", "piqe"]);
+// The legacy two-image compiler intentionally keeps its old channel behavior. Track a
+// separate flag for new 5B generators so no old-only export changes even one character.
+function context5B(opId, ctx) {
+  return BATCH5B_OPS.has(opId) ? { ...ctx, mirrored: ctx.mirrored5B !== false } : ctx;
+}
+function trackOrder5B(g, p, ctx) {
+  if (g.appChannelOrder) ctx.mirrored5B = false;
+  else if (g.bgrChannelOrder || ctx.gray || (g.grayOutOf && g.grayOutOf(p))) ctx.mirrored5B = true;
+}
 // สร้างบรรทัดของ "สาย B ของ step" ลง body — คืนชื่อตัวแปรที่เก็บภาพ B ที่ประมวลผลเสร็จแล้ว · depth = ระดับของ step (0 = สายหลัก)
 function emitBChain(step, depth, body, appOnly) {
   const w = bImageVar(depth + 1);
@@ -3591,7 +3809,7 @@ function emitBChain(step, depth, body, appOnly) {
     const g2 = GEN[r2.opId];
     if (!g2) { body.push(`# (ข้าม: ยังไม่รองรับการ gen โค้ดของ '${r2.opId}')`); continue; }
     let second = bImageVar(depth + 2); // ภาพที่สองของ op สองภาพในสาย B (เฉพาะเมื่อ s2 เป็น op สองภาพ)
-    if (FILTERS[s2.id] && FILTERS[s2.id].inputs === 2) {
+    if (usesSecondImage(s2)) {
       if (!s2.src2 || !s2.src2.pipeline) { // ไม่มีสาย B เลย: แอปคืนภาพเดิม
         body.push(`# (${thaiName(r2.opId)}: ยังไม่ได้ต่อสาย B — แอปคืนภาพเดิม จึงข้ามขั้นนี้)`);
         continue;
@@ -3602,10 +3820,11 @@ function emitBChain(step, depth, body, appOnly) {
       body.push(`${w} = cv2.cvtColor(${w}, cv2.COLOR_BGR2GRAY)`);
       ctxB.gray = true;
     }
-    for (const line of g2.gen(r2.local, ctxB)) body.push(line.replace(/\bimg_b\b|\bimg\b/g, (t) => (t === "img" ? w : second)));
+    for (const line of g2.gen(r2.local, context5B(r2.opId, ctxB))) body.push(line.replace(/\bimg_b\b|\bimg\b/g, (t) => (t === "img" ? w : second)));
     const out2 = g2.outOf ? g2.outOf(r2.local) : g2.out;
     if (out2 === "gray") ctxB.gray = true;
     else if (out2 === "color") ctxB.gray = false;
+    trackOrder5B(g2, r2.local, ctxB);
   }
   return w;
 }
@@ -3632,7 +3851,7 @@ function buildPythonCode2Image(pipeline, opts = {}) {
       continue;
     }
     stepNo++;
-    if (FILTERS[step.id] && FILTERS[step.id].inputs === 2) {
+    if (usesSecondImage(step)) {
       if (!step.src2 || !step.src2.pipeline) {
         // B8: ไม่มีสาย B เลย → แอปคืนภาพ A เดิม (ดู passthroughNoSrc2 ใน registry.js) — ไม่คำนวณกับ path_b
         bodyA.push(`# ── ขั้นที่ ${stepNo}: ${thaiName(opId)} (${opId}) ── ยังไม่ได้ต่อสาย B — แอปคืนภาพ A เดิม จึงข้ามขั้นนี้`, "");
@@ -3647,11 +3866,12 @@ function buildPythonCode2Image(pipeline, opts = {}) {
     }
     bodyA.push(`# ── ขั้นที่ ${stepNo}: ${thaiName(opId)} (${opId}) ──`);
     if (TEACH[opId]) bodyA.push(`# ${TEACH[opId]}`);
-    for (const line of g.gen(local, ctxA)) bodyA.push(line);
+    for (const line of g.gen(local, context5B(opId, ctxA))) bodyA.push(line);
     if (hasPf) bodyA.push(...pfSnapshotLines(opId, local, ctxA));
     const out = g.outOf ? g.outOf(local) : g.out;
     if (out === "gray") ctxA.gray = true;
     else if (out === "color") ctxA.gray = false;
+    trackOrder5B(g, local, ctxA);
     bodyA.push("");
   }
   const indentedA = bodyA.map((l) => (l === "" ? "" : "    " + l)).join("\n");

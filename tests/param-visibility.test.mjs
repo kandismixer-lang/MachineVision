@@ -220,7 +220,7 @@ test('pv-03 R1 โครงสร้าง: visibleWhen ทุกตัวอ้
 test('pv-04 R1 defaultParams ของทุก filter (key ลำดับ + ค่า) เท่ากับก่อนแก้ทุกตัว (hash จาก HEAD 4c4f354)', () => {
   const snap = {};
   // P-8 เพิ่ม op pass_fail (key pass_fail__*) ใน analysis_detect — ตัดออกก่อน hash เพื่อให้ hash เดิมยังล็อกทุก param เดิมเหมือนเดิม
-  const added5A = ['watershed_marker__', 'lowlight_enhance__', 'colorspace_inverse__', 'euler_number__'];
+  const added5A = ['watershed_marker__', 'lowlight_enhance__', 'colorspace_inverse__', 'euler_number__', 'image_pyramid__', 'frangi_vesselness__', 'anisotropic_diffusion__', 'debayer__'];
   const old = (k) => !k.startsWith('pass_fail__') && !added5A.some((prefix) => k.startsWith(prefix));
   for (const id of Object.keys(FILTERS)) {
     if (id === 'morph_tools' || id === 'image_registration') continue; // image_registration (2026-10-24) ล็อกใน tests/category-merge.test.mjs // 2026-10-18: กลุ่มใหม่ (Morphology แยกเครื่องมือ) — hash นี้ล็อกเฉพาะ filter เดิมทั้ง 33 ตัว · morph_tools ล็อกใน tests/morph-split.test.mjs

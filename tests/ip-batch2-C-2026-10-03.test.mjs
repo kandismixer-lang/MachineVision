@@ -682,7 +682,7 @@ test('ipC-6. (static structure) the 3 ops exist in OPS (the OPS total is NOT pin
   assert.deepEqual(modes('blur'), ['median_blur', 'gaussian_blur', 'box_blur', 'bilateral', 'wiener_filter']);
   // ชิ้น D (2026-10-03) ต่อท้าย roi_polygon หลัง translate_shear → ปักแค่ 7 ตัวแรก (prefix) แบบเดียวกับ ipA-13 ของชิ้น B
   // 2026-10-07: dropdown ของ geometry เรียงตาม palette (roi_polygon ต่อจาก crop) → เช็คลำดับสัมพัทธ์ของ 7 ตัวเดิมโดยไม่นับ roi_polygon
-  assert.deepEqual(modes('geometry').filter((m) => m !== 'roi_polygon').slice(0, 7), ['crop', 'resize', 'rotate', 'flip', 'perspective_warp', 'undistort', 'translate_shear']);
+  assert.deepEqual(modes('geometry').filter((m) => m !== 'roi_polygon').slice(0, 8), ['crop', 'resize', 'image_pyramid', 'rotate', 'flip', 'perspective_warp', 'undistort', 'translate_shear']);
   for (const legacy of ['restoration', 'enhancement', 'segmentation']) for (const id of NEW_OPS) assert.ok(!modes(legacy).includes(id), `${id} must not enter legacy ${legacy}`);
   assert.equal(defaultParams('noise').mode, 'salt_pepper_noise');
   assert.equal(defaultParams('blur').mode, 'gaussian_blur');

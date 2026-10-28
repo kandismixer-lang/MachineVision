@@ -109,6 +109,7 @@ export const OP_ICON = {
   morph_fill_holes: "⬤", morph_clear_border: "⊠", morph_remove_small: "∴",
   morph_skeleton: "🦴", morph_reconstruct_open: "⥀", morph_convex_hull: "⬣", morph_endpoints_branchpoints: "⋔", morph_hit_or_miss: "⊘",
   watershed_marker: "♜", seg_score: "⩓", lowlight_enhance: "☾", colorspace_inverse: "⥂", euler_number: "♧",
+  image_pyramid: "⧋", frangi_vesselness: "⑂", anisotropic_diffusion: "⥊", debayer: "⧄", piqe: "⧯",
   morph_clean: "⸭", morph_majority: "⠶", morph_spur: "⤙", morph_thin: "⫶", morph_shrink: "⤒", morph_h_minima: "⋎", morph_extended_min: "⌑",
   morph_regional_max: "▲", morph_regional_min: "▽", morph_h_maxima: "△", morph_extended_max: "⌂",
   // ใหม่ (Tier 2, 18d) — เช็คทุกตัวกับ glyph เดิมทั้งหมดด้านบน และกับ GROUP_ICON ใน ui-meta.js แล้วไม่ชนกันเลย
@@ -147,7 +148,7 @@ function psfCardText(p) {
 const IMARITH_LABEL = { add: "A + B", subtract: "A − B", multiply: "A × B ÷ 255", divide: "A ÷ B × 255" };
 const LOGICAL_LABEL = { and: "A AND B", or: "A OR B", xor: "A XOR B", a_and_not_b: "A AND NOT B" };
 // ชื่อสั้นของ metric ของ pass_fail บนการ์ด (key ตรงกับ PASS_FAIL_METRICS ใน registry.js)
-const PASS_FAIL_SHORT = { count: "จำนวนวัตถุ", area_sum: "พื้นที่รวม", area_max: "พื้นที่ใหญ่สุด", roi_mean: "สว่างใน ROI", focus: "ความคม", de_mean: "ΔE เฉลี่ย", iou: "IoU", dice: "Dice" };
+const PASS_FAIL_SHORT = { count: "จำนวนวัตถุ", area_sum: "พื้นที่รวม", area_max: "พื้นที่ใหญ่สุด", roi_mean: "สว่างใน ROI", focus: "ความคม", de_mean: "ΔE เฉลี่ย", iou: "IoU", dice: "Dice", piqe: "คุณภาพ PIQE" };
 function ownOr(table, key, fallback) {
   return Object.hasOwn(table, key) ? table[key] : table[fallback];
 }
@@ -169,6 +170,11 @@ export const OP_PRIMARY = {
   seg_score: () => "IoU / Dice · A เทียบ mask คำตอบ B",
   lowlight_enhance: (p) => `เพิ่มแสง ${pnum("lowlight_enhance", "amount", p.amount)}` + (boolOr(p.alphaBlend, false) ? " · คงส่วนสว่าง" : ""),
   euler_number: (p) => `Euler = วัตถุ − รู · ${p.conn === "4" || p.conn === 4 ? 4 : 8} ทิศ`,
+  image_pyramid: (p) => `${p.kind === "laplacian" ? "รายละเอียด" : p.direction === "expand" ? "ขยาย" : "ย่อ"} ${pnum("image_pyramid", "levels", p.levels, { int: true })} ขั้น` + (p.view === "mosaic" ? " · เรียงทุกขั้น" : ""),
+  frangi_vesselness: (p) => `หาเส้น${p.polarity === "dark" ? "มืด" : "สว่าง"} · σ ${pnum("frangi_vesselness", "sigmaMin", p.sigmaMin)}–${pnum("frangi_vesselness", "sigmaMax", p.sigmaMax)}`,
+  anisotropic_diffusion: (p) => `เกลี่ย ${pnum("anisotropic_diffusion", "iterations", p.iterations, { int: true })} รอบ · κ ${pnum("anisotropic_diffusion", "kappa", p.kappa)}`,
+  debayer: (p) => `${p.mode === "mosaic" ? "จำลองภาพดิบ" : "เติมสีภาพดิบ"} · ${ownOr({ rggb: "RGGB", bggr: "BGGR", grbg: "GRBG", gbrg: "GBRG" }, p.pattern, "rggb")}`,
+  piqe: () => "คะแนนคุณภาพภาพ · ค่าต่ำ = ดี",
   channel_split: (p) => "ช่อง: " + (p.channel || "R").toUpperCase(),
   rgb_adjust: (p) => `R ${p.rGain ?? 1} · G ${p.gGain ?? 1} · B ${p.bGain ?? 1}`,
   brightness_contrast: (p) => `คอนทราสต์ ${p.alpha ?? 1.2} · สว่าง ${p.beta ?? 0}`,
@@ -445,7 +451,7 @@ export const OPTION_GROUPS = {
   ],
   "segment_edge.mode": [
     ["แยกขาว-ดำ (Threshold)", ["binary_threshold", "otsu_threshold", "adaptive_threshold", "multi_otsu_threshold"]],
-    ["หาขอบ (Edge)", ["canny", "sobel", "scharr_edge", "prewitt_edge", "roberts_edge", "laplacian_edge", "log_edge"]],
+    ["หาขอบ (Edge)", ["canny", "sobel", "scharr_edge", "prewitt_edge", "roberts_edge", "laplacian_edge", "log_edge", "frangi_vesselness"]],
     ["แยกวัตถุเป็นชิ้น", ["watershed", "watershed_marker", "grabcut", "region_growing"]],
   ],
   "enhance_tools.mode": [
@@ -455,11 +461,11 @@ export const OPTION_GROUPS = {
   ],
   "filter_denoise.mode": [
     ["ทำภาพเสียเพื่อทดลอง (ใส่ noise)", ["salt_pepper_noise", "gaussian_noise"]],
-    ["ลด noise / เบลอ", ["median_blur", "gaussian_blur", "box_blur", "bilateral", "guided_filter", "nlm_denoise", "wiener_filter"]],
+    ["ลด noise / เบลอ", ["median_blur", "gaussian_blur", "box_blur", "bilateral", "guided_filter", "anisotropic_diffusion", "nlm_denoise", "wiener_filter"]],
     ["แก้ภาพเบลอ (รู้ PSF)", ["deconv_wiener", "deconv_lucy"]],
   ],
   "color_tools.mode": [
-    ["แปลง / ดูช่องสี", ["grayscale", "invert", "colorspace", "colorspace_inverse", "channel_split", "pseudocolor"]],
+    ["แปลง / ดูช่องสี", ["grayscale", "invert", "colorspace", "colorspace_inverse", "debayer", "channel_split", "pseudocolor"]],
     ["ปรับสี", ["rgb_adjust", "white_balance"]],
     ["เลือก / แบ่งตามสี", ["color_inrange", "kmeans_segment", "slic"]],
   ],

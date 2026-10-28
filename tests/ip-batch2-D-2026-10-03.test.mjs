@@ -1102,7 +1102,7 @@ test('ipD-19. (static structure) the 3 ops exist with needs gray / any / any (no
   assert.deepEqual(modes('shape_analysis').filter((m) => NEW_OPS.includes(m)), ['feret', 'line_profile']);
   assert.equal(modes('shape_analysis').indexOf('feret'), modes('shape_analysis').indexOf('regionprops') + 1);
   // 2026-10-07: เรียงตาม palette (roi_polygon ต่อจาก crop) — mode เก็บเป็นชื่อ op ไม่ใช่ index จึงไม่กระทบไฟล์เก่า
-  assert.deepEqual(modes('geometry'), ['crop', 'roi_polygon', 'resize', 'rotate', 'flip', 'perspective_warp', 'undistort', 'translate_shear']);
+  assert.deepEqual(modes('geometry'), ['crop', 'roi_polygon', 'resize', 'image_pyramid', 'rotate', 'flip', 'perspective_warp', 'undistort', 'translate_shear']);
   assert.equal(defaultParams('shape_analysis').mode, 'find_contours');
   assert.equal(defaultParams('geometry').mode, 'resize');
   for (const legacy of ['segmentation', 'restoration', 'enhancement']) for (const id of NEW_OPS) assert.ok(!modes(legacy).includes(id));
@@ -1130,7 +1130,7 @@ test('ipD-19. (static structure) the 3 ops exist with needs gray / any / any (no
 test('ipD-20. palette-panel.js: ANALYSIS & DETECTION has feret, line_profile right after regionprops; GEOMETRY = crop, roi_polygon, resize, rotate, flip, perspective_warp, undistort, translate_shear; OP_TO_FILTER resolves each new op to its host node; each new tile is in exactly one section; the 3 glyphs (⌀ 〽 ⬠) differ from every other OP_ICON, every GROUP_ICON and the 📊/📌 markers, and appear nowhere in app.js / detail-panel.js', () => {
   const ana = TOOL_SECTIONS.find((s) => s.title === 'ANALYSIS & DETECTION').ops;
   assert.deepEqual(ana.slice(ana.indexOf('regionprops'), ana.indexOf('regionprops') + 4), ['regionprops', 'euler_number', 'feret', 'line_profile']);
-  assert.deepEqual(TOOL_SECTIONS.find((s) => s.title === 'GEOMETRY').ops, ['crop', 'roi_polygon', 'resize', 'rotate', 'flip', 'perspective_warp', 'undistort', 'translate_shear']);
+  assert.deepEqual(TOOL_SECTIONS.find((s) => s.title === 'GEOMETRY').ops, ['crop', 'roi_polygon', 'resize', 'image_pyramid', 'rotate', 'flip', 'perspective_warp', 'undistort', 'translate_shear']);
   for (const id of NEW_OPS) {
     // 2026-10-07: palette ชี้กลุ่มระดับหมวด (HOST = กลุ่มเดิม ยังคงไว้ใน FILTERS)
     assert.equal(OP_TO_FILTER[id], { feret: 'analysis_detect', line_profile: 'analysis_detect', roi_polygon: 'geometry' }[id]);
