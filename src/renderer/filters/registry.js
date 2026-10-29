@@ -2238,7 +2238,7 @@ export const OPS = {
         { value: "skeleton", label: "Skeleton / Thinning (เส้นแกนกลาง)", hint: "ลดวัตถุขาวให้เหลือเส้นแกนกลางหนา 1 พิกเซล (Zhang-Suen) ที่ความละเอียดเต็ม — ช้ากว่า operation อื่นในกลุ่มนี้ (วัตถุยิ่งหนายิ่งช้า ภาพ 1080p ที่มีก้อนใหญ่ราว 0.3 วินาที เหมาะกับภาพนิ่งมากกว่ากล้องสด) ไม่ใช้ค่า 'รูปร่าง kernel'/'ขนาด kernel'/'จำนวนรอบ' ด้านล่างเลย — ถ้าเส้นแกนกลางไปวิ่งอยู่ในพื้นหลังแทนที่จะอยู่ในวัตถุ แปลว่าพื้นหลังเป็นสีขาว ให้สลับขาว-ดำ (Invert) มาก่อน เพราะ op นี้คิดว่าพิกเซลขาวคือ 'วัตถุ' เสมอ (นอกขอบภาพนับเป็นพื้นหลัง)" },
         { value: "reconstruct_open", label: "Opening by Reconstruction (คงรูปร่างเดิม)", hint: "เหมือน Opening แต่รักษาขอบวัตถุที่รอดไว้แม่นกว่า (ไม่มุมมน) — ใช้ ksize/จำนวนรอบ ด้านล่างเป็นขนาดกัดตอนสร้าง marker แต่ 'รูปร่าง kernel' ด้านล่างไม่มีผล (ใช้ Rect เสมอตอนกัด marker)" },
         { value: "convex_hull", label: "Convex Hull (ห่อด้วยรูปนูน)", hint: "ห่อแต่ละวัตถุด้วยรูปนูนที่เล็กที่สุดที่ครอบวัตถุไว้ได้พอดี (เหมือนรัดหนังยางรอบวัตถุ) แล้วเทียบพื้นที่เดิมกับพื้นที่รูปนูนเป็นค่า solidity (รวมทุกชิ้น ชิ้นใหญ่มีน้ำหนักมากกว่า) เส้นบาง/จุดเดี่ยวก็ถูกห่อและนับเป็นหนึ่งชิ้นด้วย — ใช้หารอยบิ่น/รอยเว้าของวัตถุ (solidity ยิ่งต่ำ ยิ่งเว้าแหว่งมาก) ไม่ใช้ค่า 'รูปร่าง kernel'/'ขนาด kernel'/'จำนวนรอบ' ด้านล่างเลย" },
-        { value: "endpoints_branchpoints", label: "Endpoints & Branchpoints (จุดปลาย/จุดแยก)", hint: "⚠️ ใช้ต่อจาก Skeleton เสมอ — ถ้าวัตถุยังหนาอยู่ (ไม่ใช่เส้นบาง 1 พิกเซล) การนับจะไม่มีความหมาย นับเพื่อนบ้านสีขาว 8 ทิศรอบแต่ละพิกเซลเส้น: มีเพื่อนบ้าน 1 จุด = จุดปลาย (วาดวงเขียว), ส่วนจุดแยก (วาดวงแดง) ใช้ Crossing Number (นับจำนวนช่วงที่ขาว-ดำสลับกันรอบวงแหวนเพื่อนบ้าน หาร 2) ≥3 — ไม่ใช่แค่นับจำนวนเพื่อนบ้านตรง ๆ เพราะพิกเซลข้างจุดตัดจริงก็มีเพื่อนบ้าน ≥3 ได้เหมือนกันแต่ไม่ใช่จุดแยกจริง เป็นค่าประมาณ ไม่ใช่ lookup table แบบที่ MATLAB ใช้จริง ใช้นับจำนวนกิ่ง/ปลายของรอยร้าวหรือเส้นลายเส้นได้ ไม่ใช้ค่า 'รูปร่าง kernel'/'ขนาด kernel'/'จำนวนรอบ' ด้านล่างเลย" },
+        { value: "endpoints_branchpoints", label: "Endpoints & Branchpoints (จุดปลาย/จุดแยก)", hint: "⚠️ ใช้ต่อจาก Skeleton เสมอ — เพื่อนบ้านขาว 8 ทิศ 1 จุด = จุดปลาย (วงเขียว) รวมพิกเซลที่มีเพื่อนบ้านขาวตั้งแต่ 3 จุดเป็นกลุ่ม ถ้ามีกิ่งแยกออกจากกลุ่มตั้งแต่ 3 กิ่งให้นับเป็นจุดแยกเดียว (วงแดง) รองรับจุดตัด X ที่อยู่ระหว่างพิกเซล ข้ามกลุ่มใหญ่ตั้งแต่ 256 พิกเซลเพราะยังเป็นก้อนหนา ใช้นับกิ่งและปลายรอยร้าวหรือลายเส้น ไม่ใช้ค่า 'รูปร่าง kernel'/'ขนาด kernel'/'จำนวนรอบ' ด้านล่างเลย" },
         { value: "hit_or_miss", label: "Hit-or-Miss (หาลายแม่แบบ 3×3)", hint: "หาตำแหน่งที่ลายรอบพิกเซลตรงแม่แบบ: บางช่องต้องขาว บางช่องต้องดำ บางช่องไม่สน — ภาพที่ไม่ใช่ขาว-ดำล้วนจะถูกตัดที่ 127 ก่อน · ไม่ใช้ค่า รูปร่าง/ขนาด kernel/จำนวนรอบ ด้านล่าง" },
         { value: "regional_max", label: "Regional Maxima (ยอดเฉพาะที่)", hint: "บริเวณที่สว่างกว่าทุกพิกเซลรอบตัว (ใช้ภาพเทา ไม่ตัด 127) — ผลเป็นภาพขาว-ดำ · ไม่ใช้ค่า รูปร่าง/ขนาด kernel/จำนวนรอบ ด้านล่าง" },
         { value: "regional_min", label: "Regional Minima (หุบเฉพาะที่)", hint: "บริเวณที่มืดกว่าทุกพิกเซลรอบตัว (ใช้ภาพเทา ไม่ตัด 127) — ผลเป็นภาพขาว-ดำ" },
@@ -2589,26 +2589,16 @@ export const OPS = {
         }
       }
       if (p.op === "endpoints_branchpoints") {
-        // bwmorph('endpoints')/bwmorph('branchpoints') แบบประมาณ: binarize แล้วนับเพื่อนบ้านขาว 8 ทิศ
-        // รอบแต่ละพิกเซลขาว (แนวทางเดียวกับ helper P(x,y,dx,dy) ของ skeleton ด้านบน — คืน 0 นอกขอบภาพ)
-        // เพื่อนบ้าน 1 จุด = จุดปลาย (endpoint, วาดวงเขียว) · จุดแยก (branchpoint, วาดวงแดง) = Crossing Number
-        // >= 3 (ดูคอมเมนต์ที่จุดคำนวณ CN ด้านล่าง) — *** นี่คือค่าประมาณ ไม่ใช่ lookup table ที่ MATLAB bwmorph
-        // ใช้จริง *** ต้องใช้ต่อจาก Skeleton เสมอ (ดู hint ของตัวเลือกนี้) ไม่งั้นวัตถุหนาจะทำให้พิกเซลภายในหลาย
-        // จุดนับเป็นจุดแยกจนไม่มีความหมาย — เวลา (qa วัดหลังเปลี่ยนเป็น CN): เส้นบางปกติ ~7-10 ms ที่ทุก
-        // ความละเอียด แต่ภาพขาวล้วน 1920x1080 ~156 ms และกระดานหมากรุก 1 พิกเซลที่ 1920x1080 ~1064 ms
-        // (กรณีเลวร้ายที่ผู้ใช้ไม่ควรเจอถ้าทำ Skeleton ก่อน) จึงไม่ย่อภาพก่อนวิเคราะห์เหมือน skeleton/entropy filter
-        //
-        // guard ภาพว่างบังคับ (ต่างจาก convex_hull/contrast_stretch ที่ guard แค่กันไว้เฉย ๆ): ยืนยันแล้วว่า
-        // cv.cvtColor(..., COLOR_GRAY2RGB) ที่ใช้ด้านล่าง throw C++ exception จริงบนภาพ 0x0 (คนละเคสกับ
-        // cv.threshold/cv.findContours ที่ op อื่นในกลุ่มนี้ใช้ ซึ่งไม่ throw กับภาพว่าง)
+        // ใช้ต่อจาก Skeleton: เพื่อนบ้าน 1 จุด = จุดปลาย; รวมพิกเซลที่มีเพื่อนบ้าน >=3 เป็นกลุ่ม 8-connected
+        // กลุ่มที่มีกิ่งติดรอบนอก >=3 กิ่ง = จุดแยกหนึ่งจุด (รวมแกน X แบบ 2x2); ข้ามกลุ่ม >=256 พิกเซล
+        // วงแดงอยู่ที่พิกเซลใกล้จุดเฉลี่ยที่สุด เสมอกันเลือกตามลำดับแถว; guard ก่อน cvtColor บนภาพว่าง
         if (isEmptyMat(src)) { if (ctx) ctx.info = "ภาพว่าง"; return src.clone(); }
         const bin = new cv.Mat();
-        let dst = null;
+        let dst = null, candidates = null, labels = null, stats = null, centroids = null;
         try {
           cv.threshold(src, bin, 127, 255, cv.THRESH_BINARY);
           const w = bin.cols;
           const h = bin.rows;
-          const data = bin.data; // cache getter ก่อนเข้าลูปเสมอ (กฎเหล็กของไฟล์นี้)
           dst = new cv.Mat();
           cv.cvtColor(bin, dst, cv.COLOR_GRAY2RGB);
           if (cv.countNonZero(bin) === 0) {
@@ -2619,37 +2609,68 @@ export const OPS = {
           const red = new cv.Scalar(255, 0, 0);
           let endpoints = 0;
           let branchpoints = 0;
-          // ลำดับเพื่อนบ้าน 8 ทิศตามเข็มนาฬิกา (N,NE,E,SE,S,SW,W,NW) คงที่เสมอ — ใช้คำนวณ Crossing Number (CN)
-          // ของจุดแยก (ดูคอมเมนต์อธิบายเต็ม ๆ ที่จุดคำนวณ CN ด้านล่าง)
-          const RING_OFFSETS = [[0, -1], [1, -1], [1, 0], [1, 1], [0, 1], [-1, 1], [-1, 0], [-1, -1]];
-          const ring = new Uint8Array(8);
+          const offsets = [[0, -1], [1, -1], [1, 0], [1, 1], [0, 1], [-1, 1], [-1, 0], [-1, -1]];
+          let data = bin.data; // Refresh cached views after native allocations can grow the WASM heap.
+          const stride = w + 2, padded = new Uint8Array(stride * (h + 2));
+          for (let y = 0; y < h; y++) padded.set(data.subarray(y * w, (y + 1) * w), (y + 1) * stride + 1);
+          candidates = cv.Mat.zeros(h, w, cv.CV_8UC1);
+          data = bin.data;
+          const candidateData = candidates.data;
+          let candidateCount = 0;
           for (let y = 0; y < h; y++) {
             const row = y * w;
             for (let x = 0; x < w; x++) {
               if (data[row + x] === 0) continue;
-              let n = 0;
-              for (let ri = 0; ri < 8; ri++) {
-                const xx = x + RING_OFFSETS[ri][0];
-                const yy = y + RING_OFFSETS[ri][1];
-                const v = (xx < 0 || xx >= w || yy < 0 || yy >= h) ? 0 : (data[yy * w + xx] !== 0 ? 1 : 0);
-                ring[ri] = v;
-                n += v;
-              }
+              const i = (y + 1) * stride + x + 1;
+              const n = (padded[i - stride - 1] + padded[i - stride] + padded[i - stride + 1]
+                + padded[i - 1] + padded[i + 1] + padded[i + stride - 1] + padded[i + stride] + padded[i + stride + 1]) / 255;
               if (n === 1) {
                 endpoints++; cv.circle(dst, new cv.Point(x, y), 3, green, -1);
-              } else {
-                // Crossing Number (CN): นับจำนวนช่วงที่ค่าสลับขาว<->ดำรอบวงแหวนเพื่อนบ้าน 8 ทิศ (รวมช่วงจาก
-                // จุดสุดท้ายวนกลับไปจุดแรกด้วย) แล้วหาร 2 — มาตรฐานที่ถูกต้องกว่าการนับจำนวนเพื่อนบ้านตรง ๆ
-                // (ของเดิม n>=3): พิกเซลที่อยู่ "ติดกับ" จุดตัดจริง (ไม่ใช่ตัวจุดตัดเอง) ก็มี n>=3 ได้เหมือนกัน
-                // เพราะมีเพื่อนบ้านทแยงไปติดกับอีกเส้นที่ตัดผ่าน ทำให้นับจุดแยกเกินจริงรอบจุดตัดเดียว (qa
-                // พิสูจน์ด้วยภาพกากบาท 21x21px: นับเพื่อนบ้านตรง ๆ ได้ 5 จุดแยกผิด ทั้งที่มีจุดตัดจริงแค่ 1
-                // จุด) — พิกเซลข้างจุดตัดมีเพื่อนบ้านขาวเรียงเป็น "ก้อนต่อเนื่อง" รอบวงแหวน (CN ต่ำ) ต่างจาก
-                // ตัวจุดตัดจริงที่เพื่อนบ้านขาว-ดำสลับกันหลายช่วง (CN สูง) — endpoint (n===1) ไม่ต้องคำนวณ CN
-                // แยกเพราะเพื่อนบ้านเดียวมีแค่ 1 ก้อนเสมอ (CN=1 พอดี ตรงกับเงื่อนไข n===1 ด้านบนอยู่แล้ว)
-                let transitions = 0;
-                for (let ri = 0; ri < 8; ri++) if (ring[ri] !== ring[(ri + 1) % 8]) transitions++;
-                if (transitions / 2 >= 3) { branchpoints++; cv.circle(dst, new cv.Point(x, y), 3, red, -1); }
+              } else if (n >= 3) {
+                candidateData[row + x] = 255; candidateCount++;
               }
+            }
+          }
+          if (candidateCount) {
+            labels = new cv.Mat(); stats = new cv.Mat(); centroids = new cv.Mat();
+            const count = cv.connectedComponentsWithStats(candidates, labels, stats, centroids, 8, cv.CV_32S);
+            data = bin.data;
+            const ids = labels.data32S, boxes = stats.data32S;
+            for (let id = 1; id < count; id++) {
+              const area = boxes[id * 5 + cv.CC_STAT_AREA];
+              if (area >= 256) continue; // Native labeling is linear; bound all per-cluster JS work.
+              const left = boxes[id * 5], top = boxes[id * 5 + 1];
+              const right = left + boxes[id * 5 + 2], bottom = top + boxes[id * 5 + 3];
+              const cluster = [], boundary = new Set();
+              let sumX = 0, sumY = 0;
+              for (let y = top; y < bottom; y++) for (let x = left; x < right; x++) {
+                const i = y * w + x;
+                if (ids[i] !== id) continue;
+                cluster.push(i); sumX += x; sumY += y;
+                for (const [dx, dy] of offsets) {
+                  const xx = x + dx, yy = y + dy, j = yy * w + xx;
+                  if (xx >= 0 && xx < w && yy >= 0 && yy < h && data[j] && ids[j] !== id) boundary.add(j);
+                }
+              }
+              let branches = 0;
+              while (boundary.size) {
+                const first = boundary.values().next().value, pending = [first];
+                boundary.delete(first); branches++;
+                while (pending.length) {
+                  const i = pending.pop(), x = i % w, y = Math.floor(i / w);
+                  for (const [dx, dy] of offsets) {
+                    const xx = x + dx, yy = y + dy, j = yy * w + xx;
+                    if (xx >= 0 && xx < w && yy >= 0 && yy < h && boundary.delete(j)) pending.push(j);
+                  }
+                }
+              }
+              if (branches < 3) continue;
+              let center = cluster[0], best = Infinity;
+              for (const i of cluster) {
+                const distance = (i % w * area - sumX) ** 2 + (Math.floor(i / w) * area - sumY) ** 2;
+                if (distance < best) { best = distance; center = i; }
+              }
+              branchpoints++; cv.circle(dst, new cv.Point(center % w, Math.floor(center / w)), 3, red, -1);
             }
           }
           if (ctx) ctx.info = `พบจุดปลาย ${endpoints} จุด · จุดแยก ${branchpoints} จุด`;
@@ -2659,6 +2680,10 @@ export const OPS = {
           throw err;
         } finally {
           bin.delete();
+          if (candidates) candidates.delete();
+          if (labels) labels.delete();
+          if (stats) stats.delete();
+          if (centroids) centroids.delete();
         }
       }
       let kernel;
@@ -8875,7 +8900,7 @@ const MORPH_SPLIT = [
     desc: "ห่อแต่ละวัตถุด้วยรูปนูนที่เล็กที่สุดที่ครอบวัตถุไว้ได้พอดี (เหมือนรัดหนังยางรอบวัตถุ) แล้วเทียบพื้นที่เดิมกับพื้นที่รูปนูนเป็นค่า solidity (รวมทุกชิ้น ชิ้นใหญ่มีน้ำหนักมากกว่า) เส้นบาง/จุดเดี่ยวก็ถูกห่อและนับเป็นหนึ่งชิ้นด้วย — ใช้หารอยบิ่น/รอยเว้าของวัตถุ (solidity ยิ่งต่ำ ยิ่งเว้าแหว่งมาก) ไม่มีพารามิเตอร์ให้ปรับ" },
   { op: "endpoints_branchpoints", name: "Endpoints (จุดปลาย/จุดแยก)",
     modeHint: "ใช้ต่อจาก Skeleton เสมอ — วงเขียว = จุดปลาย, วงแดง = จุดแยก",
-    desc: "⚠️ ใช้ต่อจาก Skeleton เสมอ — ถ้าวัตถุยังหนาอยู่ (ไม่ใช่เส้นบาง 1 พิกเซล) การนับจะไม่มีความหมาย นับเพื่อนบ้านสีขาว 8 ทิศรอบแต่ละพิกเซลเส้น: มีเพื่อนบ้าน 1 จุด = จุดปลาย (วาดวงเขียว), ส่วนจุดแยก (วาดวงแดง) ใช้ Crossing Number (นับจำนวนช่วงที่ขาว-ดำสลับกันรอบวงแหวนเพื่อนบ้าน หาร 2) ≥3 — ไม่ใช่แค่นับจำนวนเพื่อนบ้านตรง ๆ เพราะพิกเซลข้างจุดตัดจริงก็มีเพื่อนบ้าน ≥3 ได้เหมือนกันแต่ไม่ใช่จุดแยกจริง เป็นค่าประมาณ ไม่ใช่ lookup table แบบที่ MATLAB ใช้จริง ใช้นับจำนวนกิ่ง/ปลายของรอยร้าวหรือเส้นลายเส้นได้ ไม่มีพารามิเตอร์ให้ปรับ" },
+    desc: "⚠️ ใช้ต่อจาก Skeleton เสมอ — เพื่อนบ้านขาว 8 ทิศ 1 จุด = จุดปลาย (วงเขียว) รวมพิกเซลที่มีเพื่อนบ้านขาวตั้งแต่ 3 จุดเป็นกลุ่ม ถ้ามีกิ่งแยกออกจากกลุ่มตั้งแต่ 3 กิ่งให้นับเป็นจุดแยกเดียว (วงแดง) รองรับจุดตัด X ที่อยู่ระหว่างพิกเซล ข้ามกลุ่มใหญ่ตั้งแต่ 256 พิกเซลเพราะยังเป็นก้อนหนา ใช้นับกิ่งและปลายรอยร้าวหรือลายเส้น ไม่มีพารามิเตอร์ให้ปรับ" },
   { op: "hit_or_miss", name: "Hit-or-Miss (หาลายแม่แบบ)",
     modeHint: "หาตำแหน่งที่ลายรอบพิกเซลตรงแม่แบบ: บางช่องต้องขาว บางช่องต้องดำ",
     desc: "หาตำแหน่งที่ลายรอบพิกเซลตรงแม่แบบ 3×3: บางช่องต้องขาว บางช่องต้องดำ บางช่องไม่สน — ทำโดย erode ภาพขาวด้วยช่อง 'ต้องขาว' แล้ว AND กับ erode ภาพกลับด้านด้วยช่อง 'ต้องดำ' · ภาพที่ไม่ใช่ขาว-ดำล้วนจะถูกตัดที่ 127 ก่อน · นอกขอบภาพนับเป็น 'ไม่สน' (ตามเอกสาร bwhitmiss ของ MATLAB สร้างจาก imerode ซึ่งถือว่านอกภาพเป็น +∞ จึงน่าจะนับแบบเดียวกัน แต่ยังไม่ได้ทดสอบกับ MATLAB จริง)  · กรณีหาปลายเส้นทั่วไป Endpoints & Branchpoints สะดวกกว่า" },

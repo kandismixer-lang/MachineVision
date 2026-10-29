@@ -219,7 +219,7 @@ const MIRRORED_SHA256 = {
   "morph_shrink": "5235de03743734d33a25d8e371db64bc1f3e9af048555bfbba9c10e57e2e22b3",
   "morph_reconstruct_open": "740fdd2c16fc3f78e3894879dd3e7939caeae7de34a81de43b5f44108de22dea",
   "morph_convex_hull": "c471a349efa7432f04c17d578b474c21ab71d176a7d2da94f4faa49e994eb30d",
-  "morph_endpoints_branchpoints": "85f1ca9ea56acb0e1f9e9f2c2996d6367ac179e5055a0209951aff7336dfbb60",
+  "morph_endpoints_branchpoints": "98d07565875a2614fdaa4b965fd289d73247a90a9baeec32a0a6536a01e21bd1",
   "morph_hit_or_miss": "31359fc36c151cdba45f5785cfa3b7de50d52f386a70995bd7f970f81eda48d2",
   "morph_regional_max": "3df7f24ae4813a3c09025c4f8e62b4203133662f55ed0f23de02ac81374213d5",
   "morph_regional_min": "4b43c652808c40c90c17c971a1e7797f9b2372053c72f428909ea64531229769",

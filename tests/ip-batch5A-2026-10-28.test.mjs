@@ -711,7 +711,11 @@ test("ip5a-G. 99 pre-edit goldens: dehaze, all 19 old morphology operations, all
     c.delete();
     g.delete();
   }
-  assert.equal(hash(JSON.stringify(result)), "3e796d082a59d924996d267adc0ecedd70bf5d2ee7c8ae5116d22ef75119301f");
+  // 2026-10-29: only endpoints_branchpoints cluster overlays / exports were re-pinned.
+  const unchanged = Object.fromEntries(Object.entries(result).filter(([key]) => !key.includes('"endpoints_branchpoints"')));
+  assert.equal(Object.keys(unchanged).length, 96);
+  assert.equal(hash(JSON.stringify(unchanged)), "ef43a5408b5ba01fbfbcfbcdc84e9f344f2b400723a31e3b8591b465a2a8557e");
+  assert.equal(hash(JSON.stringify(result)), "4b493cae46fc7db4c0a2b28c15cbd501179a50efb2c96f9bc1d6ff4d8d7f1f1f");
 });
 // Exported Python is executed, not reimplemented by the test. Only availability gates it.
 let pyAvailable = false;
