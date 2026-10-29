@@ -588,8 +588,8 @@ for (const [variant, what] of [['A', 'the old params'], ['B', 'every new param p
 // ===================================================================
 // ip4b-S — static structure / text / clamps / codegen
 // ===================================================================
-test('ip4b-S1. (static structure) the 8 new ops exist with the right needs and host groups; OPS = 136 (101 + 26 morph_* after batch 5A + 5 after batch 5B + 4 after batch 5C), FILTERS = 35; Morphology has 27 operations (the old 14 first, in order); no select key is "mode"; defaultParams() == the OPS defaults (prefixed); legacy groups untouched; the category groups = the palette sections in order', () => {
-  assert.equal(Object.keys(OPS).length, 136); // 101 + 26 morph_* (batch 5A) + 5 (batch 5B) + 4 (batch 5C: bf_score, local_contrast, mask_overlay, morph_ult_erode)
+test('ip4b-S1. (static structure) the 8 new ops exist with the right needs and host groups; OPS = 141 (101 + 26 morph_* after batch 5A + 5 after batch 5B + 4 after batch 5C + 5 after batch 5D), FILTERS = 35; Morphology has 27 operations (the old 14 first, in order); no select key is "mode"; defaultParams() == the OPS defaults (prefixed); legacy groups untouched; the category groups = the palette sections in order', () => {
+  assert.equal(Object.keys(OPS).length, 141); // 101 + 26 morph_* (batch 5A) + 5 (batch 5B) + 4 (batch 5C: bf_score, local_contrast, mask_overlay, morph_ult_erode)
   assert.equal(Object.keys(FILTERS).length, 35); // +morph_tools (2026-10-18) +image_registration (2026-10-24)
   for (const id of NEW_OPS) {
     assert.ok(OPS[id], id); assert.equal(OPS[id].needs, NEEDS[id], `${id}.needs`);

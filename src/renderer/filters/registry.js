@@ -1051,7 +1051,7 @@ const DELTA_E_FIELDS = [
   ["de_a_L", "A: L* เฉลี่ย"], ["de_a_a", "A: a* เฉลี่ย"], ["de_a_b", "A: b* เฉลี่ย"],
   ["de_b_L", "B: L* เฉลี่ย"], ["de_b_a", "B: a* เฉลี่ย"], ["de_b_b", "B: b* เฉลี่ย"],
 ];
-const DELTA_E_FORMULAS = { cie76: true, ciede2000: true };
+const DELTA_E_FORMULAS = { cie76: true, ciede2000: true, cie94: true };
 const DELTA_E_COMPARES = { pixel: true, mean_b: true };
 const DELTA_E_VIEWS = { heatmap: true, over: true };
 const ROI_APPLY_FIELDS = [["ra_px", "พิกเซลที่ใช้ผล B"], ["ra_pct", "สัดส่วนที่ใช้ผล B (%)"]];
@@ -1077,6 +1077,13 @@ function toLabF32(cv, rgb) {
 export function deltaE76(L1, a1, b1, L2, a2, b2) {
   const dL = L1 - L2, da = a1 - a2, db = b1 - b2;
   return Math.sqrt(dL * dL + da * da + db * db);
+}
+export function deltaE94(L1, a1, b1, L2, a2, b2) {
+  const dL = L1 - L2, da = a1 - a2, db = b1 - b2;
+  const C1 = Math.sqrt(a1 * a1 + b1 * b1), C2 = Math.sqrt(a2 * a2 + b2 * b2);
+  const dC = C1 - C2, h2 = Math.max(0, da * da + db * db - dC * dC);
+  const sc = 1 + 0.045 * C1, sh = 1 + 0.015 * C1, tc = dC / sc;
+  return Math.sqrt(dL * dL + tc * tc + h2 / (sh * sh));
 }
 const POW25_7 = 6103515625; // 25^7
 const RAD = Math.PI / 180;
@@ -1538,6 +1545,10 @@ export const PASS_FAIL_METRICS = {
   dice: { op: "seg_score", th: "Segmentation Score", pick: (v) => pfScalar(v, "dice") },
   bf: { op: "bf_score", th: "Boundary F1 Score", pick: (v) => pfScalar(v, "bf") },
   piqe: { op: "piqe", th: "PIQE", pick: (v) => pfScalar(v, "piqe") },
+  mean: { op: "image_stats", th: "Image Statistics", pick: (v) => pfScalar(v, "mean") },
+  std: { op: "image_stats", th: "Image Statistics", pick: (v) => pfScalar(v, "std") },
+  entropy: { op: "image_stats", th: "Image Statistics", pick: (v) => pfScalar(v, "entropy") },
+  corr2: { op: "corr2", th: "Correlation Coefficient", pick: (v) => pfScalar(v, "corr2") },
 };
 // เกณฑ์แสดงบนข้อความ: ปัด 2 ตำแหน่งแล้วตัดศูนย์ท้าย (0.30000000000000004 → 0.3 · 1 → 1)
 export const pfNum = (x) => String(Math.round(x * 100) / 100);
@@ -1664,7 +1675,333 @@ function localLaplacian(cv, gray, sigma, amount, nLev) {
   } finally { for (const m of owned) m.delete(); }
 }
 
+// IP batch 5D. Integer raster helpers keep graph/accumulator drawings identical in Python.
+function pixel5D(data, w, h, x, y, color) {
+  if (x >= 0 && x < w && y >= 0 && y < h) data.set(color, (y * w + x) * 3);
+}
+function line5D(data, w, h, x, y, x1, y1, color) {
+  const dx = Math.abs(x1 - x), sx = x < x1 ? 1 : -1;
+  const dy = -Math.abs(y1 - y), sy = y < y1 ? 1 : -1;
+  let err = dx + dy;
+  for (;;) {
+    pixel5D(data, w, h, x, y, color);
+    if (x === x1 && y === y1) break;
+    const e = 2 * err;
+    if (e >= dy) { err += dy; x += sx; }
+    if (e <= dx) { err += dx; y += sy; }
+  }
+}
+function reflect5D(i, n) {
+  const k = ((i % (2 * n)) + 2 * n) % (2 * n);
+  return k < n ? k : 2 * n - 1 - k;
+}
+const STATS5D_FIELDS = [["mean", "ค่าเฉลี่ย"], ["std", "ส่วนเบี่ยงเบนมาตรฐาน"], ["min", "ค่าต่ำสุด"], ["max", "ค่าสูงสุด"], ["entropy", "เอนโทรปี (bit)"], ["bwarea", "พื้นที่ถ่วงน้ำหนัก (px)"]];
+function accumulator5D(cv, src, p, ctx) {
+  if (isEmptyMat(src)) { if (ctx) ctx.info = "ภาพว่าง"; return src.clone(); }
+  let gray = null, analysis = null, edges = null, dst = null;
+  try {
+    gray = grayIfNeeded(cv, src);
+    const g = gray || src, sz = analysisScale(g.cols, g.rows, 640);
+    analysis = new cv.Mat();
+    if (sz.scale < 1) cv.resize(g, analysis, new cv.Size(sz.w, sz.h), 0, 0, cv.INTER_AREA);
+    else g.copyTo(analysis);
+    edges = new cv.Mat();
+    cv.Canny(analysis, edges, numIn(p.t1, 50, 0, 255), numIn(p.t2, 150, 0, 255));
+    const W = analysis.cols, H = analysis.rows, d = Math.ceil(Math.sqrt((W - 1) ** 2 + (H - 1) ** 2)), nr = 2 * d + 1;
+    const votes = new Int32Array(nr * 180), cs = new Float64Array(180), ss = new Float64Array(180);
+    for (let t = 0; t < 180; t++) {
+      const a = (t - 90) * Math.PI / 180;
+      cs[t] = Math.floor(Math.cos(a) * 1e12 + 0.5) / 1e12;
+      ss[t] = Math.floor(Math.sin(a) * 1e12 + 0.5) / 1e12;
+    }
+    const ed = edges.data;
+    let max = 0;
+    for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) if (ed[y * W + x]) for (let t = 0; t < 180; t++) {
+      const r = Math.floor(x * cs[t] + y * ss[t] + 0.5) + d;
+      const v = ++votes[r * 180 + t];
+      if (v > max) max = v;
+    }
+    dst = new cv.Mat(nr, 180, cv.CV_8UC3, new cv.Scalar(0));
+    const out = dst.data;
+    if (max) for (let i = 0; i < votes.length; i++) {
+      const v = Math.floor(votes[i] / max * 255 + 0.5);
+      out[i * 3] = out[i * 3 + 1] = out[i * 3 + 2] = v;
+    }
+    const work = votes.slice(), oddNhood = (n) => { const k = Math.max(3, Math.ceil(n / 50)); return k % 2 ? k : k + 1; };
+    const ry = oddNhood(nr) >> 1, rx = oddNhood(180) >> 1;
+    let peaks = 0;
+    for (; peaks < 10; peaks++) {
+      let best = -1, high = max * 0.5;
+      for (let i = 0; i < work.length; i++) if (work[i] > high) { high = work[i]; best = i; }
+      if (best < 0) break;
+      const y = Math.floor(best / 180), x = best % 180;
+      for (let yy = Math.max(0, y - ry); yy <= Math.min(nr - 1, y + ry); yy++) for (let xx = Math.max(0, x - rx); xx <= Math.min(179, x + rx); xx++) work[yy * 180 + xx] = 0;
+      for (let k = -2; k <= 2; k++) {
+        pixel5D(out, 180, nr, x + k, y - 2, [255, 0, 0]);
+        pixel5D(out, 180, nr, x + k, y + 2, [255, 0, 0]);
+        pixel5D(out, 180, nr, x - 2, y + k, [255, 0, 0]);
+        pixel5D(out, 180, nr, x + 2, y + k, [255, 0, 0]);
+      }
+    }
+    if (ctx) ctx.info = `Accumulator ρ×θ = ${nr}×180 · ยอด ${peaks} จุด`;
+    const result = dst; dst = null; return result;
+  } finally { for (const m of [dst, edges, analysis, gray]) if (m) m.delete(); }
+}
+// Closed Douglas-Peucker twin of simplify_closed_contour in codegen.js.
+// JS Number / Python float only, with identical operation and scan order.
+export function simplifyClosedContour5D(points, epsilon) {
+  const n = points.length / 2;
+  if (n <= 1) return Array.from(points);
+  let anchor = 0, farthest = 0;
+  for (let i = 1; i < n; i++) {
+    const dx = points[2 * i] - points[0], dy = points[2 * i + 1] - points[1];
+    const distance = dx * dx + dy * dy;
+    if (distance > farthest) { farthest = distance; anchor = i; }
+  }
+  if (anchor === 0) return [points[0], points[1]];
+  const keep = new Uint8Array(n), limit = epsilon * epsilon;
+  keep[0] = keep[anchor] = 1;
+  const stack = [[anchor, n], [0, anchor]];
+  while (stack.length) {
+    const [start, end] = stack.pop(), last = end % n;
+    const ax = points[2 * start], ay = points[2 * start + 1];
+    const dx = points[2 * last] - ax, dy = points[2 * last + 1] - ay;
+    const length2 = dx * dx + dy * dy;
+    let split = -1, maxDistance = -1;
+    for (let i = start + 1; i < end; i++) {
+      const px = points[2 * i] - ax, py = points[2 * i + 1] - ay;
+      const cross = px * dy - py * dx;
+      const distance = length2 === 0 ? px * px + py * py : cross * cross / length2;
+      if (distance > maxDistance) { maxDistance = distance; split = i; }
+    }
+    if (maxDistance > limit) {
+      keep[split] = 1;
+      stack.push([split, end], [start, split]);
+    }
+  }
+  const result = [];
+  for (let i = 0; i < n; i++) if (keep[i]) result.push(points[2 * i], points[2 * i + 1]);
+  return result;
+}
+function simplifiedContours5D(cv, src, p, ctx, epsilon) {
+  if (isEmptyMat(src)) { if (ctx) ctx.info = "ภาพว่าง"; return src.clone(); }
+  let gray = null, contours = null, hier = null, simplified = null, dst = null;
+  try {
+    gray = grayIfNeeded(cv, src);
+    const g = gray || src;
+    contours = new cv.MatVector(); hier = new cv.Mat(); simplified = new cv.MatVector();
+    cv.findContours(g, contours, hier, cv.RETR_EXTERNAL, cv.CHAIN_APPROX_SIMPLE);
+    let before = 0, after = 0;
+    for (let i = 0; i < contours.size(); i++) {
+      let c = null, a = null;
+      try {
+        c = contours.get(i); before += c.rows;
+        const points = simplifyClosedContour5D(c.data32S, epsilon);
+        a = cv.matFromArray(points.length / 2, 1, cv.CV_32SC2, points);
+        after += a.rows; simplified.push_back(a);
+      } finally { if (a) a.delete(); if (c) c.delete(); }
+    }
+    dst = new cv.Mat(); cv.cvtColor(g, dst, cv.COLOR_GRAY2RGB);
+    let count = 0;
+    for (let i = 0; i < simplified.size(); i++) {
+      let c = null, area;
+      try { c = simplified.get(i); area = cv.contourArea(c); } finally { if (c) c.delete(); }
+      if (area < numIn(p.minArea, 100, 0, 5000)) continue;
+      count++;
+      cv.drawContours(dst, simplified, i, new cv.Scalar((i * 97 + 60) % 256, (i * 151 + 120) % 256, (i * 67 + 200) % 256), 2);
+    }
+    if (ctx) ctx.info = `พบวัตถุ ${count} ชิ้น · ลดเหลือ ${after} จุด (จาก ${before})`;
+    const result = dst; dst = null; return result;
+  } finally { for (const m of [dst, simplified, hier, contours, gray]) if (m) m.delete(); }
+}
+
 export const OPS = {
+  rank_filter: {
+    name: "Rank / Range / Mode Filter (กรองตามลำดับค่า)", needs: "any",
+    modeHint: "เลือกค่าจากเพื่อนบ้านแต่ละช่องสี โดยสะท้อนขอบภาพ",
+    desc: "กรองด้วยหน้าต่างสี่เหลี่ยม: เปอร์เซ็นไทล์เลือกค่าตามลำดับ, min/max เลือกค่าต่ำ/สูง, range วัดช่วงค่า, mode เลือกค่าพบบ่อย (เสมอกันเลือกค่าน้อย) · ใช้ขอบสะท้อน symmetric เหมือน rangefilt/modefilt ของ MATLAB ส่วน ordfilt2 ของ MATLAB เติม 0 ที่ขอบ ต่างจากแอป",
+    params: [
+      { key: "mode", type: "select", label: "วิธีกรอง", options: [{ value: "percentile", label: "ค่าที่เปอร์เซ็นไทล์" }, { value: "min", label: "ค่าต่ำสุด" }, { value: "max", label: "ค่าสูงสุด" }, { value: "range", label: "ช่วง max − min" }, { value: "mode", label: "ค่าที่พบบ่อย" }], default: "percentile", hint: "แยกคำนวณแต่ละช่องสี" },
+      { key: "percentile", type: "number", label: "เปอร์เซ็นไทล์", min: 0, max: 100, step: 1, default: 50, visibleWhen: [{ key: "mode", in: ["percentile"] }], hint: "0 = ค่าน้อย · 50 = มัธยฐาน · 100 = ค่ามาก" },
+      { key: "size", type: "number", label: "ขนาดหน้าต่าง", min: 3, max: 15, step: 2, default: 3, hint: "จำนวนคี่ · หน่วยพิกเซล" },
+    ],
+    apply(cv, src, p, ctx) {
+      if (isEmptyMat(src)) { if (ctx) ctx.info = "ภาพว่าง"; return src.clone(); }
+      const mode = ownKey({ percentile: true, min: true, max: true, range: true, mode: true }, p.mode, "percentile");
+      const size = Math.min(15, intIn(p.size, 3, 3, 15) | 1), radius = size >> 1;
+      const rank = Math.floor(numIn(p.percentile, 50, 0, 100) / 100 * (size * size - 1) + 0.5);
+      let alpha = null, dst = null;
+      try {
+        alpha = dropAlpha(cv, src);
+        const input = alpha || src, W = input.cols, H = input.rows, ch = input.channels();
+        dst = new cv.Mat(H, W, input.type());
+        // A destination allocation can grow WASM memory and detach earlier typed views.
+        const data = input.data, out = dst.data, xs = Int32Array.from({ length: W + 2 * radius }, (_, i) => reflect5D(i - radius, W));
+        const ys = Int32Array.from({ length: H + 2 * radius }, (_, i) => reflect5D(i - radius, H));
+        const hist = new Uint16Array(256), groups = new Uint16Array(16);
+        for (let y = 0; y < H; y++) for (let c = 0; c < ch; c++) {
+          hist.fill(0); groups.fill(0);
+          for (let dy = 0; dy < size; dy++) for (let dx = 0; dx < size; dx++) { const v = data[(ys[y + dy] * W + xs[dx]) * ch + c]; hist[v]++; groups[v >> 4]++; }
+          for (let x = 0; x < W; x++) {
+            if (x) for (let dy = 0; dy < size; dy++) {
+              const row = ys[y + dy] * W;
+              const a = data[(row + xs[x - 1]) * ch + c], b = data[(row + xs[x + size - 1]) * ch + c];
+              hist[a]--; groups[a >> 4]--; hist[b]++; groups[b >> 4]++;
+            }
+            let value = 0;
+            if (mode === "mode") {
+              let best = 0;
+              for (let v = 0; v < 256; v++) if (hist[v] > best) { best = hist[v]; value = v; }
+            } else {
+              const target = mode === "min" || mode === "range" ? 0 : mode === "max" ? size * size - 1 : rank;
+              let g = 0, count = 0;
+              while (count + groups[g] <= target) count += groups[g++];
+              value = g * 16;
+              while (count + hist[value] <= target) count += hist[value++];
+              if (mode === "range") { let hi = 255; while (!hist[hi]) hi--; value = hi - value; }
+            }
+            out[(y * W + x) * ch + c] = value;
+          }
+        }
+        if (ctx) ctx.info = `Rank filter · โหมด ${mode} · หน้าต่าง ${size}×${size}`;
+        const result = dst; dst = null; return result;
+      } finally { if (dst) dst.delete(); if (alpha) alpha.delete(); }
+    },
+  },
+  custom_lut: {
+    name: "Custom Curve / LUT (กำหนดเส้นโค้งเอง)", needs: "any",
+    modeHint: "กำหนดจุด 5 จุดเพื่อปรับความสว่างทุกช่องด้วยเส้นเดียวกัน",
+    desc: "ต่อจุดควบคุมด้วยเส้นตรงหลายช่วง · จุด in เรียงอัตโนมัติ ถ้าซ้ำใช้จุดที่มาทีหลัง · ค่าเริ่มต้นคงภาพเดิม · เส้นลดลงทำให้ความสว่างช่วงนั้นกลับด้าน · เทียบ intlut ของ MATLAB",
+    params: [
+      ...[["out0", 0], ["in1", 64], ["out1", 64], ["in2", 128], ["out2", 128], ["in3", 192], ["out3", 192], ["out255", 255]].map(([key, value]) => ({ key, type: "number", label: `${key.startsWith("in") ? "ค่าเข้า" : "ค่าออก"} (${key})`, min: 0, max: 255, step: 1, default: value, hint: "ระดับความสว่าง 0–255" })),
+      { key: "view", type: "select", label: "แสดงผล", options: [{ value: "result", label: "ผลลัพธ์" }, { value: "curve", label: "กราฟเส้นโค้ง (256×256)" }], default: "result", hint: "กราฟแกน y ชี้ขึ้น · จุดแดงคือจุดควบคุม" },
+    ],
+    apply(cv, src, p, ctx) {
+      if (isEmptyMat(src)) { if (ctx) ctx.info = "ภาพว่าง"; return src.clone(); }
+      const pts = [[0, intIn(p.out0, 0, 0, 255)], [intIn(p.in1, 64, 0, 255), intIn(p.out1, 64, 0, 255)], [intIn(p.in2, 128, 0, 255), intIn(p.out2, 128, 0, 255)], [intIn(p.in3, 192, 0, 255), intIn(p.out3, 192, 0, 255)], [255, intIn(p.out255, 255, 0, 255)]];
+      const sorted = pts.slice().sort((a, b) => a[0] - b[0]), unique = [];
+      for (const pt of sorted) { if (unique.length && unique.at(-1)[0] === pt[0]) unique[unique.length - 1] = pt; else unique.push(pt); }
+      const lut = new Uint8Array(256);
+      let seg = 0, reversed = false;
+      for (let i = 1; i < unique.length; i++) if (unique[i][1] < unique[i - 1][1]) reversed = true;
+      for (let v = 0; v < 256; v++) {
+        while (seg + 1 < unique.length - 1 && v > unique[seg + 1][0]) seg++;
+        const [x0, y0] = unique[seg], [x1, y1] = unique[seg + 1];
+        lut[v] = Math.min(255, Math.max(0, Math.floor(y0 + (v - x0) / (x1 - x0) * (y1 - y0) + 0.5)));
+      }
+      let alpha = null, dst = null;
+      try {
+        if (p.view === "curve") {
+          dst = new cv.Mat(256, 256, cv.CV_8UC3, new cv.Scalar(0));
+          const out = dst.data;
+          line5D(out, 256, 256, 0, 255, 255, 0, [80, 80, 80]);
+          for (let x = 1; x < 256; x++) line5D(out, 256, 256, x - 1, 255 - lut[x - 1], x, 255 - lut[x], [255, 255, 255]);
+          for (const [x, v] of pts) for (let dy = -2; dy <= 2; dy++) for (let dx = -2; dx <= 2; dx++) pixel5D(out, 256, 256, x + dx, 255 - v + dy, [255, 0, 0]);
+        } else {
+          alpha = dropAlpha(cv, src); const input = alpha || src;
+          dst = new cv.Mat(input.rows, input.cols, input.type());
+          const data = input.data, out = dst.data;
+          for (let i = 0; i < data.length; i++) out[i] = lut[data[i]];
+        }
+        if (ctx) ctx.info = "LUT ผ่าน 5 จุด" + (reversed ? " · มีช่วงกลับด้าน" : "");
+        const result = dst; dst = null; return result;
+      } finally { if (dst) dst.delete(); if (alpha) alpha.delete(); }
+    },
+  },
+  image_stats: {
+    name: "Image Statistics (สถิติทั้งภาพ)", needs: "any",
+    modeHint: "วัดความสว่างของภาพเทา โดยคงภาพสีเดิมไว้",
+    desc: "วัด mean, std แบบตัวอย่าง (หาร N−1), min, max, entropy จากฮิสโตแกรมเทา 256 ช่อง และ bwarea จากค่า > 127 แบบบล็อก 2×2 ถ่วงน้ำหนัก · เทียบ mean2/std2/entropy/bwarea ของ MATLAB · ใช้ mean/std/entropy ตัดสิน Pass/Fail ได้",
+    params: [],
+    apply(cv, src, p, ctx) {
+      if (isEmptyMat(src)) { if (ctx) { ctx.info = "ภาพว่าง"; ctx.values = scalarValues(STATS5D_FIELDS, []); } return src.clone(); }
+      let gray = null, dst = null;
+      try {
+        gray = grayIfNeeded(cv, src); const g = gray || src, data = g.data, N = g.rows * g.cols, hist = new Uint32Array(256);
+        let sum = 0, sum2 = 0, min = 255, max = 0, entropy = 0, area8 = 0;
+        for (let i = 0; i < N; i++) { const v = data[i]; sum += v; sum2 += v * v; hist[v]++; if (v < min) min = v; if (v > max) max = v; }
+        const mean = sum / N, std = N > 1 ? Math.sqrt(Math.max(0, (sum2 - sum * sum / N) / (N - 1))) : 0;
+        for (let i = 0; i < 256; i++) if (hist[i]) { const prob = hist[i] / N; entropy -= prob * Math.log2(prob); }
+        const bit = (x, y) => x >= 0 && x < g.cols && y >= 0 && y < g.rows && data[y * g.cols + x] > 127 ? 1 : 0;
+        for (let y = -1; y < g.rows; y++) for (let x = -1; x < g.cols; x++) {
+          const a = bit(x, y), b = bit(x + 1, y), c = bit(x, y + 1), d = bit(x + 1, y + 1), n = a + b + c + d;
+          area8 += n === 0 ? 0 : n === 1 ? 2 : n === 2 ? (a && d || b && c ? 6 : 4) : n === 3 ? 7 : 8;
+        }
+        const area = area8 / 8;
+        dst = rgbIfNeeded(cv, src) || src.clone();
+        if (ctx) { ctx.info = `mean ${fixed2(mean)} · std ${fixed2(std)} · min ${min} · max ${max} · entropy ${(Math.floor(entropy * 10000 + 0.5) / 10000).toFixed(4)} bit · bwarea ${fixed2(area)} px`; ctx.values = scalarValues(STATS5D_FIELDS, [mean, std, min, max, entropy, area]); }
+        const result = dst; dst = null; return result;
+      } finally { if (dst) dst.delete(); if (gray) gray.delete(); }
+    },
+  },
+  corr2: {
+    name: "Correlation Coefficient (corr2)", needs: "any",
+    modeHint: "เทียบความสัมพันธ์ของความสว่าง A กับ B ที่ตำแหน่งเดียวกัน",
+    desc: "แปลงทั้งคู่เป็นเทาแล้วคำนวณความสัมพันธ์: 1 = เหมือนกันหลังปรับความสว่าง/คอนทราสต์เชิงเส้น, 0 = ไม่สัมพันธ์, −1 = กลับด้าน · ต่างจาก Template Matching ที่เลื่อนหน้าต่าง · B ต่างขนาดปรับด้วย bilinear ให้เท่า A · ภาพเรียบคำนวณไม่ได้ · ใช้กับ Pass/Fail ได้",
+    params: [],
+    apply(cv, src, p, ctx) {
+      if (isEmptyMat(src)) { if (ctx) { ctx.info = "ภาพว่าง"; ctx.values = scalarValues([], []); } return src.clone(); }
+      let ga = null, gb = null, matched = null, dst = null;
+      try {
+        dst = rgbIfNeeded(cv, src) || src.clone();
+        if (!ctx || !ctx.src2 || isEmptyMat(ctx.src2)) { if (ctx) { ctx.info = ctx.src2 ? EMPTY_SRC2_INFO : NO_SRC2_INFO; ctx.values = scalarValues([], []); } }
+        else {
+          ga = grayIfNeeded(cv, src); gb = grayIfNeeded(cv, ctx.src2);
+          const a = ga || src, m = matchSize(cv, a, gb || ctx.src2); if (m.resized) matched = m.mat;
+          const ad = a.data, bd = m.mat.data, N = a.rows * a.cols;
+          let sa = 0, sb = 0, saa = 0, sbb = 0, sab = 0;
+          for (let i = 0; i < N; i++) { const av = ad[i], bv = bd[i]; sa += av; sb += bv; saa += av * av; sbb += bv * bv; sab += av * bv; }
+          const den = Math.sqrt(Math.max(0, saa - sa * sa / N) * Math.max(0, sbb - sb * sb / N));
+          if (den === 0) { ctx.info = "ภาพเรียบ คำนวณไม่ได้"; ctx.values = scalarValues([], []); }
+          else { const r = (sab - sa * sb / N) / den; ctx.info = `corr2 = ${r.toFixed(4)}`; ctx.values = scalarValues([["corr2", "สัมประสิทธิ์สหสัมพันธ์"]], [r]); }
+          if (m.resized) ctx.info += RESIZED_B_INFO;
+        }
+        const result = dst; dst = null; return result;
+      } finally { for (const m of [dst, matched, gb, ga]) if (m) m.delete(); }
+    },
+  },
+  gradient_dir: {
+    name: "Gradient Magnitude & Direction (imgradient)", needs: "gray",
+    modeHint: "ดูความแรงและทิศของการเปลี่ยนความสว่าง",
+    desc: "คำนวณความชันแบบ float64 ด้วยขอบ replicate · ทิศองศาทวนเข็มจากแกน x โดยแกน y ชี้ขึ้น เหมือน imgradient ของ MATLAB · ขนาดปรับด้วยค่าสูงสุดของภาพ · สีบอกทิศ ความสว่างบอกขนาด",
+    params: [
+      { key: "method", type: "select", label: "วิธีคำนวณ", options: ["sobel", "prewitt", "central", "intermediate", "roberts"].map((value) => ({ value, label: value })), default: "sobel", hint: "Sobel/Prewitt ใช้เพื่อนบ้าน 3×3 · วิธีอื่นใช้ผลต่างพิกเซล" },
+      { key: "view", type: "select", label: "แสดงผล", options: [{ value: "magnitude", label: "ขนาดความชัน" }, { value: "direction", label: "ทิศเป็นสี" }, { value: "direction_gray", label: "ทิศเป็นระดับเทา" }], default: "magnitude", hint: "ทิศของพื้นที่เรียบเป็นสีดำ" },
+    ],
+    apply(cv, src, p, ctx) {
+      if (isEmptyMat(src)) { if (ctx) ctx.info = "ภาพว่าง"; return src.clone(); }
+      const method = ownKey({ sobel: true, prewitt: true, central: true, intermediate: true, roberts: true }, p.method, "sobel"), view = ownKey({ magnitude: true, direction: true, direction_gray: true }, p.view, "magnitude");
+      let gray = null, dst = null;
+      try {
+        gray = grayIfNeeded(cv, src); const g = gray || src, W = g.cols, H = g.rows, data = g.data;
+        const mag = new Float64Array(W * H), dir = new Float64Array(W * H);
+        const at = (x, y) => data[Math.min(H - 1, Math.max(0, y)) * W + Math.min(W - 1, Math.max(0, x))];
+        let max = 0;
+        for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) {
+          let gx, gy;
+          if (method === "central") { gx = (at(x + 1, y) - at(x - 1, y)) / 2; gy = (at(x, y + 1) - at(x, y - 1)) / 2; }
+          else if (method === "intermediate") { gx = at(x + 1, y) - at(x, y); gy = at(x, y + 1) - at(x, y); }
+          else if (method === "roberts") { gx = at(x, y) - at(x + 1, y + 1); gy = at(x + 1, y) - at(x, y + 1); }
+          else { const k = method === "sobel" ? 2 : 1; gx = -at(x - 1, y - 1) + at(x + 1, y - 1) - k * at(x - 1, y) + k * at(x + 1, y) - at(x - 1, y + 1) + at(x + 1, y + 1); gy = -at(x - 1, y - 1) - k * at(x, y - 1) - at(x + 1, y - 1) + at(x - 1, y + 1) + k * at(x, y + 1) + at(x + 1, y + 1); }
+          const i = y * W + x, m = Math.sqrt(gx * gx + gy * gy);
+          mag[i] = m; dir[i] = Math.atan2(-gy, gx) * 180 / Math.PI; if (m > max) max = m;
+        }
+        dst = new cv.Mat(H, W, view === "direction" ? cv.CV_8UC3 : cv.CV_8UC1, new cv.Scalar(0));
+        const out = dst.data;
+        if (max > 0) for (let i = 0; i < mag.length; i++) {
+          if (view === "magnitude") out[i] = Math.floor(mag[i] / max * 255 + 0.5);
+          else if (view === "direction_gray") out[i] = mag[i] > 0 ? Math.floor((dir[i] + 180) / 360 * 255 + 0.5) : 0;
+          else {
+            const h = ((dir[i] + 360) % 360) / 60, v = mag[i] / max, f = h - Math.floor(h), q = v * (1 - f), t = v * f;
+            const rgb = [[v, t, 0], [q, v, 0], [0, v, t], [0, q, v], [t, 0, v], [v, 0, q]][Math.floor(h) % 6];
+            for (let c = 0; c < 3; c++) out[i * 3 + c] = Math.floor(rgb[c] * 255 + 0.5);
+          }
+        }
+        if (ctx) ctx.info = `Gradient (${method}) · ขนาดสูงสุด ${fixed1(max)}`;
+        const result = dst; dst = null; return result;
+      } finally { if (dst) dst.delete(); if (gray) gray.delete(); }
+    },
+  },
   // ---------------- 1. Color Space ----------------
   grayscale: {
     name: "Grayscale",
@@ -3275,11 +3612,14 @@ export const OPS = {
   find_contours: {
     name: "Find Contours",
     needs: "gray",
-    desc: "หาเส้นรอบรูปของวัตถุ (บริเวณสีขาว) ในภาพ binary แล้ววาดทับด้วยสีต่าง ๆ พร้อมนับจำนวน — ต่อหลัง Threshold เพื่อดูว่าการแบ่งส่วนภาพนำไปสู่การ 'นับวัตถุ' ได้อย่างไร จำนวนที่พบแสดงที่แถบรายละเอียด",
+    desc: "หาเส้นรอบรูปของวัตถุ (บริเวณสีขาว) ในภาพ binary แล้ววาดทับด้วยสีต่าง ๆ พร้อมนับจำนวน — ต่อหลัง Threshold เพื่อดูว่าการแบ่งส่วนภาพนำไปสู่การ 'นับวัตถุ' ได้อย่างไร จำนวนที่พบแสดงที่แถบรายละเอียด · ลดจุดเส้นขอบเทียบ reducepoly ของ MATLAB ซึ่งใช้ค่าความคลาดแบบสัดส่วน ส่วนแอปใช้ px",
     params: [
       { key: "minArea", type: "number", label: "พื้นที่ขั้นต่ำ (px)", min: 0, max: 5000, step: 50, default: 100, hint: "กรองจุดเล็ก ๆ ทิ้ง", desc: "วัตถุที่มีพื้นที่น้อยกว่านี้ (พิกเซล) จะไม่ถูกนับว่าเป็นวัตถุ" },
+      { key: "simplify", type: "number", label: "ลดจุดเส้นขอบ (px) — 0 = ไม่ลด", min: 0, max: 20, step: 0.5, default: 0, hint: "ค่าคลาดเคลื่อนของ Douglas–Peucker · ค่ามากลดจุดมาก" },
     ],
     apply(cv, src, p, ctx) {
+      const epsilon = numIn(p.simplify, 0, 0, 20);
+      if (epsilon > 0) return simplifiedContours5D(cv, src, p, ctx, epsilon);
       const contours = new cv.MatVector();
       const hier = new cv.Mat();
       cv.findContours(src, contours, hier, cv.RETR_EXTERNAL, cv.CHAIN_APPROX_SIMPLE);
@@ -3866,8 +4206,10 @@ export const OPS = {
       { key: "threshold", type: "number", label: "คะแนนโหวตขั้นต่ำ", min: 10, max: 300, step: 5, default: 80, hint: "③ ปรับตัวนี้ก่อน — ต่ำ=เจอเส้นเยอะ(มีของปลอม), สูง=เฉพาะเส้นชัด" },
       { key: "minLineLength", type: "number", label: "ความยาวเส้นขั้นต่ำ (px)", min: 5, max: 500, step: 5, default: 40, desc: "เส้นที่สั้นกว่านี้จะถูกทิ้ง — กันจับเส้นปลอมสั้น ๆ" },
       { key: "maxLineGap", type: "number", label: "ช่องว่างที่ยอมรวมเป็นเส้นเดียว (px)", min: 0, max: 100, step: 1, default: 10, desc: "จุดขอบที่ขาดกันไม่เกินนี้ จะถูกนับเป็นเส้นเดียวกัน" },
+      { key: "view", type: "select", label: "แสดงผล", options: [{ value: "lines", label: "เส้นตรงบนภาพเดิม" }, { value: "accumulator", label: "ภาพ ρ–θ (accumulator)" }], default: "lines", hint: "Accumulator มีขนาดต่างจากภาพเข้า: 180 คอลัมน์ θ และแถว ρ · ใช้ภาพวิเคราะห์ด้านยาวไม่เกิน 640 px" },
     ],
     apply(cv, src, p, ctx) {
+      if (p.view === "accumulator") return accumulator5D(cv, src, p, ctx);
       // Downscale for analysis on very large frames, same pattern as hough_circles
       // เพื่อไม่ให้ worker ดูเหมือนค้างเวลาภาพ Full HD
       const maxAnalysisSide = 640;
@@ -7309,11 +7651,12 @@ export const OPS = {
   delta_e: {
     name: "Color Difference ΔE (ความต่างสี)",
     needs: "any",
-    desc: "วัดความต่างของสีสองภาพเป็นตัวเลขเดียวต่อพิกเซล (ΔE) · แปลงเป็น Lab ก่อน เพราะระยะใน Lab ใกล้การรับรู้ของคนกว่า RGB · ตัวเลขช่วยอ่าน: ต่ำกว่า 1 แทบมองไม่ออก · ราว 2–3 เริ่มเห็นเมื่อวางคู่กัน · เกิน 5 เห็นชัด · เกิน 10 คนละสี (ค่าประมาณ ขึ้นกับสีและแสง) · CIEDE2000 แก้ข้อที่ CIE76 ให้ค่าสูงเกินในสีอิ่มจัด ใช้ในงานตรวจสีสินค้าปัจจุบัน · \"สีเฉลี่ยของ B\" ใช้ตรวจว่าชิ้นงานสีตรงกับชิ้นตัวอย่างไหม: ตัดชิ้นตัวอย่างด้วย Crop แล้วต่อเข้า B · กล้องที่ปรับแสง/White Balance อัตโนมัติทำให้ ΔE เปลี่ยนเองแม้ของจริงไม่เปลี่ยน — ล็อกการตั้งค่ากล้องก่อนวัดจริง · เทียบ deltaE (CIE76) ของ MATLAB · imcolordiff ของ MATLAB ค่าเริ่มต้นเป็น CIE94 ซึ่งแอปไม่มี ต้องตั้ง \"ciede2000\" ถึงจะเทียบกับโหมด CIEDE2000 ได้ · ภาพ Lab 8 bit ใน Color Space Convert ใช้วัดแบบนี้ไม่ได้เพราะถูกบีบสเกล",
+    desc: "วัดความต่างของสีสองภาพเป็นตัวเลขเดียวต่อพิกเซล (ΔE) · แปลงเป็น Lab ก่อน เพราะระยะใน Lab ใกล้การรับรู้ของคนกว่า RGB · ตัวเลขช่วยอ่าน: ต่ำกว่า 1 แทบมองไม่ออก · ราว 2–3 เริ่มเห็นเมื่อวางคู่กัน · เกิน 5 เห็นชัด · เกิน 10 คนละสี (ค่าประมาณ ขึ้นกับสีและแสง) · CIEDE2000 แก้ข้อที่ CIE76 ให้ค่าสูงเกินในสีอิ่มจัด ใช้ในงานตรวจสีสินค้าปัจจุบัน · \"สีเฉลี่ยของ B\" ใช้ตรวจว่าชิ้นงานสีตรงกับชิ้นตัวอย่างไหม: ตัดชิ้นตัวอย่างด้วย Crop แล้วต่อเข้า B · กล้องที่ปรับแสง/White Balance อัตโนมัติทำให้ ΔE เปลี่ยนเองแม้ของจริงไม่เปลี่ยน — ล็อกการตั้งค่ากล้องก่อนวัดจริง · เทียบ deltaE (CIE76) ของ MATLAB · imcolordiff ของ MATLAB ค่าเริ่มต้นเป็น CIE94 เลือกสูตร cie94 เพื่อเทียบโหมดนี้ หรือ ciede2000 เพื่อเทียบโหมด CIEDE2000 · ภาพ Lab 8 bit ใน Color Space Convert ใช้วัดแบบนี้ไม่ได้เพราะถูกบีบสเกล",
     params: [
       { key: "formula", type: "select", label: "สูตร", options: [
         { value: "cie76", label: "CIE76 (ระยะตรงใน Lab)" },
         { value: "ciede2000", label: "CIEDE2000 (ปรับตามการรับรู้ — มาตรฐานปัจจุบัน)", hint: "ช้ากว่า CIE76 ราว 3–4 เท่า — กล้องสดใช้ CIE76 หรือโหมดเทียบสีเฉลี่ย B" },
+        { value: "cie94", label: "CIE94 (ค่าเริ่มต้นของ imcolordiff)" },
       ], default: "cie76" },
       { key: "compare", type: "select", label: "เทียบแบบ", options: [
         { value: "pixel", label: "ทีละพิกเซล (A กับ B ตำแหน่งเดียวกัน)" },
@@ -7334,7 +7677,7 @@ export const OPS = {
       const compare = ownKey(DELTA_E_COMPARES, p.compare, "pixel");
       const view = ownKey(DELTA_E_VIEWS, p.view, "heatmap");
       const tol = numIn(p.tol, 2.3, 0, 50), scaleMax = numIn(p.scaleMax, 20, 1, 100);
-      const fn = formula === "ciede2000" ? deltaE2000 : deltaE76;
+      const fn = formula === "ciede2000" ? deltaE2000 : formula === "cie94" ? deltaE94 : deltaE76;
       let rgbA = null, rgbB = null, matched = null, labA = null, labB = null, dst = null;
       try {
         rgbA = rgbIfNeeded(cv, src);
@@ -7369,7 +7712,7 @@ export const OPS = {
         }
         const mean = sum / N, pct = (over * 100) / N;
         if (ctx) {
-          let info = `ΔE (${formula === "ciede2000" ? "CIEDE2000" : "CIE76"}) เฉลี่ย ${fixed2(mean)} · สูงสุด ${fixed2(max)} · เกินเกณฑ์ ${tol} อยู่ ${fixed1(pct)}% ของภาพ`;
+          let info = `ΔE (${formula === "ciede2000" ? "CIEDE2000" : formula === "cie94" ? "CIE94" : "CIE76"}) เฉลี่ย ${fixed2(mean)} · สูงสุด ${fixed2(max)} · เกินเกณฑ์ ${tol} อยู่ ${fixed1(pct)}% ของภาพ`;
           if (compare === "mean_b") info += ` · เทียบกับสีเฉลี่ยของ B (L* ${fixed1(mB[0])} a* ${fixed1(mB[1])} b* ${fixed1(mB[2])})`;
           if (resized) info += RESIZED_B_INFO;
           ctx.info = info;
@@ -8671,6 +9014,10 @@ export const OPS = {
         { value: "dice", label: "Dice (ต่อหลัง Segmentation Score)" },
         { value: "bf", label: "Boundary F1 Score (ต่อหลัง Boundary F1 Score)" },
         { value: "piqe", label: "PIQE (ต่อหลัง PIQE · ค่าต่ำ = คุณภาพดี)" },
+        { value: "mean", label: "ค่าเฉลี่ย (ต่อหลัง Image Statistics)" },
+        { value: "std", label: "ส่วนเบี่ยงเบนมาตรฐาน (ต่อหลัง Image Statistics)" },
+        { value: "entropy", label: "เอนโทรปี (ต่อหลัง Image Statistics)" },
+        { value: "corr2", label: "ความสัมพันธ์ (ต่อหลัง Correlation Coefficient)" },
       ], default: "count", desc: "เลือกค่าที่จะเอามาตัดสิน — ต้องต่อกล่องวัดชนิดที่ระบุในวงเล็บไว้ก่อนหน้ากล่องนี้" },
       { key: "cond", type: "select", label: "เงื่อนไขที่ถือว่าผ่าน", options: [
         { value: "range", label: "อยู่ในช่วง ต่ำสุด–สูงสุด (รวมขอบ)" },
@@ -9402,22 +9749,22 @@ export const FILTERS = {
     ["grayscale", "colorspace", "colorspace_inverse", "debayer", "channel_split", "rgb_adjust", "color_inrange", "kmeans_segment", "slic", "white_balance", "invert", "pseudocolor"], "grayscale"),
 
   enhance_tools: mergeGroup("Enhance", "Enhance",
-    ["brightness_contrast", "gamma", "hist_equalize", "clahe", "contrast_stretch", "flatfield_correction", "quantize", "unsharp", "laplacian_sharpen", "custom_kernel", "dehaze", "lowlight_enhance", "local_contrast"], "brightness_contrast"),
+    ["brightness_contrast", "gamma", "custom_lut", "hist_equalize", "clahe", "contrast_stretch", "flatfield_correction", "quantize", "unsharp", "laplacian_sharpen", "custom_kernel", "dehaze", "lowlight_enhance", "local_contrast"], "brightness_contrast"),
 
   filter_denoise: mergeGroup("Filter & Denoise", "Filter & Denoise",
-    ["salt_pepper_noise", "gaussian_noise", "median_blur", "gaussian_blur", "box_blur", "bilateral", "wiener_filter", "guided_filter", "anisotropic_diffusion", "nlm_denoise", "deconv_wiener", "deconv_lucy"], "salt_pepper_noise"),
+    ["salt_pepper_noise", "gaussian_noise", "median_blur", "rank_filter", "gaussian_blur", "box_blur", "bilateral", "wiener_filter", "guided_filter", "anisotropic_diffusion", "nlm_denoise", "deconv_wiener", "deconv_lucy"], "salt_pepper_noise"),
 
   segment_edge: mergeGroup("Segment & Edge", "Segmentation & Edge",
-    ["binary_threshold", "otsu_threshold", "adaptive_threshold", "multi_otsu_threshold", "canny", "sobel", "laplacian_edge", "scharr_edge", "prewitt_edge", "roberts_edge", "log_edge", "frangi_vesselness", "watershed", "watershed_marker", "grabcut", "region_growing"], "binary_threshold"),
+    ["binary_threshold", "otsu_threshold", "adaptive_threshold", "multi_otsu_threshold", "canny", "sobel", "gradient_dir", "laplacian_edge", "scharr_edge", "prewitt_edge", "roberts_edge", "log_edge", "frangi_vesselness", "watershed", "watershed_marker", "grabcut", "region_growing"], "binary_threshold"),
 
   analysis_detect: mergeGroup("Analyze / Detect", "Analysis & Detection",
-    ["find_contours", "connected_components", "distance_transform", "local_std_filter", "local_entropy_filter", "gabor_filter", "glcm", "focus_score", "regionprops", "euler_number", "feret", "line_profile", "shape_filter", "bounding_boxes", "hough_circles", "hough_lines", "harris_corners", "shi_tomasi_corners", "orb_keypoints", "akaze_keypoints", "fast_keypoints", "pass_fail"], "find_contours"),
+    ["find_contours", "connected_components", "distance_transform", "local_std_filter", "local_entropy_filter", "gabor_filter", "glcm", "focus_score", "regionprops", "euler_number", "image_stats", "feret", "line_profile", "shape_filter", "bounding_boxes", "hough_circles", "hough_lines", "harris_corners", "shi_tomasi_corners", "orb_keypoints", "akaze_keypoints", "fast_keypoints", "pass_fail"], "find_contours"),
 
   // name (ชื่อบนการ์ด node, ถูกตัดที่ ~92px) ของ 2 กลุ่มข้างบนย่อให้พอดี · group (ชิปหมวดใน detail-panel/สี) ยังเป็นชื่อเต็มเหมือนหมวด palette
 
   // PSNR/SSIM รับภาพ 2 ใบ → inputs:2 (ช่อง "เข้า B" ใน editor.js)
   image_quality: mergeGroup("Image Quality", "Image Quality",
-    ["psnr", "ssim", "delta_e", "seg_score", "bf_score", "piqe"], "psnr", [], { inputs: 2 }),
+    ["psnr", "ssim", "delta_e", "seg_score", "bf_score", "corr2", "piqe"], "psnr", [], { inputs: 2 }),
 
   // Motion ทั้งสามจำ state ข้ามเฟรม → stateful:true · เปลี่ยนวิธี = params เปลี่ยน → getNodeState (fingerprint) reset+dispose state เก่าเอง
   motion: mergeGroup("Motion", "Motion",

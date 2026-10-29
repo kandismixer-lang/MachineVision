@@ -1599,11 +1599,11 @@ test('ip4a-S1. (static structure) the 5 new ops exist with the right needs and h
   }
   const sec = (t) => TOOL_SECTIONS.find((s) => s.title === t).ops;
   assert.deepEqual(sec('COLOR').slice(-2), ['invert', 'pseudocolor']);
-  assert.deepEqual(sec('FILTER & DENOISE').slice(6, 8), ['wiener_filter', 'guided_filter']); // batch 4B appends nlm_denoise / deconv_wiener / deconv_lucy after them
+  assert.deepEqual(sec('FILTER & DENOISE').slice(7, 9), ['wiener_filter', 'guided_filter']); // batch 4B appends nlm_denoise / deconv_wiener / deconv_lucy after them
   assert.ok(sec('ANALYSIS & DETECTION').indexOf('focus_score') > sec('ANALYSIS & DETECTION').indexOf('local_entropy_filter')); // batch 4B puts gabor_filter / glcm between them
   assert.equal(sec('ANALYSIS & DETECTION').indexOf('regionprops'), sec('ANALYSIS & DETECTION').indexOf('focus_score') + 1);
   assert.deepEqual(sec('IMAGE ARITHMETIC').slice(7, 9), ['hist_match', 'roi_apply']); // batch 4B appended ecc_register; 2026-10-24 it moved to IMAGE REGISTRATION
-  assert.deepEqual(sec('IMAGE QUALITY'), ['psnr', 'ssim', 'delta_e', 'seg_score', 'bf_score', 'piqe']);
+  assert.deepEqual(sec('IMAGE QUALITY'), ['psnr', 'ssim', 'delta_e', 'seg_score', 'bf_score', 'corr2', 'piqe']);
   for (const id of NEW_OPS) assert.equal(TOOL_SECTIONS.filter((s) => s.ops.includes(id)).length, 1, `${id} in exactly one section`);
 });
 

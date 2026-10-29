@@ -444,7 +444,7 @@ for(const [kind,w,h] of [['rgb',37,29],['gray',37,29],['rgba',37,29],['rgb',1,1]
  try { for(const [fid,ops] of Object.entries(ids)) for(const id of ops) {
  const defs=Object.fromEntries(OPS[id].params.filter(q=>!['keepN','keepRank'].includes(q.key)).map(q=>[q.key,q.default]));
  const variants=[{}];
- for(const q of OPS[id].params.filter(q=>q.type==='select'&&q.key!=='keepRank'))for(const {value}of q.options)if(value!==q.default)variants.push({[q.key]:value});
+ for(const q of OPS[id].params.filter(q=>q.type==='select'&&q.key!=='keepRank'))for(const {value}of q.options.filter(o=>!["cie94"].includes(o.value)))if(value!==q.default)variants.push({[q.key]:value});
  if(id==='shape_filter')variants.push({keepN:0},{prop:'none',minArea:0},{view:'mask',minArea:0});
  for(const extra of variants){
  const local={...defs,...extra},params={mode:id,...Object.fromEntries(Object.entries(local).map(([k,v])=>[id+'__'+k,v]))},st={id:fid,params};

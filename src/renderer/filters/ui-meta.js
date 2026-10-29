@@ -47,6 +47,7 @@ export const GROUP_ICON = {
 };
 
 export const OP_ICON = {
+  rank_filter: "⧖", custom_lut: "⩒", image_stats: "⨏", corr2: "⥈", gradient_dir: "⤧",
   grayscale: "◐", colorspace: "🎨", channel_split: "◉", rgb_adjust: "🎚", color_inrange: "🌈", invert: "◑",
   kmeans_segment: "⬡", white_balance: "⚖",
   brightness_contrast: "☀", gamma: "γ", hist_equalize: "▥", clahe: "▦", unsharp: "✦", laplacian_sharpen: "◇",
@@ -149,7 +150,7 @@ function psfCardText(p) {
 const IMARITH_LABEL = { add: "A + B", subtract: "A − B", multiply: "A × B ÷ 255", divide: "A ÷ B × 255" };
 const LOGICAL_LABEL = { and: "A AND B", or: "A OR B", xor: "A XOR B", a_and_not_b: "A AND NOT B" };
 // ชื่อสั้นของ metric ของ pass_fail บนการ์ด (key ตรงกับ PASS_FAIL_METRICS ใน registry.js)
-const PASS_FAIL_SHORT = { count: "จำนวนวัตถุ", area_sum: "พื้นที่รวม", area_max: "พื้นที่ใหญ่สุด", roi_mean: "สว่างใน ROI", focus: "ความคม", de_mean: "ΔE เฉลี่ย", iou: "IoU", dice: "Dice", bf: "Boundary F1 Score", piqe: "คุณภาพ PIQE" };
+const PASS_FAIL_SHORT = { count: "จำนวนวัตถุ", area_sum: "พื้นที่รวม", area_max: "พื้นที่ใหญ่สุด", roi_mean: "สว่างใน ROI", focus: "ความคม", de_mean: "ΔE เฉลี่ย", iou: "IoU", dice: "Dice", bf: "Boundary F1 Score", piqe: "คุณภาพ PIQE", mean: "ความสว่างเฉลี่ย", std: "ส่วนเบี่ยงเบน", entropy: "เอนโทรปี", corr2: "ความสัมพันธ์" };
 function ownOr(table, key, fallback) {
   return Object.hasOwn(table, key) ? table[key] : table[fallback];
 }
@@ -164,6 +165,11 @@ function mmTail(opId, p) {
 }
 
 export const OP_PRIMARY = {
+  rank_filter: (p) => `กรองลำดับค่า · หน้าต่าง ${pnum("rank_filter", "size", p.size, { int: true })}`,
+  custom_lut: () => "เส้นโค้งผ่าน 5 จุด",
+  image_stats: () => "สถิติความสว่างทั้งภาพ",
+  corr2: () => "ความสัมพันธ์ A กับ B",
+  gradient_dir: (p) => `ความชัน · ${p.method || "sobel"}`,
   grayscale: () => "BGR → เทา (Gray)",
   colorspace: (p) => "BGR → " + (p.space || "HSV").toUpperCase(),
   colorspace_inverse: (p) => `${ownOr({ hsv: "HSV", hls: "HLS", lab: "LAB", ycrcb: "YCRCB", xyz: "XYZ", luv: "LUV", yuv: "YUV" }, p.space, "hsv")} → RGB`,
@@ -338,7 +344,7 @@ export const OP_PRIMARY = {
   guided_filter: (p) => `r=${pnum("guided_filter", "radius", p.radius, { int: true })} · ε ${pnum("guided_filter", "eps", p.eps)}`,
   focus_score: (p) => `${p.method === "tenengrad" ? "Tenengrad" : "Laplacian var"} · กลาง ${pnum("focus_score", "roiPct", p.roiPct)}%`,
   pseudocolor: (p) => `${ownOr({ jet: "jet", hot: "hot", cool: "cool" }, p.map, "jet")} · ${p.range === "minmax" ? "ยืดช่วง" : "0–255"}`,
-  delta_e: (p) => `${p.formula === "ciede2000" ? "CIEDE2000" : "CIE76"} · ${p.compare === "mean_b" ? "เทียบสีเฉลี่ย B" : "ทีละพิกเซล"} · เกณฑ์ ${pnum("delta_e", "tol", p.tol)}`,
+  delta_e: (p) => `${p.formula === "ciede2000" ? "CIEDE2000" : p.formula === "cie94" ? "CIE94" : "CIE76"} · ${p.compare === "mean_b" ? "เทียบสีเฉลี่ย B" : "ทีละพิกเซล"} · เกณฑ์ ${pnum("delta_e", "tol", p.tol)}`,
   roi_apply: (p) => {
     const op = "roi_apply";
     return `${p.shape === "ellipse" ? "วงรี" : "สี่เหลี่ยม"} ${pnum(op, "x", p.x)}%,${pnum(op, "y", p.y)}% ${pnum(op, "w", p.w)}×${pnum(op, "h", p.h)}%`
@@ -448,7 +454,7 @@ export const OPTION_GROUPS = {
     ["หายอด / หุบ (ทำ marker ให้ Watershed)", ["regional_max", "regional_min", "h_maxima", "h_minima", "extended_max", "extended_min"]],
   ],
   "analysis_detect.mode": [
-    ["วัตถุ — หา / นับ / วัด", ["find_contours", "connected_components", "bounding_boxes", "regionprops", "euler_number", "shape_filter", "feret", "distance_transform", "line_profile"]],
+    ["วัตถุ — หา / นับ / วัด", ["find_contours", "connected_components", "bounding_boxes", "regionprops", "euler_number", "image_stats", "shape_filter", "feret", "distance_transform", "line_profile"]],
     ["หาเส้นตรง / วงกลม", ["hough_lines", "hough_circles"]],
     ["หาจุดมุม / จุดเด่น", ["harris_corners", "shi_tomasi_corners", "fast_keypoints", "orb_keypoints", "akaze_keypoints"]],
     ["ลายพื้นผิวและความคม", ["local_std_filter", "local_entropy_filter", "gabor_filter", "glcm", "focus_score"]],
@@ -456,17 +462,17 @@ export const OPTION_GROUPS = {
   ],
   "segment_edge.mode": [
     ["แยกขาว-ดำ (Threshold)", ["binary_threshold", "otsu_threshold", "adaptive_threshold", "multi_otsu_threshold"]],
-    ["หาขอบ (Edge)", ["canny", "sobel", "scharr_edge", "prewitt_edge", "roberts_edge", "laplacian_edge", "log_edge", "frangi_vesselness"]],
+    ["หาขอบ (Edge)", ["canny", "sobel", "gradient_dir", "scharr_edge", "prewitt_edge", "roberts_edge", "laplacian_edge", "log_edge", "frangi_vesselness"]],
     ["แยกวัตถุเป็นชิ้น", ["watershed", "watershed_marker", "grabcut", "region_growing"]],
   ],
   "enhance_tools.mode": [
-    ["ความสว่าง / คอนทราสต์", ["brightness_contrast", "gamma", "contrast_stretch", "hist_equalize", "clahe", "flatfield_correction"]],
+    ["ความสว่าง / คอนทราสต์", ["brightness_contrast", "gamma", "custom_lut", "contrast_stretch", "hist_equalize", "clahe", "flatfield_correction"]],
     ["ความคม", ["unsharp", "laplacian_sharpen", "custom_kernel"]],
     ["งานเฉพาะทาง", ["dehaze", "lowlight_enhance", "local_contrast", "quantize"]],
   ],
   "filter_denoise.mode": [
     ["ทำภาพเสียเพื่อทดลอง (ใส่ noise)", ["salt_pepper_noise", "gaussian_noise"]],
-    ["ลด noise / เบลอ", ["median_blur", "gaussian_blur", "box_blur", "bilateral", "guided_filter", "anisotropic_diffusion", "nlm_denoise", "wiener_filter"]],
+    ["ลด noise / เบลอ", ["median_blur", "rank_filter", "gaussian_blur", "box_blur", "bilateral", "guided_filter", "anisotropic_diffusion", "nlm_denoise", "wiener_filter"]],
     ["แก้ภาพเบลอ (รู้ PSF)", ["deconv_wiener", "deconv_lucy"]],
   ],
   "color_tools.mode": [

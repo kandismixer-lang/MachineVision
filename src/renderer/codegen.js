@@ -626,7 +626,206 @@ function binaryMorph5APy(p) {
   ]);
 }
 
+// Shared only by 5D raster views. Use integer Bresenham, including clipped 5x5 marks.
+function raster5DPy() {
+  return `def pixel5d(canvas, x, y, color):
+    h, w = canvas.shape[:2]
+    if 0 <= x < w and 0 <= y < h:
+        canvas[y, x] = color
+def line5d(canvas, x, y, x1, y1, color):
+    dx, sx = abs(x1 - x), 1 if x < x1 else -1
+    dy, sy = -abs(y1 - y), 1 if y < y1 else -1
+    err = dx + dy
+    while True:
+        pixel5d(canvas, x, y, color)
+        if x == x1 and y == y1:
+            break
+        e = 2 * err
+        if e >= dy:
+            err += dy
+            x += sx
+        if e <= dx:
+            err += dx
+            y += sy`.split("\n");
+}
+function accumulator5DPy(p) {
+  return guarded5A([
+    ...raster5DPy(),
+    ...`h, w = img.shape[:2]
+scale = min(1, 640 / max(w, h))
+aw, ah = max(1, int(np.floor(w * scale + 0.5))), max(1, int(np.floor(h * scale + 0.5)))
+analysis = cv2.resize(img, (aw, ah), interpolation=cv2.INTER_AREA) if scale < 1 else img
+edges = cv2.Canny(analysis, ${clampNum(p.t1, 50, 0, 255)}, ${clampNum(p.t2, 150, 0, 255)})
+d = int(np.ceil(np.sqrt((aw - 1) ** 2 + (ah - 1) ** 2)))
+nr = 2 * d + 1
+angles = (np.arange(180, dtype=np.float64) - 90) * np.pi / 180
+cs = np.floor(np.cos(angles) * 1e12 + 0.5) / 1e12
+ss = np.floor(np.sin(angles) * 1e12 + 0.5) / 1e12
+votes = np.zeros((nr, 180), np.int32)
+ys, xs = np.nonzero(edges)
+ts = np.arange(180)
+for y, x in zip(ys, xs):
+    rows = np.floor(float(x) * cs + float(y) * ss + 0.5).astype(np.int64) + d
+    votes[rows, ts] += 1
+max_h = int(votes.max())
+gray = np.floor(votes.astype(np.float64) / max_h * 255 + 0.5).astype(np.uint8) if max_h else np.zeros((nr, 180), np.uint8)
+img = cv2.cvtColor(gray, cv2.COLOR_GRAY2BGR)
+work = votes.copy()
+def nhood5d(n):
+    k = max(3, int(np.ceil(n / 50)))
+    return k if k % 2 else k + 1
+ry, rx = nhood5d(nr) // 2, nhood5d(180) // 2
+peaks = 0
+for _ in range(10):
+    best = int(np.argmax(work))
+    y, x = divmod(best, 180)
+    if work[y, x] <= max_h * 0.5:
+        break
+    peaks += 1
+    work[max(0, y-ry):min(nr, y+ry+1), max(0, x-rx):min(180, x+rx+1)] = 0
+    for k in range(-2, 3):
+        pixel5d(img, x+k, y-2, (0, 0, 255))
+        pixel5d(img, x+k, y+2, (0, 0, 255))
+        pixel5d(img, x-2, y+k, (0, 0, 255))
+        pixel5d(img, x+2, y+k, (0, 0, 255))
+print(f'Accumulator rho x theta = {nr} x 180; peaks {peaks}')`.split("\n"),
+  ]);
+}
+
 const GEN = {
+  rank_filter: { needs: "any", out: "same", gen: (p) => {
+    const mode = pickOwn({ percentile: "percentile", min: "min", max: "max", range: "range", mode: "mode" }, p.mode, "percentile");
+    const size = Math.min(15, Math.round(clampNum(p.size, 3, 3, 15)) | 1), r = size >> 1;
+    const rank = Math.floor(clampNum(p.percentile, 50, 0, 100) / 100 * (size * size - 1) + 0.5);
+    return guarded5A(`img = img[:, :, :3] if img.ndim == 3 else img
+rank_src = img[:, :, None] if img.ndim == 2 else img
+h, w, nc = rank_src.shape
+padded = np.pad(rank_src, ((${r}, ${r}), (${r}, ${r}), (0, 0)), mode='symmetric')
+rank_out = np.empty_like(rank_src)
+# Bound window copies and (for mode) int64 indices + 256-bin histograms.
+# At least one row: scratch is at most this 16 MiB budget or one row's work.
+rank_band_rows = max(1, (16 * 1024 * 1024) // (w * nc * (${size * size} * ${mode === "mode" ? 9 : 1}${mode === "mode" ? " + 256 * 8 + 8" : ""})))
+for y in range(0, h, rank_band_rows):
+    rows = min(rank_band_rows, h - y)
+    rank_windows = np.lib.stride_tricks.sliding_window_view(padded[y:y+rows+${size - 1}], (${size}, ${size}), axis=(0, 1))
+    rank_windows = np.array(rank_windows, copy=True, order='C').reshape(-1, ${size * size})
+    ${mode === "mode" ? `rank_offsets = np.arange(len(rank_windows), dtype=np.int64)[:, None] * 256
+    rank_hist = np.bincount((rank_windows + rank_offsets).ravel(), minlength=len(rank_windows) * 256).reshape(-1, 256)
+    rank_values = rank_hist.argmax(axis=1).astype(np.uint8)  # first maximum = smallest value
+    del rank_offsets, rank_hist` : `rank_windows.partition(${mode === "range" ? `[0, ${size * size - 1}]` : mode === "min" ? 0 : mode === "max" ? size * size - 1 : rank}, axis=-1)
+    rank_values = ${mode === "range" ? "rank_windows[:, -1] - rank_windows[:, 0]" : `rank_windows[:, ${mode === "min" ? 0 : mode === "max" ? -1 : rank}]`}`}
+    rank_out[y:y+rows] = rank_values.reshape(rows, w, nc)
+    del rank_windows, rank_values
+img = rank_out[:, :, 0] if img.ndim == 2 else rank_out
+print('Rank filter: ${mode}, window ${size}x${size}')`.split("\n"));
+  } },
+  custom_lut: { needs: "any", outOf: (p) => p.view === "curve" ? "color" : "same", gen: (p, ctx) => {
+    const n = (key, d) => Math.round(clampNum(p[key], d, 0, 255));
+    const points = [[0, n("out0", 0)], [n("in1", 64), n("out1", 64)], [n("in2", 128), n("out2", 128)], [n("in3", 192), n("out3", 192)], [255, n("out255", 255)]];
+    return guarded5A([
+      `points = ${JSON.stringify(points)}`,
+      ...`unique = []
+for point in sorted(points, key=lambda p: p[0]):
+    if unique and unique[-1][0] == point[0]:
+        unique[-1] = point
+    else:
+        unique.append(point)
+lut = np.empty(256, np.uint8)
+seg = 0
+for v in range(256):
+    while seg + 1 < len(unique) - 1 and v > unique[seg + 1][0]:
+        seg += 1
+    x0, y0 = unique[seg]
+    x1, y1 = unique[seg + 1]
+    value = y0 + (v - x0) / (x1 - x0) * (y1 - y0)
+    lut[v] = min(255, max(0, int(np.floor(value + 0.5))))
+reversed_curve = any(unique[i][1] < unique[i-1][1] for i in range(1, len(unique)))`.split("\n"),
+      ...(p.view === "curve" ? [
+        ...raster5DPy(),
+        ...`img = np.zeros((256, 256, 3), np.uint8)
+line5d(img, 0, 255, 255, 0, (80, 80, 80))
+for x in range(1, 256):
+    line5d(img, x-1, 255-int(lut[x-1]), x, 255-int(lut[x]), (255, 255, 255))
+for x, v in points:
+    for dy in range(-2, 3):
+        for dx in range(-2, 3):
+            pixel5d(img, x+dx, 255-v+dy, ${pyColor(ctx, [255, 0, 0])})`.split("\n"),
+      ] : ["img = lut[img[:, :, :3] if img.ndim == 3 else img]"]),
+      "print('LUT through 5 points' + ('; reversed segment' if reversed_curve else ''))",
+    ]);
+  } },
+  image_stats: { needs: "any", out: "color", gen: (p, ctx) => guarded5A([
+    `gray = img if img.ndim == 2 else cv2.cvtColor(img, ${pyGrayCode(ctx)})`,
+    ...`data = gray.ravel()
+n = int(data.size)
+hist = np.bincount(data, minlength=256)
+total, total2 = 0, 0
+for i in range(256):
+    count = int(hist[i])
+    total += i * count
+    total2 += i * i * count
+stats_mean = float(total) / n
+stats_std = float(np.sqrt(max(0, (float(total2) - float(total) * float(total) / n) / (n - 1)))) if n > 1 else 0.0
+stats_min, stats_max = int(data.min()), int(data.max())
+stats_entropy = 0.0
+for i in range(256):
+    if hist[i]:
+        prob = float(hist[i]) / n
+        stats_entropy -= prob * float(np.log2(prob))
+pad = np.pad((gray > 127).astype(np.int8), 1)
+a, b, c, d = pad[:-1, :-1], pad[:-1, 1:], pad[1:, :-1], pad[1:, 1:]
+count = a + b + c + d
+area8 = np.where(count == 0, 0, np.where(count == 1, 2, np.where(count == 2, np.where((a & d) | (b & c), 6, 4), np.where(count == 3, 7, 8))))
+stats_bwarea = int(area8.sum(dtype=np.int64)) / 8
+img = cv2.cvtColor(img, cv2.COLOR_GRAY2BGR) if img.ndim == 2 else img[:, :, :3]
+print(f'mean {stats_mean:.17g} std {stats_std:.17g} min {stats_min} max {stats_max} entropy {stats_entropy:.17g} bwarea {stats_bwarea:.17g}')`.split("\n"),
+  ], ["stats_mean = stats_std = stats_entropy = None"]) },
+  corr2: { needs: "any", out: "color", gen: (p, ctx) => guarded5A([
+    `a = img if img.ndim == 2 else cv2.cvtColor(img, ${pyGrayCode(ctx)})`,
+    ...`img = cv2.cvtColor(img, cv2.COLOR_GRAY2BGR) if img.ndim == 2 else img[:, :, :3]
+if img_b.size == 0:
+    print('empty B')
+else:
+    b = img_b if img_b.ndim == 2 else cv2.cvtColor(img_b, ${pyBGrayCode(ctx)})
+    if b.shape != a.shape:
+        b = cv2.resize(b, (a.shape[1], a.shape[0]), interpolation=cv2.INTER_LINEAR)
+    av, bv = a.ravel().astype(np.int64), b.ravel().astype(np.int64)
+    n = int(av.size)
+    sa, sb = float(av.sum(dtype=np.int64)), float(bv.sum(dtype=np.int64))
+    saa, sbb = float((av * av).sum(dtype=np.int64)), float((bv * bv).sum(dtype=np.int64))
+    sab = float((av * bv).sum(dtype=np.int64))
+    den = float(np.sqrt(max(0, saa - sa * sa / n) * max(0, sbb - sb * sb / n)))
+    if den == 0:
+        print('flat image; corr2 unavailable')
+    else:
+        corr2_value = (sab - sa * sb / n) / den
+        print(f'corr2 = {corr2_value:.17g}')`.split("\n"),
+  ], ["corr2_value = None"]) },
+  gradient_dir: { needs: "gray", outOf: (p) => p.view === "direction" ? "color" : "gray", bgrChannelOrder: true, gen: (p) => {
+    const method = pickOwn({ sobel: "sobel", prewitt: "prewitt", central: "central", intermediate: "intermediate", roberts: "roberts" }, p.method, "sobel");
+    const view = pickOwn({ magnitude: "magnitude", direction: "direction", direction_gray: "direction_gray" }, p.view, "magnitude");
+    const expr = method === "central" ? "gx, gy = (mr - ml) / 2, (bc - tc) / 2" : method === "intermediate" ? "gx, gy = mr - mc, bc - mc" : method === "roberts" ? "gx, gy = mc - br, mr - bc" : `gx = -tl + tr - ${method === "sobel" ? 2 : 1} * ml + ${method === "sobel" ? 2 : 1} * mr - bl + br\ngy = -tl - ${method === "sobel" ? 2 : 1} * tc - tr + bl + ${method === "sobel" ? 2 : 1} * bc + br`;
+    return guarded5A([
+      ...`pad = np.pad(img.astype(np.float64), 1, mode='edge')
+tl, tc, tr = pad[:-2, :-2], pad[:-2, 1:-1], pad[:-2, 2:]
+ml, mc, mr = pad[1:-1, :-2], pad[1:-1, 1:-1], pad[1:-1, 2:]
+bl, bc, br = pad[2:, :-2], pad[2:, 1:-1], pad[2:, 2:]
+${expr}
+mag = np.sqrt(gx * gx + gy * gy)
+direction = np.arctan2(-gy, gx) * 180 / np.pi
+max_mag = float(mag.max())`.split("\n"),
+      ...(view === "magnitude" ? ["img = np.floor(mag / max_mag * 255 + 0.5).astype(np.uint8) if max_mag > 0 else np.zeros(img.shape, np.uint8)"] : view === "direction_gray" ? ["img = np.where(mag > 0, np.floor((direction + 180) / 360 * 255 + 0.5), 0).astype(np.uint8)"] : `hue = ((direction + 360) % 360) / 60
+value = mag / max_mag if max_mag > 0 else np.zeros_like(mag)
+sector = np.floor(hue).astype(np.int64) % 6
+f = hue - np.floor(hue)
+q, t, z = value * (1 - f), value * f, np.zeros_like(value)
+sectors = [sector == k for k in range(6)]
+img = np.empty((*mag.shape, 3), dtype=np.uint8)
+for c, components in enumerate(((z,z,t,value,value,q), (t,value,value,q,z,z), (value,q,z,z,t,value))):
+    img[:, :, c] = np.floor(np.select(sectors, components) * 255 + 0.5).astype(np.uint8)  # BGR, one channel at a time`.split("\n")),
+      `print(f'Gradient (${method}); max {max_mag:.17g}')`,
+    ]);
+  } },
   // ---- ปริภูมิสี ----
   grayscale: { needs: "any", out: "gray", gen: (p, ctx) =>
     ctx.gray ? ["# ภาพเป็นขาวดำอยู่แล้ว"] : [`img = cv2.cvtColor(img, ${pyGrayCode(ctx)})`] },
@@ -1374,7 +1573,57 @@ const GEN = {
     return lines;
   } },
 
-  find_contours: { needs: "gray", out: "color", gen: (p) => [
+  find_contours: { needs: "gray", out: "color", gen: (p) => clampNum(p.simplify, 0, 0, 20) > 0 ? guarded5A([
+    // Twin of simplifyClosedContour5D: Python float / JS Number and first-index ties.
+    ...`def simplify_closed_contour(points, epsilon):
+    n = len(points)
+    if n <= 1:
+        return list(points)
+    points = [(float(x), float(y)) for x, y in points]
+    epsilon = float(epsilon)
+    anchor, farthest = 0, 0.0
+    for i in range(1, n):
+        dx, dy = points[i][0] - points[0][0], points[i][1] - points[0][1]
+        distance = dx * dx + dy * dy
+        if distance > farthest:
+            farthest, anchor = distance, i
+    if anchor == 0:
+        return [points[0]]
+    keep = [False] * n
+    limit = epsilon * epsilon
+    keep[0] = keep[anchor] = True
+    stack = [(anchor, n), (0, anchor)]
+    while stack:
+        start, end = stack.pop()
+        last = end % n
+        ax, ay = points[start]
+        dx, dy = points[last][0] - ax, points[last][1] - ay
+        length2 = dx * dx + dy * dy
+        split, max_distance = -1, -1.0
+        for i in range(start + 1, end):
+            px, py = points[i][0] - ax, points[i][1] - ay
+            cross = px * dy - py * dx
+            distance = px * px + py * py if length2 == 0 else cross * cross / length2
+            if distance > max_distance:
+                max_distance, split = distance, i
+        if max_distance > limit:
+            keep[split] = True
+            stack.extend([(split, end), (start, split)])
+    return [points[i] for i in range(n) if keep[i]]`.split("\n"),
+    "contours, _ = cv2.findContours(img, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)",
+    "before = sum(len(c) for c in contours)",
+    `contours = [np.array(simplify_closed_contour(c.reshape(-1, 2), ${clampNum(p.simplify, 0, 0, 20)}), dtype=np.int32).reshape(-1, 1, 2) for c in contours]`,
+    "after = sum(len(c) for c in contours)",
+    "img = cv2.cvtColor(img, cv2.COLOR_GRAY2BGR)",
+    "count = 0",
+    "for i, c in enumerate(contours):",
+    `    if cv2.contourArea(c) < ${clampNum(p.minArea, 100, 0, 5000)}:`,
+    "        continue",
+    "    count += 1",
+    "    color = ((i * 67 + 200) % 256, (i * 151 + 120) % 256, (i * 97 + 60) % 256)",
+    "    cv2.drawContours(img, contours, i, color, 2)",
+    "print(f'objects {count}; simplified {after} points (from {before})')",
+  ]) : [
     "contours, _ = cv2.findContours(img, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)",
     "img = cv2.cvtColor(img, cv2.COLOR_GRAY2BGR)",
     `for c in contours:`,
@@ -1837,7 +2086,7 @@ const GEN = {
     ];
   } },
 
-  hough_lines: { needs: "gray", out: "color", gen: (p) => [
+  hough_lines: { needs: "gray", out: "color", gen: (p) => p.view === "accumulator" ? accumulator5DPy(p) : [
     `edges = cv2.Canny(img, ${int(p.t1)}, ${int(p.t2)})`,
     `lines = cv2.HoughLinesP(edges, 1, np.pi / 180, ${int(p.threshold)}, minLineLength=${int(p.minLineLength)}, maxLineGap=${int(p.maxLineGap)})`,
     "img = cv2.cvtColor(img, cv2.COLOR_GRAY2BGR)",
@@ -2881,6 +3130,9 @@ const GEN = {
             area_max: ["pf_measured = max(pf_up['areas']) if pf_up['areas'] else None"],
             iou: ["pf_measured = pf_up['iou']"],
             dice: ["pf_measured = pf_up['dice']"],
+            mean: ["pf_measured = pf_up['mean']"],
+            std: ["pf_measured = pf_up['std']"],
+            entropy: ["pf_measured = pf_up['entropy']"],
           }[q.metric] || ["pf_measured = pf_up['value']"]),
           "pf_reason = None",
           "if pf_measured is None or not np.isfinite(pf_measured):",
@@ -2929,6 +3181,7 @@ const GEN = {
   // delta_e: 2 ภาพ (img_b มาจากสาย B) · เช็ค .ndim ตอนรัน · Lab float32 ผ่าน astype(float32) / 255 (ตรงกับ convertTo(1/255) ของแอป) · ผลรวมด้วย cumsum (ลำดับเดียวกับแอป)
   delta_e: { needs: "any", out: "gray", gen: (p, ctx) => {
     const ciede = p.formula === "ciede2000";
+    const cie94 = p.formula === "cie94";
     const meanB = p.compare === "mean_b";
     const labCode = isMirrored(ctx) ? "cv2.COLOR_BGR2Lab" : "cv2.COLOR_RGB2Lab";
     const tol = clampNum(p.tol, 2.3, 0, 50), scaleMax = clampNum(p.scaleMax, 20, 1, 100);
@@ -2981,6 +3234,16 @@ const GEN = {
       ...(meanB ? ["ref = [np.float64(v) for v in mean_b]  # สีเฉลี่ยของ B"] : ["ref = [lab_b[:, :, 0], lab_b[:, :, 1], lab_b[:, :, 2]]"]),
       ...(ciede
         ? ["de = delta_e2000(lab_a[:, :, 0], lab_a[:, :, 1], lab_a[:, :, 2], ref[0], ref[1], ref[2])"]
+        : cie94 ? [
+          "dl, da, db = lab_a[:, :, 0] - ref[0], lab_a[:, :, 1] - ref[1], lab_a[:, :, 2] - ref[2]",
+          "c1 = np.sqrt(lab_a[:, :, 1] * lab_a[:, :, 1] + lab_a[:, :, 2] * lab_a[:, :, 2])",
+          "c2 = np.sqrt(ref[1] * ref[1] + ref[2] * ref[2])",
+          "dc = c1 - c2",
+          "h2 = np.maximum(0, da * da + db * db - dc * dc)",
+          "sc, sh = 1 + 0.045 * c1, 1 + 0.015 * c1",
+          "tc = dc / sc",
+          "de = np.sqrt(dl * dl + tc * tc + h2 / (sh * sh))",
+        ]
         : [
           "dl, da, db = lab_a[:, :, 0] - ref[0], lab_a[:, :, 1] - ref[1], lab_a[:, :, 2] - ref[2]",
           "de = np.sqrt(dl * dl + da * da + db * db)",
@@ -2991,7 +3254,7 @@ const GEN = {
       over
         ? "img = np.where(de > tol, 255, 0).astype(np.uint8)  # Mask จุดที่ต่างเกินเกณฑ์"
         : `img = np.minimum(255, np.floor(de * 255 / ${String(scaleMax)} + 0.5)).astype(np.uint8)  # ยิ่งขาวยิ่งต่าง (ขาว = ΔE ${scaleMax})`,
-      `print(f"delta E (${ciede ? "CIEDE2000" : "CIE76"}): mean {np.floor(de_mean * 100 + 0.5) / 100:.2f} max {np.floor(de.max() * 100 + 0.5) / 100:.2f} over ${String(tol)}: {np.floor(over_pct * 10 + 0.5) / 10:.1f}%")`,
+      `print(f"delta E (${ciede ? "CIEDE2000" : cie94 ? "CIE94" : "CIE76"}): mean {np.floor(de_mean * 100 + 0.5) / 100:.2f} max {np.floor(de.max() * 100 + 0.5) / 100:.2f} over ${String(tol)}: {np.floor(over_pct * 10 + 0.5) / 10:.1f}%")`,
     ];
   } },
 
@@ -3846,13 +4109,15 @@ function appOnlyHeader(appOnly) {
 // PF_PY_SOURCES = ตัวที่ gen โค้ด snapshot ให้ได้ (ที่เหลือ: metric ตรงกับ op นั้นแต่ Python ยังไม่รองรับ = คำเตือน)
 // ข้อจำกัดที่รู้ (ยอมรับ): template_matching (ไม่มี template / ใหญ่เกินภาพ) และ psnr/ssim (ไม่ได้ต่อ B) แอปคืนภาพโดยไม่มี values แต่ที่นี่ยังนับเป็น
 // "กล่องวัดล่าสุด" เสมอ — ผลคือ Python ตัดสิน NG (กล่องผิดชนิด) ในกรณีที่แอปจะใช้ค่าของกล่องวัดก่อนหน้า · เอนเอียงไปทาง NG (fail-safe)
-export const PF_VALUE_OPS = new Set(["regionprops", "template_matching", "psnr", "ssim", "mog2", "farneback_optical_flow", "pyrlk_optical_flow", "feret",
+export const PF_VALUE_OPS = new Set(["image_stats", "corr2", "regionprops", "template_matching", "psnr", "ssim", "mog2", "farneback_optical_flow", "pyrlk_optical_flow", "feret",
   "line_profile", "shape_filter", "roi_polygon", "slic", "focus_score", "delta_e", "roi_apply", "ecc_register", "gabor_filter", "glcm", "dehaze", "dct_jpeg", "watershed_marker", "seg_score", "bf_score", "euler_number", "image_pyramid", "frangi_vesselness", "piqe"]);
-const PF_PY_SOURCES = { regionprops: true, roi_polygon: true, focus_score: true, seg_score: true, bf_score: true, piqe: true };
+const PF_PY_SOURCES = { image_stats: true, corr2: true, regionprops: true, roi_polygon: true, focus_score: true, seg_score: true, bf_score: true, piqe: true };
 // บรรทัดท้ายขั้นวัด: เก็บค่าที่ pass_fail ต้องใช้ลง `pf_up` ทันที (ตัวแปรของขั้นวัดอาจถูกทับโดยขั้นถัดไป) · เรียกเมื่อ pipeline มี pass_fail เท่านั้น
 function pfSnapshotLines(opId, local, ctx) {
   if (!PF_VALUE_OPS.has(opId)) return [];
   ctx.pfSource = opId;
+  if (opId === "image_stats") return ["pf_up = {'mean': stats_mean, 'std': stats_std, 'entropy': stats_entropy}  # ค่าให้ขั้น Pass / Fail"];
+  if (opId === "corr2") return ["pf_up = {'value': corr2_value}  # ค่าให้ขั้น Pass / Fail"];
   if (opId === "regionprops") {
     // พื้นที่ = area_mm2 เมื่อ มม./px > 0 (สูตรเดียวกับ mmValue: area_px × (f×f)) ไม่งั้น area_px · แถวที่ถูกจำกัดด้วย maxObjects เท่านั้น
     const area = clampNum(local.mmPerPx, 0, 0, 100) > 0 ? "r['area_px'] * (mm_per_px * mm_per_px)" : "r['area_px']";
@@ -4013,6 +4278,10 @@ function emitBChain(step, depth, body, appOnly) {
     if (usesSecondImage(s2)) {
       if (!s2.src2 || !s2.src2.pipeline) { // ไม่มีสาย B เลย: แอปคืนภาพเดิม
         body.push(`# (${thaiName(r2.opId)}: ยังไม่ได้ต่อสาย B — แอปคืนภาพเดิม จึงข้ามขั้นนี้)`);
+        if (r2.opId === "corr2") {
+          body.push(`${w} = cv2.cvtColor(${w}, cv2.COLOR_GRAY2BGR) if ${w}.ndim == 2 else ${w}`);
+          ctxB.gray = false;
+        }
         continue;
       }
       ctxB.src2Mirrored = emitBChain(s2, depth + 1, body, appOnly);
@@ -4057,6 +4326,11 @@ function buildPythonCode2Image(pipeline, opts = {}) {
       if (!step.src2 || !step.src2.pipeline) {
         // B8: ไม่มีสาย B เลย → แอปคืนภาพ A เดิม (ดู passthroughNoSrc2 ใน registry.js) — ไม่คำนวณกับ path_b
         bodyA.push(`# ── ขั้นที่ ${stepNo}: ${thaiName(opId)} (${opId}) ── ยังไม่ได้ต่อสาย B — แอปคืนภาพ A เดิม จึงข้ามขั้นนี้`, "");
+        if (opId === "corr2") {
+          bodyA.push("img = cv2.cvtColor(img, cv2.COLOR_GRAY2BGR) if img.ndim == 2 else img", "corr2_value = None");
+          ctxA.gray = false;
+          if (hasPf) bodyA.push(...pfSnapshotLines(opId, local, ctxA));
+        }
         continue;
       }
       // เรนเดอร์สาย B ของ step นี้ก่อนบรรทัดของ step หลักเสมอ (step หลักต้องใช้ img_b ที่ประมวลผลแล้ว เช่น GEN.imabsdiff อ่าน img_b ตรง ๆ)
