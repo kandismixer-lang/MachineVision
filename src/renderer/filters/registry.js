@@ -4482,7 +4482,7 @@ export const OPS = {
         else src.copyTo(rgb);
 
         if (scale < 1) {
-          cv.resize(rgb, analysis, new cv.Size(Math.round(rgb.cols * scale), Math.round(rgb.rows * scale)), 0, 0, cv.INTER_AREA);
+          cv.resize(rgb, analysis, new cv.Size(Math.max(1, Math.round(rgb.cols * scale)), Math.max(1, Math.round(rgb.rows * scale))), 0, 0, cv.INTER_AREA);
         } else {
           rgb.copyTo(analysis);
         }

@@ -1797,7 +1797,7 @@ const GEN = {
       "rows, cols = img.shape[:2]",
       "scale = min(1.0, 320 / max(rows, cols))",
       "if scale < 1:",
-      "    analysis = cv2.resize(img, (int(cols * scale + 0.5), int(rows * scale + 0.5)), interpolation=cv2.INTER_AREA)",
+      "    analysis = cv2.resize(img, (max(1, int(cols * scale + 0.5)), max(1, int(rows * scale + 0.5))), interpolation=cv2.INTER_AREA)",
       "else:",
       "    analysis = img",
       "Z = analysis.reshape((-1, 3)).astype(np.float32)",

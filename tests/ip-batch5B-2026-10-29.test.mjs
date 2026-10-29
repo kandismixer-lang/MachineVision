@@ -632,8 +632,8 @@ test("ip5b-P-sequences. Bayer mosaic/demosaic, color-space channel order and dow
 });
 
 // Measured twice on clean HEAD 0129f4d before any production edit.
-// Re-pinned for rgb_adjust rounding, then K-means rounding/analysis resize (five Python fields each).
-test("ip5b-G. 550 pre-edit cases retain pixels, info, values and Python except approved rgb_adjust/K-means rounding and K-means analysis resize", () => {
+// Re-pinned for rgb_adjust rounding, then K-means rounding/analysis resize/thin-image clamp (five Python fields each).
+test("ip5b-G. 550 pre-edit cases retain pixels, info, values and Python except approved rgb_adjust/K-means rounding and K-means analysis resize/thin-image clamp", () => {
   const result = {};
   const hosts = ['geometry', 'color_tools', 'segment_edge', 'filter_denoise', 'image_quality'];
   const oldIds = ["crop","roi_polygon","resize","rotate","flip","perspective_warp","undistort","translate_shear","grayscale","colorspace","colorspace_inverse","channel_split","rgb_adjust","color_inrange","kmeans_segment","slic","white_balance","invert","pseudocolor","binary_threshold","otsu_threshold","adaptive_threshold","multi_otsu_threshold","canny","sobel","laplacian_edge","scharr_edge","prewitt_edge","roberts_edge","log_edge","watershed","watershed_marker","grabcut","region_growing","salt_pepper_noise","gaussian_noise","median_blur","gaussian_blur","box_blur","bilateral","wiener_filter","guided_filter","nlm_denoise","deconv_wiener","deconv_lucy","psnr","ssim","delta_e","seg_score"];
@@ -682,5 +682,5 @@ test("ip5b-G. 550 pre-edit cases retain pixels, info, values and Python except a
     }
   }
   assert.equal(Object.keys(result).length, 550);
-  assert.equal(hash(JSON.stringify(result)), "4738506dae8e2ff6ac7c1ca5c0ab01d3060b4da1b4eb26fa5fec28102f46d2f9");
+  assert.equal(hash(JSON.stringify(result)), "f44b5b90be36df4a841fd30bf46a4f3375cdac6e8d7738ede6e7b8cdfce8e655");
 });

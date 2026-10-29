@@ -1194,7 +1194,7 @@ test('ipE-26. (static) channel order of the exported Python follows ctx.mirrored
 });
 
 // Python ของ op เดิมต้องไม่เปลี่ยนแม้แต่ตัวอักษร — hash ของข้อความบล็อก GEN จาก codegen.js ก่อนชิ้น E (backups/2026-10-04-before-ip-batch2-E)
-test('ipE-27. the exported Python of the existing ops is byte-identical to before this batch: the GEN blocks of kmeans_segment, fft_magnitude + fft_filter, and the generated code of a pipeline using them match the pre-E snapshot with approved export rounding, K-means analysis resize and FFT mask precision (sha256 of the block text)', () => {
+test('ipE-27. the exported Python of the existing ops is byte-identical to before this batch: the GEN blocks of kmeans_segment, fft_magnitude + fft_filter, and the generated code of a pipeline using them match the pre-E snapshot with approved export rounding, K-means analysis resize/thin-image clamp and FFT mask precision (sha256 of the block text)', () => {
   const gen = readSrc('codegen.js');
   const cut = (a, b) => { const i = gen.indexOf(a); assert.ok(i >= 0, a); const j = gen.indexOf(b, i); assert.ok(j > i, b); return gen.slice(i, j); };
   const sha = (s) => crypto.createHash('sha256').update(s).digest('hex');
@@ -1207,8 +1207,8 @@ test('ipE-27. the exported Python of the existing ops is byte-identical to befor
   assert.ok(f.includes('scale = min(1.0, 640 / max(rows, cols))') && !f.includes('1920'));
 });
 // B12 (2026-10-17): re-pin ของ fft — เอา wrapper GEN.fft_filter.gen (batch 4A) เข้ามาอยู่ในบล็อก · Python ที่ export ไม่เปลี่ยนแม้ตัวอักษรเดียว (พิสูจน์ด้วยเทสต์ bl-B12 ใน tests/backlog-2026-10-17.test.mjs)
-// 2026-10-29: re-pin only approved rounding, K-means analysis resize and FFT mask precision.
-const EXPECT_SHA = { kmeans: 'b039d917197225f2c490bb6fc76c5e1c4e1f8789392cb57fd012b16ca18d3b85', fft: '4bf43c3e8de860db3022313095d3294e5e89662c6c6cc7fc74e411f93abadafc' };
+// 2026-10-29: re-pin only approved rounding, K-means analysis resize/thin-image clamp and FFT mask precision.
+const EXPECT_SHA = { kmeans: 'fd965fe6d6d275796bcddd865f3788ad0889b2990ea10292b9a40a829cff2075', fft: '4bf43c3e8de860db3022313095d3294e5e89662c6c6cc7fc74e411f93abadafc' };
 
 // ===================================================================
 // parity กับ Python จริง (cv2 5.0 / numpy 2.x)

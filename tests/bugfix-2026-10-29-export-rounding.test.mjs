@@ -236,6 +236,28 @@ for (const k of [4, 3]) test(`export-rounding-P. controlled kmeans k=${k}: 0 byt
 for (const [w, h, analysisSize] of [[400, 300, [320, 240]], [300, 641, [150, 320]], [201, 640, [101, 320]]]) {
   test(`export-rounding-P. controlled kmeans ${w}x${h} -> ${analysisSize.join("x")}: 0 bytes different`, PY_SKIP, () => parity("kmeans_segment", {}, w, h, undefined, { analysisSize }));
 }
+// The old formula collapses a one-pixel side to zero; the wider thin cases
+// guard the boundary where rounding already produces one analysis pixel.
+for (const [w, h, analysisSize, oldSize] of [
+  [1, 700, [1, 320], [0, 320]], [700, 1, [320, 1], [320, 0]],
+  [2, 900, [1, 320], [1, 320]], [900, 3, [320, 1], [320, 1]],
+]) {
+  test(`kmeans-thin. ${w}x${h} runs the app pipeline and preserves input size`, () => {
+    const scale = Math.min(1, 320 / Math.max(w, h));
+    assert.deepEqual([Math.round(w * scale), Math.round(h * scale)], oldSize);
+    const src = fixture(w, h); let out, controlled;
+    try {
+      assert.doesNotThrow(() => {
+        out = runPipeline(src, [step("kmeans_segment")], new Map(), new Set()).mat;
+      });
+      assert.deepEqual([out.cols, out.rows, out.channels()], [w, h, 3]);
+      controlled = mappedApp(src, defaults("kmeans_segment"), analysisSize);
+      assert.deepEqual([controlled.cols, controlled.rows, controlled.channels()], [w, h, 3]);
+    } finally { if (controlled) controlled.delete(); if (out) out.delete(); src.delete(); }
+  });
+  test(`kmeans-thin-P. controlled ${w}x${h} -> ${analysisSize.join("x")}: 0 bytes different`, PY_SKIP,
+    () => parity("kmeans_segment", {}, w, h, undefined, { analysisSize }));
+}
 test("export-rounding-P. casting low before high-pass subtraction fails mask parity", PY_SKIP, () => {
   const castEarly = (code) => {
     const line = "mask = (1 - low).astype(np.float32)";

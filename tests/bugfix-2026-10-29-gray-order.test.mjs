@@ -69,7 +69,7 @@ test("gray-order. two-image A/B and nested B keep independent order and reset af
 
 // Generated once from git show HEAD:src/renderer/codegen.js at bcdbf4a in OS temp.
 // Freeze these cases independently of future OPS additions; each pin names its export.
-// Approved export fixes (rounding, FFT mask precision, K-means analysis resize): rgb_adjust, distance_transform, fft_magnitude, fft_filter, ssim, kmeans_segment.
+// Approved export fixes (rounding, FFT mask precision, K-means analysis resize/thin-image clamp): rgb_adjust, distance_transform, fft_magnitude, fft_filter, ssim, kmeans_segment.
 const MIRRORED_OP_IDS = [
   "grayscale", "colorspace", "channel_split", "rgb_adjust", "brightness_contrast", "gamma",
   "hist_equalize", "clahe", "contrast_stretch", "flatfield_correction", "quantize", "unsharp",
@@ -146,7 +146,7 @@ const MIRRORED_SHA256 = {
   "color_inrange": "609a55c798b20e7f3e0c61c774653dc5732b420fd0ea671d5865e844075114aa",
   "invert": "f54d48faccf44064670fef450024216f1912e41813368439b66f6797016e08fa",
   "white_balance": "26dbfc104d7cd784b04a48060bb4b453d983f00a8c7c682d439b35e11aa55a50",
-  "kmeans_segment": "8d30e0b5184ef9223cd524bfb860d334e28a741eeba16045d6dfd3dad0dbf290",
+  "kmeans_segment": "d037d929e733cb24baac6a10d3aeb541f8e7f5481edcb3be6807a52baa2384ad",
   "crop": "0592f3e90a3830d573a483b0383984b3c99717b430cfa2135f71f9526d6cc617",
   "resize": "e2f3140f5955bc874c801a615baa5791a900ae6ad930617e7abaae2bab107cef",
   "rotate": "cfb894ca640c15c3ec5737986b37057b6cef2818220682f267c0a6098d5b750a",
@@ -230,7 +230,7 @@ const MIRRORED_SHA256 = {
   "gaussian_blur -> grayscale": "6c79f97d073a937cdb87f253b62bc138b9d88e3063133a04751cd46bb23c047f"
 };
 
-test("gray-order. frozen mirrored exports match bcdbf4a except approved export rounding, FFT mask precision and K-means analysis resize", () => {
+test("gray-order. frozen mirrored exports match bcdbf4a except approved export rounding, FFT mask precision and K-means analysis resize/thin-image clamp", () => {
   for (const id of [...MIRRORED_OP_IDS, "gaussian_blur -> grayscale"]) {
     let pipe;
     if (id === "gaussian_blur -> grayscale") pipe = [step("gaussian_blur"), step("grayscale")];
