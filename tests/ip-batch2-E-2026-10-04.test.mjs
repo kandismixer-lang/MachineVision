@@ -1194,19 +1194,21 @@ test('ipE-26. (static) channel order of the exported Python follows ctx.mirrored
 });
 
 // Python ของ op เดิมต้องไม่เปลี่ยนแม้แต่ตัวอักษร — hash ของข้อความบล็อก GEN จาก codegen.js ก่อนชิ้น E (backups/2026-10-04-before-ip-batch2-E)
-test('ipE-27. the exported Python of the existing ops is byte-identical to before this batch: the GEN blocks of kmeans_segment, fft_magnitude + fft_filter, and the generated code of a pipeline using them match the pre-E snapshot (sha256 of the block text)', () => {
+test('ipE-27. the exported Python of the existing ops is byte-identical to before this batch: the GEN blocks of kmeans_segment, fft_magnitude + fft_filter, and the generated code of a pipeline using them match the pre-E snapshot with approved export rounding, K-means analysis resize and FFT mask precision (sha256 of the block text)', () => {
   const gen = readSrc('codegen.js');
   const cut = (a, b) => { const i = gen.indexOf(a); assert.ok(i >= 0, a); const j = gen.indexOf(b, i); assert.ok(j > i, b); return gen.slice(i, j); };
   const sha = (s) => crypto.createHash('sha256').update(s).digest('hex');
   assert.equal(sha(cut('\n  kmeans_segment: {', '\n  white_balance: {')), EXPECT_SHA.kmeans);
   assert.equal(sha(cut('\n  fft_magnitude: {', '\n  // ---- Image Arithmetic (Tier 2, 18a) ----')), EXPECT_SHA.fft);
   const k = buildPythonCode([STEP('colour', 'kmeans_segment')]);
-  assert.ok(k.includes('Z = img.reshape((-1, 3)).astype(np.float32)') && !k.includes('slic'));
+  assert.ok(k.includes('Z = analysis.reshape((-1, 3)).astype(np.float32)') && !k.includes('slic'));
+  assert.ok(k.includes('interpolation=cv2.INTER_AREA') && k.includes('interpolation=cv2.INTER_NEAREST'));
   const f = buildPythonCode([STEP('frequency', 'fft_filter')]);
   assert.ok(f.includes('scale = min(1.0, 640 / max(rows, cols))') && !f.includes('1920'));
 });
 // B12 (2026-10-17): re-pin ของ fft — เอา wrapper GEN.fft_filter.gen (batch 4A) เข้ามาอยู่ในบล็อก · Python ที่ export ไม่เปลี่ยนแม้ตัวอักษรเดียว (พิสูจน์ด้วยเทสต์ bl-B12 ใน tests/backlog-2026-10-17.test.mjs)
-const EXPECT_SHA = { kmeans: 'c3f022d7be8e5c1061069868d7b01fb2b52caaad28ed9da9c40c6508d29b0c22', fft: '08ffc912d2b8d266b1bbf15a611a1c0e950d5c21d84acd3953e10a8eb02184f1' };
+// 2026-10-29: re-pin only approved rounding, K-means analysis resize and FFT mask precision.
+const EXPECT_SHA = { kmeans: 'b039d917197225f2c490bb6fc76c5e1c4e1f8789392cb57fd012b16ca18d3b85', fft: '4bf43c3e8de860db3022313095d3294e5e89662c6c6cc7fc74e411f93abadafc' };
 
 // ===================================================================
 // parity กับ Python จริง (cv2 5.0 / numpy 2.x)

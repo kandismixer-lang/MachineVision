@@ -1309,7 +1309,7 @@ const GEN = {
   distance_transform: { needs: "gray", out: "gray", gen: (p) => [
     `_, bin = cv2.threshold(img, 127, 255, cv2.THRESH_BINARY)`,
     `dist = cv2.distanceTransform(bin, cv2.DIST_L2, ${p.maskSize === "3" ? 3 : 5})`,
-    "img = cv2.normalize(dist, None, 0, 255, cv2.NORM_MINMAX).astype(np.uint8)",
+    "img = np.clip(np.rint(cv2.normalize(dist, None, 0, 255, cv2.NORM_MINMAX)), 0, 255).astype(np.uint8)",
   ] },
 
   local_std_filter: { needs: "gray", out: "gray", gen: (p) => {
@@ -1794,13 +1794,22 @@ const GEN = {
     const lines = [];
     if (ctx.gray) lines.push("img = cv2.cvtColor(img, cv2.COLOR_GRAY2BGR)");
     lines.push(
-      "Z = img.reshape((-1, 3)).astype(np.float32)",
+      "rows, cols = img.shape[:2]",
+      "scale = min(1.0, 320 / max(rows, cols))",
+      "if scale < 1:",
+      "    analysis = cv2.resize(img, (int(cols * scale + 0.5), int(rows * scale + 0.5)), interpolation=cv2.INTER_AREA)",
+      "else:",
+      "    analysis = img",
+      "Z = analysis.reshape((-1, 3)).astype(np.float32)",
       // n ตัวอย่างอาจน้อยกว่า K (เช่นภาพจิ๋วหลัง crop) — cv2.kmeans throw ถ้า n < K จึง clamp ไว้
       `K = min(${Math.max(2, int(p.k))}, Z.shape[0])`,
       `criteria = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, ${int(p.iterations)}, 1.0)`,
       "_, labels, centers = cv2.kmeans(Z, K, None, criteria, 3, cv2.KMEANS_PP_CENTERS)",
-      "centers = np.uint8(centers)",
-      "img = centers[labels.flatten()].reshape(img.shape)",
+      // Math.round reads float32 centers as JS doubles: promote before adding 0.5.
+      "centers = np.floor(centers.astype(np.float64) + 0.5).astype(np.uint8)",
+      "img = centers[labels.flatten()].reshape(analysis.shape)",
+      "if scale < 1:",
+      "    img = cv2.resize(img, (cols, rows), interpolation=cv2.INTER_NEAREST)",
     );
     return lines;
   } },
@@ -2375,7 +2384,7 @@ const GEN = {
     "mag = cv2.magnitude(complex_i[:, :, 0], complex_i[:, :, 1])",
     "mag = np.log(mag + 1)",
     "mag = cv2.normalize(mag, None, 0, 255, cv2.NORM_MINMAX)",
-    "img = cv2.resize(mag.astype(np.uint8), (cols, rows))",
+    "img = cv2.resize(np.clip(np.rint(mag), 0, 255).astype(np.uint8), (cols, rows))",
   ] },
 
   fft_filter: { needs: "gray", out: "gray", gen: (p) => {
@@ -2402,16 +2411,17 @@ const GEN = {
       "cy, cx = opt_rows / 2, opt_cols / 2",
       "yy, xx = np.mgrid[0:opt_rows, 0:opt_cols]",
       "d = np.sqrt((xx - cx) ** 2 + (yy - cy) ** 2)",
-      isIdeal ? `low = (d <= ${cutoff}).astype(np.float32)`
-        : isButter ? `low = (1 / (1 + (d / ${cutoff}) ** ${2 * bwN})).astype(np.float32)  # Butterworth ลำดับ n=${bwN}`
-        : `low = np.exp(-(d ** 2) / (2 * ${cutoff} ** 2)).astype(np.float32)`,
-      isHigh ? "mask = 1 - low" : "mask = low",
+      // JS subtracts from a double lowVal before storing in Float32Array.
+      isIdeal ? `low = (d <= ${cutoff}).astype(np.float64)`
+        : isButter ? `low = (1 / (1 + (d / ${cutoff}) ** ${2 * bwN}))  # Butterworth ลำดับ n=${bwN}`
+        : `low = np.exp(-(d ** 2) / (2 * ${cutoff} ** 2))`,
+      isHigh ? "mask = (1 - low).astype(np.float32)" : "mask = low.astype(np.float32)",
       "complex_i[:, :, 0] *= mask",
       "complex_i[:, :, 1] *= mask",
       "complex_i = np.fft.ifftshift(complex_i, axes=(0, 1))",
       "inv = cv2.idft(complex_i, flags=cv2.DFT_SCALE | cv2.DFT_REAL_OUTPUT)",
       "inv = inv[:a_rows, :a_cols]",
-      "inv = cv2.normalize(inv, None, 0, 255, cv2.NORM_MINMAX).astype(np.uint8)",
+      "inv = np.clip(np.rint(cv2.normalize(inv, None, 0, 255, cv2.NORM_MINMAX)), 0, 255).astype(np.uint8)",
       "img = cv2.resize(inv, (cols, rows))  # ขยายกลับขนาดภาพจริง (เหมือนแอปตัวจริง)",
     ];
   } },
@@ -2696,7 +2706,7 @@ const GEN = {
     "ssim_mean = float(np.mean(ssim_map))",
     "print(f\"SSIM = {ssim_mean:.4f} (1 = เหมือนกันทุกประการ){downscale_note}\")",
     "normed = cv2.normalize(ssim_map, None, 0, 255, cv2.NORM_MINMAX)",
-    "img = cv2.resize(normed.astype(np.uint8), (cols, rows))",
+    "img = cv2.resize(np.clip(np.rint(normed), 0, 255).astype(np.uint8), (cols, rows))",
     ];
   } },
 

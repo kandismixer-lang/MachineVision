@@ -69,7 +69,7 @@ test("gray-order. two-image A/B and nested B keep independent order and reset af
 
 // Generated once from git show HEAD:src/renderer/codegen.js at bcdbf4a in OS temp.
 // Freeze these cases independently of future OPS additions; each pin names its export.
-// rgb_adjust was re-pinned for the approved float32/ties-to-even rounding fix.
+// Approved export fixes (rounding, FFT mask precision, K-means analysis resize): rgb_adjust, distance_transform, fft_magnitude, fft_filter, ssim, kmeans_segment.
 const MIRRORED_OP_IDS = [
   "grayscale", "colorspace", "channel_split", "rgb_adjust", "brightness_contrast", "gamma",
   "hist_equalize", "clahe", "contrast_stretch", "flatfield_correction", "quantize", "unsharp",
@@ -128,7 +128,7 @@ const MIRRORED_SHA256 = {
   "log_edge": "3c17055f490a47973fe90dc1518b43f2849c10f77273b0a3cad2c8335b02fa09",
   "find_contours": "23f5f45ea4052645b837a13ebc2af388494309ffa31e69cd8239b91159469465",
   "connected_components": "d54ffe07fce06e64649e3a7384963a17ae8210c90607fb80d01da81399bddd84",
-  "distance_transform": "1886aa1ccab89a9e03057519a6c43ef6d6f23af275fb906288078075daa50d33",
+  "distance_transform": "9ff4b086b6b14f0a1fe4b293fac378e21346e11c3757687955161fee1c155067",
   "local_std_filter": "28824ea969adb383da8e6f95130a02109d81a6ee98373f5e7d69341611bf8f5a",
   "local_entropy_filter": "f342e4a5abda26e3727ce5f8f9b9814261e7ac875f7853779ad0f124c394c84f",
   "regionprops": "41b5895ba0c9b6cc45e1bd53bd63932eaa42c4a4ad0b4cc6b98c9b5c11067318",
@@ -146,15 +146,15 @@ const MIRRORED_SHA256 = {
   "color_inrange": "609a55c798b20e7f3e0c61c774653dc5732b420fd0ea671d5865e844075114aa",
   "invert": "f54d48faccf44064670fef450024216f1912e41813368439b66f6797016e08fa",
   "white_balance": "26dbfc104d7cd784b04a48060bb4b453d983f00a8c7c682d439b35e11aa55a50",
-  "kmeans_segment": "a52a499d3300f7d94bb6c0c519760a36bb9b986dfead9548de6ed3fa584fabd0",
+  "kmeans_segment": "8d30e0b5184ef9223cd524bfb860d334e28a741eeba16045d6dfd3dad0dbf290",
   "crop": "0592f3e90a3830d573a483b0383984b3c99717b430cfa2135f71f9526d6cc617",
   "resize": "e2f3140f5955bc874c801a615baa5791a900ae6ad930617e7abaae2bab107cef",
   "rotate": "cfb894ca640c15c3ec5737986b37057b6cef2818220682f267c0a6098d5b750a",
   "flip": "9d8e30e211c1611a779b8ced638141cf0d1d7513c41bd4302ce0e27866289854",
   "perspective_warp": "f2fc345e5b7b50195ea651755482fcb6296f36ca1379e2f139fbf1b233cfa935",
   "undistort": "1fdf2114469d604350a75e5268e0edd10ef17bd83ad557d9f14300f3d4314c01",
-  "fft_magnitude": "81e9d7a2885f605add5c2bca4ca5bffd66f56b808a44d245721b2b0281644980",
-  "fft_filter": "3c413265bae7bb5c6e87852c28c0c0d206e1a523c5a7bada3a485716836c7f1a",
+  "fft_magnitude": "e4b12b65bcf5c734769904d4da50e3b5b766b5ac6f3bfa1fc38b7ccdc3c8ad1a",
+  "fft_filter": "6783d5267c17a48906b4abaea213ea67a86f27a08165b6e0e60f08c5b1cd20cd",
   "imabsdiff": "69dfae2e8e3bb15b2171baa51d9bed9780bd254114060cb2e0f0f007c28c613e",
   "imfuse": "138bbba73bd2e4b03bdbcb53a9eca8096ee425a107889c299724b76a9d4bf86f",
   "mask": "0970fd0d0245d9f40ff3105763594a6ea6945e5fe658f96f8622a0f839f6588f",
@@ -164,7 +164,7 @@ const MIRRORED_SHA256 = {
   "hist_match": "64d783f2a30f7549cf457e35167e771c83c6e96ab681bb2ead735f0815d669ec",
   "template_matching": "eb8c588c3756c1d8484af0628e9d094a25ba9641b661f135460879253969f792",
   "psnr": "352e1a2992f509e2b055761119d8a1983295ad7e71aba96ba27076edec6d78bc",
-  "ssim": "6d11aff011c21c2131a367e8cf2263f7136e2ff37fe4087a6f9d38f2b6b28b40",
+  "ssim": "a80abe15833366cae60e2e3f3fd343aa4540b499a968b406c2c7cbee1a912a22",
   "mog2": "1687ec87a327f1668f05884351f8e0c96641b7e143c85dc5d8ab9a970c9d1105",
   "farneback_optical_flow": "2528cb981efedc3a159746e9f80524ca52c3aa7e1841866c4a9c0f24b7b2163d",
   "pyrlk_optical_flow": "fa669d3268e7fa5e6c33b42938a7880d92fce811d69154f41d4b4a6525f610e2",
@@ -230,7 +230,7 @@ const MIRRORED_SHA256 = {
   "gaussian_blur -> grayscale": "6c79f97d073a937cdb87f253b62bc138b9d88e3063133a04751cd46bb23c047f"
 };
 
-test("gray-order. frozen mirrored exports match bcdbf4a except approved rgb_adjust rounding", () => {
+test("gray-order. frozen mirrored exports match bcdbf4a except approved export rounding, FFT mask precision and K-means analysis resize", () => {
   for (const id of [...MIRRORED_OP_IDS, "gaussian_blur -> grayscale"]) {
     let pipe;
     if (id === "gaussian_blur -> grayscale") pipe = [step("gaussian_blur"), step("grayscale")];

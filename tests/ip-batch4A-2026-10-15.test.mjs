@@ -343,6 +343,7 @@ test('ip4a-L3. leak on the exception path AFTER the output exists: a ctx whose "
 // ip4a-G — golden: op เดิม 10 ตัว × params เดิม ให้ผล byte-identical (ภาพ + info + values + Python ที่ export + ข้อความการ์ด)
 // hash วัดบนโค้ดเดิม (HEAD 1755233) ก่อนแก้โค้ดบรรทัดแรก · 3 กรณี: (1) params เดิม (2) ส่ง param ใหม่เป็นค่าเริ่มต้นตรง ๆ (3) select ใหม่เป็นค่าแปลก / "constructor" / ตัวเลขนอกช่วง
 // ===================================================================
+// 2026-10-29: re-pin only eight fft_filter |PY entries for rounding and mask precision.
 const GOLDEN = {
   "custom_kernel:{\"preset\":\"identity\"}|color97": "912220aba888da50",
   "custom_kernel:{\"preset\":\"identity\"}|gray97": "22f4de4c526abb01",
@@ -518,7 +519,7 @@ const GOLDEN = {
   "fft_filter:{\"type\":\"low\",\"shape\":\"gaussian\"}|blobC": "cda499f44f32595f",
   "fft_filter:{\"type\":\"low\",\"shape\":\"gaussian\"}|one1": "6486f737894952ea",
   "fft_filter:{\"type\":\"low\",\"shape\":\"gaussian\"}|one3": "6486f737894952ea",
-  "fft_filter:{\"type\":\"low\",\"shape\":\"gaussian\"}|PY": "3c413265bae7bb5c",
+  "fft_filter:{\"type\":\"low\",\"shape\":\"gaussian\"}|PY": "6783d5267c17a489",
   "fft_filter:{\"type\":\"low\",\"shape\":\"gaussian\"}|UI": "f976c14e2cfa86e6",
   "fft_filter:{\"type\":\"low\",\"shape\":\"gaussian\",\"cutoff\":10}|color97": "023b1fe0d6a02ed7",
   "fft_filter:{\"type\":\"low\",\"shape\":\"gaussian\",\"cutoff\":10}|gray97": "9d8031b909aea58b",
@@ -526,7 +527,7 @@ const GOLDEN = {
   "fft_filter:{\"type\":\"low\",\"shape\":\"gaussian\",\"cutoff\":10}|blobC": "486d56d2c351d930",
   "fft_filter:{\"type\":\"low\",\"shape\":\"gaussian\",\"cutoff\":10}|one1": "169f5e4efa6d8429",
   "fft_filter:{\"type\":\"low\",\"shape\":\"gaussian\",\"cutoff\":10}|one3": "169f5e4efa6d8429",
-  "fft_filter:{\"type\":\"low\",\"shape\":\"gaussian\",\"cutoff\":10}|PY": "c7dc93b7f270204c",
+  "fft_filter:{\"type\":\"low\",\"shape\":\"gaussian\",\"cutoff\":10}|PY": "037a518ff4bda008",
   "fft_filter:{\"type\":\"low\",\"shape\":\"gaussian\",\"cutoff\":10}|UI": "ec4c31c38d6486f2",
   "fft_filter:{\"type\":\"low\",\"shape\":\"ideal\"}|color97": "207c4211165910f7",
   "fft_filter:{\"type\":\"low\",\"shape\":\"ideal\"}|gray97": "d768875eeac2c979",
@@ -534,7 +535,7 @@ const GOLDEN = {
   "fft_filter:{\"type\":\"low\",\"shape\":\"ideal\"}|blobC": "3373b000fbe7e973",
   "fft_filter:{\"type\":\"low\",\"shape\":\"ideal\"}|one1": "a8193255da9dc0ae",
   "fft_filter:{\"type\":\"low\",\"shape\":\"ideal\"}|one3": "a8193255da9dc0ae",
-  "fft_filter:{\"type\":\"low\",\"shape\":\"ideal\"}|PY": "78321b744eebf45d",
+  "fft_filter:{\"type\":\"low\",\"shape\":\"ideal\"}|PY": "f8c3b9e0c1f1c120",
   "fft_filter:{\"type\":\"low\",\"shape\":\"ideal\"}|UI": "8c6107727353b2f8",
   "fft_filter:{\"type\":\"low\",\"shape\":\"ideal\",\"cutoff\":10}|color97": "25dcf8d077f1bcdf",
   "fft_filter:{\"type\":\"low\",\"shape\":\"ideal\",\"cutoff\":10}|gray97": "aa99fe69943ed629",
@@ -542,7 +543,7 @@ const GOLDEN = {
   "fft_filter:{\"type\":\"low\",\"shape\":\"ideal\",\"cutoff\":10}|blobC": "677d91213b4bd6c0",
   "fft_filter:{\"type\":\"low\",\"shape\":\"ideal\",\"cutoff\":10}|one1": "86f3804a38a4a5b3",
   "fft_filter:{\"type\":\"low\",\"shape\":\"ideal\",\"cutoff\":10}|one3": "86f3804a38a4a5b3",
-  "fft_filter:{\"type\":\"low\",\"shape\":\"ideal\",\"cutoff\":10}|PY": "90dab0061d3524d4",
+  "fft_filter:{\"type\":\"low\",\"shape\":\"ideal\",\"cutoff\":10}|PY": "d631819bc7286fe8",
   "fft_filter:{\"type\":\"low\",\"shape\":\"ideal\",\"cutoff\":10}|UI": "f2848bd1b33439c2",
   "fft_filter:{\"type\":\"high\",\"shape\":\"gaussian\"}|color97": "f0439ee1299bc00a",
   "fft_filter:{\"type\":\"high\",\"shape\":\"gaussian\"}|gray97": "720fedb312353886",
@@ -550,7 +551,7 @@ const GOLDEN = {
   "fft_filter:{\"type\":\"high\",\"shape\":\"gaussian\"}|blobC": "75036fcd318b83fa",
   "fft_filter:{\"type\":\"high\",\"shape\":\"gaussian\"}|one1": "3e9cea53e1d6b7c0",
   "fft_filter:{\"type\":\"high\",\"shape\":\"gaussian\"}|one3": "3e9cea53e1d6b7c0",
-  "fft_filter:{\"type\":\"high\",\"shape\":\"gaussian\"}|PY": "1f321f8f2c547f51",
+  "fft_filter:{\"type\":\"high\",\"shape\":\"gaussian\"}|PY": "4b8f608cf91189e9",
   "fft_filter:{\"type\":\"high\",\"shape\":\"gaussian\"}|UI": "c114ddc8aaf6ca06",
   "fft_filter:{\"type\":\"high\",\"shape\":\"gaussian\",\"cutoff\":10}|color97": "733d47c894532609",
   "fft_filter:{\"type\":\"high\",\"shape\":\"gaussian\",\"cutoff\":10}|gray97": "d33c1ea50f2c9c96",
@@ -558,7 +559,7 @@ const GOLDEN = {
   "fft_filter:{\"type\":\"high\",\"shape\":\"gaussian\",\"cutoff\":10}|blobC": "5e0a955f9defcb4b",
   "fft_filter:{\"type\":\"high\",\"shape\":\"gaussian\",\"cutoff\":10}|one1": "236849404dd7ad72",
   "fft_filter:{\"type\":\"high\",\"shape\":\"gaussian\",\"cutoff\":10}|one3": "236849404dd7ad72",
-  "fft_filter:{\"type\":\"high\",\"shape\":\"gaussian\",\"cutoff\":10}|PY": "851d460002ed832c",
+  "fft_filter:{\"type\":\"high\",\"shape\":\"gaussian\",\"cutoff\":10}|PY": "caad4e92f6262e8f",
   "fft_filter:{\"type\":\"high\",\"shape\":\"gaussian\",\"cutoff\":10}|UI": "52c32f6f41d97aab",
   "fft_filter:{\"type\":\"high\",\"shape\":\"ideal\"}|color97": "b4ae29a15fa66ac1",
   "fft_filter:{\"type\":\"high\",\"shape\":\"ideal\"}|gray97": "7efd820d687f11d8",
@@ -566,7 +567,7 @@ const GOLDEN = {
   "fft_filter:{\"type\":\"high\",\"shape\":\"ideal\"}|blobC": "22cfd099f30e62ee",
   "fft_filter:{\"type\":\"high\",\"shape\":\"ideal\"}|one1": "60ebeb9d3025de0a",
   "fft_filter:{\"type\":\"high\",\"shape\":\"ideal\"}|one3": "60ebeb9d3025de0a",
-  "fft_filter:{\"type\":\"high\",\"shape\":\"ideal\"}|PY": "ab29aaa73fa4eeeb",
+  "fft_filter:{\"type\":\"high\",\"shape\":\"ideal\"}|PY": "7e1cd52bce1538e5",
   "fft_filter:{\"type\":\"high\",\"shape\":\"ideal\"}|UI": "26456dde715e21eb",
   "fft_filter:{\"type\":\"high\",\"shape\":\"ideal\",\"cutoff\":10}|color97": "87ae2c36cc64b568",
   "fft_filter:{\"type\":\"high\",\"shape\":\"ideal\",\"cutoff\":10}|gray97": "818e6c391a9acfcc",
@@ -574,7 +575,7 @@ const GOLDEN = {
   "fft_filter:{\"type\":\"high\",\"shape\":\"ideal\",\"cutoff\":10}|blobC": "e0e810a4d90750d1",
   "fft_filter:{\"type\":\"high\",\"shape\":\"ideal\",\"cutoff\":10}|one1": "a7d1687249871826",
   "fft_filter:{\"type\":\"high\",\"shape\":\"ideal\",\"cutoff\":10}|one3": "a7d1687249871826",
-  "fft_filter:{\"type\":\"high\",\"shape\":\"ideal\",\"cutoff\":10}|PY": "d59e98ca8bcac9dc",
+  "fft_filter:{\"type\":\"high\",\"shape\":\"ideal\",\"cutoff\":10}|PY": "8ccf24d9c1ab2e52",
   "fft_filter:{\"type\":\"high\",\"shape\":\"ideal\",\"cutoff\":10}|UI": "ed9c2818aa931399",
   "white_balance:{}|color97": "c952f7ef979e9f29",
   "white_balance:{}|gray97": "dff1cbe451f29f48",
@@ -713,7 +714,7 @@ function goldenAll(variant) {
   return res;
 }
 for (const [variant, what] of [['A', 'the old params'], ['B', 'every new param passed explicitly at its default'], ['C', 'every new select set to an unknown value / "constructor" and every new number to junk']]) {
-  test(`ip4a-G${variant}. golden: the 10 existing ops give byte-identical image + ctx.info + ctx.values + exported Python + card text on 4 deterministic images (${what}) -- 320 hashes measured on HEAD 1755233 before any edit`, () => {
+  test(`ip4a-G${variant}. golden: the 10 existing ops give byte-identical image + ctx.info + ctx.values + exported Python + card text on 4 deterministic images (${what}) -- 320 hashes from HEAD 1755233 except approved fft_filter export rounding and mask precision`, () => {
     const cur = goldenAll(variant);
     assert.equal(Object.keys(GOLDEN).length, 320);
     const bad = Object.keys(GOLDEN).filter((k) => cur[k] !== GOLDEN[k]);
