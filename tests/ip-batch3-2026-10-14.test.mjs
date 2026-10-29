@@ -1148,9 +1148,9 @@ test('ip3-T1. (static structure) 2 new ops exist with needs any / gray and no "m
   assert.deepEqual(OPS.resize.params.map((p) => p.key), ['scale', 'interp']); assert.deepEqual(OPS.rotate.params.map((p) => p.key), ['angle', 'expand', 'interp']);
   assert.deepEqual(OPS.resize.params.at(-1).options.map((o) => o.value), ['auto', 'nearest', 'bilinear', 'bicubic']);
   assert.deepEqual(OPS.quantize.params.map((p) => [p.key, p.min, p.max, p.step, p.default]), [['levels', 2, 256, 1, 4]]);
-  assert.deepEqual(OPS.shape_filter.params.map((p) => p.key), ['prop', 'lo', 'hi', 'minArea', 'maxArea', 'view']);
+  assert.deepEqual(OPS.shape_filter.params.map((p) => p.key), ['prop', 'lo', 'hi', 'minArea', 'maxArea', 'view', 'keepN', 'keepRank']);
   assert.deepEqual(OPS.shape_filter.params.find((p) => p.key === 'prop').options.map((o) => o.value), PROPS);
-  assert.deepEqual(OPS.shape_filter.params.filter((p) => p.type === 'number').map((p) => [p.key, p.min, p.max, p.step, p.default]), [['lo', 0, 1, 0.01, 0.8], ['hi', 0, 1, 0.01, 1], ['minArea', 0, 100000, 10, 50], ['maxArea', 0, 5000000, 100, 0]]);
+  assert.deepEqual(OPS.shape_filter.params.filter((p) => p.type === 'number').map((p) => [p.key, p.min, p.max, p.step, p.default]), [['lo', 0, 1, 0.01, 0.8], ['hi', 0, 1, 0.01, 1], ['minArea', 0, 100000, 10, 50], ['maxArea', 0, 5000000, 100, 0], ['keepN', 0, 1000, 1, 0]]);
   assert.deepEqual(OPS.shape_filter.params.find((p) => p.key === 'view').options.map((o) => o.value), ['overlay', 'mask']);
   // the node itself works (group dispatch) and equals the direct op
   const g = sfScene();
@@ -1200,6 +1200,7 @@ test('ip3-T4. (static read) every numeric param of the new ops is clamped to EXA
   const genCheck = (id, k) => { const m = opBlock(SRC_GEN, id).match(new RegExp(`clampNum\\(p\\.${k}, ${num}, ${num}, ${num}\\)`)); assert.ok(m, `codegen ${id}.${k}`); assert.deepEqual(m.slice(1).map(Number), spec(id, k), `codegen ${id}.${k}`); };
   regCheck('quantize', 'levels', 'intIn');
   for (const k of ['lo', 'hi', 'minArea', 'maxArea']) { regCheck('shape_filter', k, 'numIn'); genCheck('shape_filter', k); }
+  regCheck('shape_filter', 'keepN', 'intIn'); genCheck('shape_filter', 'keepN');
   genCheck('quantize', 'levels');
   assert.match(opBlock(SRC_GEN, 'quantize'), /Math\.round\(clampNum\(p\.levels/);
   for (const id of NEW_OPS) for (const p of OPS[id].params) if (p.type === 'number') assert.ok(covered.has(`${id}.${p.key}`), `${id}.${p.key} not covered`);

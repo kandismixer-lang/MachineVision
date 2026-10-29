@@ -95,7 +95,7 @@ function texture(w = 128, h = 128) {
 }
 
 test("ip5b-S. five registered tools, exact defaults/ranges, placement, visibility, Thai metadata and values sources", () => {
-  const placements = [["image_pyramid", "geometry", "resize"], ["frangi_vesselness", "segment_edge", "log_edge"], ["anisotropic_diffusion", "filter_denoise", "guided_filter"], ["debayer", "color_tools", "colorspace_inverse"], ["piqe", "image_quality", "seg_score"]];
+  const placements = [["image_pyramid", "geometry", "resize"], ["frangi_vesselness", "segment_edge", "log_edge"], ["anisotropic_diffusion", "filter_denoise", "guided_filter"], ["debayer", "color_tools", "colorspace_inverse"], ["bf_score", "image_quality", "seg_score"], ["piqe", "image_quality", "bf_score"]];
   for (const [id, host, after] of placements) {
     assert.ok(OPS[id], id + " must be registered");
     assert.equal(OP_TO_FILTER[id], host);

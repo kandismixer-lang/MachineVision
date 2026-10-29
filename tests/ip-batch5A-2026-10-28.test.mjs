@@ -141,7 +141,7 @@ test("ip5a-S1. registration, placement, shared inverse options, params, groups, 
   after("SEGMENTATION & EDGE", "watershed", "watershed_marker");
   after("ANALYSIS & DETECTION", "regionprops", "euler_number");
   for (const [a, b] of [["remove_small", "clean"], ["clean", "majority"], ["skeleton", "spur"], ["spur", "thin"], ["thin", "shrink"], ["h_maxima", "h_minima"], ["extended_max", "extended_min"]]) after("MORPHOLOGY", "morph_" + a, "morph_" + b);
-  assert.deepEqual(OPS.morphology.params[0].options.map((o) => o.value), [...OLD_MORPH, ...MORPH]);
+  assert.deepEqual(OPS.morphology.params[0].options.map((o) => o.value), [...OLD_MORPH, ...MORPH, "ult_erode"]);
   assert.equal(FILTERS.image_quality.inputs, 2);
   for (const id of ["watershed_marker", "seg_score", "euler_number"]) assert.ok(PF_VALUE_OPS.has(id));
   assert.ok(!PF_VALUE_OPS.has("lowlight_enhance"));

@@ -1294,8 +1294,11 @@ export function reconstructDilate(J, I, W, H) {
 }
 // Regional Maxima: บริเวณที่สว่างกว่าทุกพิกเซลรอบตัว (8-connected) → Uint8Array 0/255 · I = Int32Array
 export function regionalMaxMask(I, W, H) {
-  const n = I.length, J = new Int32Array(n);
-  for (let i = 0; i < n; i++) J[i] = I[i] - 1;
+  // Float64 also handles squared distances and OpenCV's all-foreground sentinel.
+  // Keep the existing Int32 path exactly as before for grayscale morphology.
+  const wide = I instanceof Float64Array;
+  const n = I.length, J = wide ? new Float64Array(n) : new Int32Array(n);
+  for (let i = 0; i < n; i++) J[i] = I[i] - (wide ? Math.max(1, Math.abs(I[i]) * Number.EPSILON) : 1);
   reconstructDilate(J, I, W, H);
   const out = new Uint8Array(n);
   for (let i = 0; i < n; i++) out[i] = I[i] - J[i] >= 1 ? 255 : 0;
@@ -1533,6 +1536,7 @@ export const PASS_FAIL_METRICS = {
   de_mean: { op: "delta_e", th: "Color Difference ΔE", pick: (v) => pfScalar(v, "de_mean") },
   iou: { op: "seg_score", th: "Segmentation Score", pick: (v) => pfScalar(v, "iou") },
   dice: { op: "seg_score", th: "Segmentation Score", pick: (v) => pfScalar(v, "dice") },
+  bf: { op: "bf_score", th: "Boundary F1 Score", pick: (v) => pfScalar(v, "bf") },
   piqe: { op: "piqe", th: "PIQE", pick: (v) => pfScalar(v, "piqe") },
 };
 // เกณฑ์แสดงบนข้อความ: ปัด 2 ตำแหน่งแล้วตัดศูนย์ท้าย (0.30000000000000004 → 0.3 · 1 → 1)
@@ -1581,6 +1585,85 @@ export function passFailVerdict(p, upstream) {
 // ===================================================================
 // OPS — operation ย่อยแต่ละตัว (logic เดิม ไม่เปลี่ยน)
 // ===================================================================
+// IP batch 5C helpers. New paths only, except regionalMaxMask's numeric storage.
+const BF_FIELDS = [["bf", "Boundary F1 Score"], ["precision", "Precision"], ["recall", "Recall"]];
+const OVERLAY_COLORS = {
+  red: { th: "แดง", rgb: [230, 60, 60] }, green: { th: "เขียว", rgb: [60, 200, 90] },
+  blue: { th: "ฟ้า", rgb: [60, 140, 255] }, yellow: { th: "เหลือง", rgb: [240, 210, 40] },
+  cyan: { th: "ฟ้าอมเขียว", rgb: [40, 210, 220] }, magenta: { th: "ม่วงแดง", rgb: [220, 70, 200] },
+};
+function boundary4(data, W, H) {
+  const out = new Uint8Array(W * H);
+  for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) {
+    const i = y * W + x;
+    if (data[i] > 127 && (x === 0 || y === 0 || x === W - 1 || y === H - 1 || data[i - 1] <= 127 || data[i + 1] <= 127 || data[i - W] <= 127 || data[i + W] <= 127)) out[i] = 1;
+  }
+  return out;
+}
+function ultimateErode(cv, src, p, ctx) {
+  if (isEmptyMat(src)) { if (ctx) ctx.info = "พบจุดกลาง 0 บริเวณ · ภาพว่าง"; return src.clone(); }
+  let gray = null, bin = null, dist = null, dst = null, labels = null;
+  try {
+    gray = grayIfNeeded(cv, src); const g = gray || src;
+    bin = new cv.Mat(); dist = new cv.Mat();
+    cv.threshold(g, bin, 127, 255, cv.THRESH_BINARY);
+    cv.distanceTransform(bin, dist, cv.DIST_L2, cv.DIST_MASK_PRECISE);
+    const D = Float64Array.from(dist.data32F, (v) => Math.floor(v * v + 0.5));
+    const maxima = regionalMaxMask(D, g.cols, g.rows);
+    for (let i = 0; i < maxima.length; i++) if (!bin.data[i] || D[i] === 0) maxima[i] = 0;
+    dst = cv.matFromArray(g.rows, g.cols, cv.CV_8UC1, maxima); labels = new cv.Mat();
+    const n = cv.connectedComponents(dst, labels, 8, cv.CV_32S) - 1;
+    if (ctx) ctx.info = `พบจุดกลาง ${n} บริเวณ` + (n === 0 ? " · ไม่มีวัตถุ (ค่า > 127)" : "");
+    const out = dst; dst = null; return out;
+  } finally { for (const m of [dst, labels, dist, bin, gray]) if (m) m.delete(); }
+}
+function localLaplacian(cv, gray, sigma, amount, nLev) {
+  const gaussian = [], owned = [];
+  const top = nLev; // nLev detail bands plus the Gaussian residual G[nLev].
+  const pixels = gray.data;
+  const mat = () => { const m = new cv.Mat(); owned.push(m); return m; };
+  try {
+    const base = mat(); gray.convertTo(base, cv.CV_32F, 1 / 255); gaussian.push(base);
+    for (let l = 1; l <= top; l++) { const m = mat(); cv.pyrDown(gaussian[l - 1], m); gaussian.push(m); }
+    const acc = gaussian.slice(0, -1).map((g) => new Float64Array(g.rows * g.cols));
+    const alpha = 1 - amount, noiseSlope = Math.pow(0.01, alpha - 1);
+    // Remap from the original U8 luminance in float64, then enter the float32 pyramid.
+    for (let k = 0; k < 10; k++) {
+      const remapped = [], gamma = k / 9;
+      let up = null;
+      try {
+        const r = new Float32Array(pixels.length);
+        for (let i = 0; i < r.length; i++) {
+          const d = pixels[i] / 255 - gamma, t = Math.abs(d), u = t / sigma;
+          r[i] = t <= sigma ? gamma + Math.sign(d) * sigma * (u >= 0.01 ? Math.pow(u, alpha) : u * noiseSlope) : gamma + Math.sign(d) * (sigma + (t - sigma));
+        }
+        remapped.push(cv.matFromArray(gray.rows, gray.cols, cv.CV_32F, r));
+        for (let l = 1; l <= top; l++) { const m = new cv.Mat(); remapped.push(m); cv.pyrDown(remapped[l - 1], m); }
+        up = new cv.Mat();
+        for (let l = 0; l < top; l++) {
+          const g = gaussian[l], fine = remapped[l];
+          cv.pyrUp(remapped[l + 1], up, new cv.Size(g.cols, g.rows));
+          const gd = g.data32F, fd = fine.data32F, ud = up.data32F, a = acc[l];
+          for (let i = 0; i < acc[l].length; i++) {
+            const w = Math.max(0, 1 - Math.abs(gd[i] - gamma) * 9);
+            a[i] += w * (fd[i] - ud[i]);
+          }
+        }
+      } finally { if (up) up.delete(); for (const m of remapped) m.delete(); }
+    }
+    let result = Float64Array.from(gaussian[top].data32F);
+    const coarse = mat(), up = mat();
+    for (let l = top - 1; l >= 0; l--) {
+      const g = gaussian[l + 1], target = gaussian[l];
+      coarse.create(g.rows, g.cols, cv.CV_32F); coarse.data32F.set(result);
+      cv.pyrUp(coarse, up, new cv.Size(target.cols, target.rows));
+      const ud = up.data32F;
+      result = Float64Array.from(acc[l], (v, i) => ud[i] + v);
+    }
+    return result;
+  } finally { for (const m of owned) m.delete(); }
+}
+
 export const OPS = {
   // ---------------- 1. Color Space ----------------
   grayscale: {
@@ -2251,6 +2334,7 @@ export const OPS = {
         { value: "shrink", label: "Shrink (หดเป็นจุด)", hint: "หดวัตถุโดยรักษาจำนวนวัตถุและรู · 0 = จนนิ่ง" },
         { value: "h_minima", label: "H-minima (ถมหุบตื้นกว่า h)", hint: "ถมหุบตื้นในภาพเทา ไม่ตัดที่ 127" },
         { value: "extended_min", label: "Extended Min (หุบลึก ≥ h)", hint: "หาตำแหน่งหุบหลังถมหุบตื้นด้วย h" },
+        { value: "ult_erode", label: "Ultimate Erosion (หาจุดกลางวัตถุ)", hint: "หายอดของระยะ Euclidean ใช้เป็น marker ให้ Watershed แยกวัตถุติดกัน" },
       ], default: "erode" },
       { key: "shape", visibleWhen: [{key:"op",in:["erode","dilate","open","close","gradient","tophat","blackhat"]}], type: "select", label: "รูปร่าง kernel (ไม่มีผลกับ Skeleton และ Opening by Reconstruction)", options: [
         { value: "rect", label: "สี่เหลี่ยม (Rect)" },
@@ -2270,6 +2354,7 @@ export const OPS = {
     ],
     apply(cv, src, p, ctx) {
       // IP batch 4B — ตัวเลือกใหม่ (ไม่ใช้ shape/ksize/iterations) · path เดิมทุกตัวด้านล่างไม่เปลี่ยน
+      if (p.op === "ult_erode") return ultimateErode(cv, src, p, ctx);
       if (p.op === "hit_or_miss") return hitMissOp(cv, src, p, ctx);
       if (p.op === "regional_max" || p.op === "regional_min" || p.op === "h_maxima" || p.op === "extended_max") return regionalOp(cv, src, p, ctx);
       if (Object.hasOwn(MORPH_5A, p.op)) return morphology5A(cv, src, p, ctx);
@@ -6563,7 +6648,7 @@ export const OPS = {
   shape_filter: {
     name: "Filter by Shape (คัดวัตถุตามรูปร่าง)",
     needs: "gray",
-    desc: "เก็บหรือทิ้งวัตถุ 'ทั้งชิ้น' ตามตัวเลขที่วัดได้ — เป็นขั้นต่อจาก Remove Small (ที่คัดตามพื้นที่อย่างเดียว) เทียบได้กับ bwpropfilt + bwareafilt ของ MATLAB รวมในกล่องเดียว · ตัวเลขที่ใช้คัดคือค่าเดียวกับคอลัมน์ใน Region Properties ของวัตถุชิ้นเดียวกัน (ความกลม ความตัน ความรี เต็มกรอบ พื้นที่นับพิกเซล) — ดูตารางก่อนแล้วค่อยตั้งช่วงที่ต้องการ · ความกลม = 4π×พื้นที่ ÷ เส้นรอบรูป² (วงกลมในภาพพิกเซลไม่มีทางได้ 1 — ราว 0.85–0.89, สี่เหลี่ยม ≈ 0.79) · ความตัน = พื้นที่ ÷ รูปนูนที่ห่อวัตถุ (1 = ไม่เว้า/ไม่มีรู) · ความรี 0 = กลม, 0.87 ≈ ยาว 2 เท่าของกว้าง, 0.97 ≈ 4 เท่า, เส้น ≈ 1 · เต็มกรอบ = พื้นที่ ÷ กรอบสี่เหลี่ยมตรง (สี่เหลี่ยมตรง = 1, วงกลม ≈ 0.77) · ช่วงพื้นที่ใช้จำนวนพิกเซลที่นับจริง ไม่ใช่ 'area' แบบเส้นหลายเหลี่ยมที่ 'พื้นที่ขั้นต่ำ' ของ Region Properties ใช้ · วัตถุ = บริเวณสีขาวหลังตัดที่ > 127 รูในวัตถุยังเป็นรู วัตถุเกาะที่อยู่ในรูจะตามวัตถุชั้นนอก · แสดงผลแบบ overlay: ขาว = เก็บ, แดง = คัดทิ้ง ทั้ง overlay และ Mask ต่อเข้า Region Properties ได้ (สีแดงถูกตัดทิ้งที่ 127) · ต่างจาก MATLAB: bwpropfilt ใช้ 8-connected components และนับวัตถุเกาะเป็นอีกชิ้นหนึ่ง ส่วนเส้นรูปนูนของความตัน ผ่านกลางพิกเซล",
+    desc: "เก็บหรือทิ้งวัตถุ 'ทั้งชิ้น' ตามตัวเลขที่วัดได้ — เป็นขั้นต่อจาก Remove Small (ที่คัดตามพื้นที่อย่างเดียว) เทียบได้กับ bwpropfilt + bwareafilt ของ MATLAB รวมในกล่องเดียว · ตัวเลขที่ใช้คัดคือค่าเดียวกับคอลัมน์ใน Region Properties ของวัตถุชิ้นเดียวกัน (ความกลม ความตัน ความรี เต็มกรอบ พื้นที่นับพิกเซล) — ดูตารางก่อนแล้วค่อยตั้งช่วงที่ต้องการ · ความกลม = 4π×พื้นที่ ÷ เส้นรอบรูป² (วงกลมในภาพพิกเซลไม่มีทางได้ 1 — ราว 0.85–0.89, สี่เหลี่ยม ≈ 0.79) · ความตัน = พื้นที่ ÷ รูปนูนที่ห่อวัตถุ (1 = ไม่เว้า/ไม่มีรู) · ความรี 0 = กลม, 0.87 ≈ ยาว 2 เท่าของกว้าง, 0.97 ≈ 4 เท่า, เส้น ≈ 1 · เต็มกรอบ = พื้นที่ ÷ กรอบสี่เหลี่ยมตรง (สี่เหลี่ยมตรง = 1, วงกลม ≈ 0.77) · ช่วงพื้นที่ใช้จำนวนพิกเซลที่นับจริง ไม่ใช่ 'area' แบบเส้นหลายเหลี่ยมที่ 'พื้นที่ขั้นต่ำ' ของ Region Properties ใช้ · วัตถุ = บริเวณสีขาวหลังตัดที่ > 127 รูในวัตถุยังเป็นรู วัตถุเกาะที่อยู่ในรูจะตามวัตถุชั้นนอก · แสดงผลแบบ overlay: ขาว = เก็บ, แดง = คัดทิ้ง ทั้ง overlay และ Mask ต่อเข้า Region Properties ได้ (สีแดงถูกตัดทิ้งที่ 127) · ต่างจาก MATLAB: bwpropfilt ใช้ 8-connected components และนับวัตถุเกาะเป็นอีกชิ้นหนึ่ง ส่วนเส้นรูปนูนของความตัน ผ่านกลางพิกเซล · เก็บเฉพาะ N ชิ้นใหญ่หรือเล็กตามพื้นที่ได้หลังคัดตามเกณฑ์เดิม",
     params: [
       { key: "prop", type: "select", label: "คัดตามค่า", options: [
         { value: "circularity", label: "ความกลม (circularity)", hint: "4π×พื้นที่ ÷ เส้นรอบรูป² (ค่าเดียวกับคอลัมน์ 'ความกลม') · วงกลมในภาพพิกเซลได้ราว 0.85–0.89 · สี่เหลี่ยม ≈ 0.79 · วงกลมรัศมีน้อยกว่า 8 px ได้ต่ำกว่า 0.8" },
@@ -6580,6 +6665,8 @@ export const OPS = {
         { value: "overlay", label: "ขาว = เก็บ · แดง = คัดทิ้ง" },
         { value: "mask", label: "Mask ขาว-ดำ (เฉพาะที่เก็บ)" },
       ], default: "overlay" },
+      { key: "keepN", type: "number", label: "เก็บเฉพาะ N ชิ้น (0 = ไม่จำกัด)", min: 0, max: 1000, step: 1, default: 0, hint: "คัดตามเกณฑ์เดิมก่อน แล้วเก็บตามลำดับพื้นที่" },
+      { key: "keepRank", type: "select", label: "ลำดับพื้นที่ที่เก็บ", options: [{ value: "largest", label: "ใหญ่สุด" }, { value: "smallest", label: "เล็กสุด" }], default: "largest", hint: "ใช้เมื่อเก็บเฉพาะ N ชิ้นมากกว่า 0" },
     ],
     apply(cv, src, p, ctx) {
       if (isEmptyMat(src)) {
@@ -6588,6 +6675,7 @@ export const OPS = {
       }
       const prop = ownKey(SHAPE_FILTER_PROP_TH, p.prop, "circularity");
       const view = ownKey(SHAPE_FILTER_VIEWS, p.view, "overlay");
+      const keepN = intIn(p.keepN, 0, 0, 1000), smallest = ownKey({ largest: true, smallest: true }, p.keepRank, "largest") === "smallest";
       let lo = numIn(p.lo, 0.8, 0, 1), hi = numIn(p.hi, 1, 0, 1);
       let minA = numIn(p.minArea, 50, 0, 100000), maxA = numIn(p.maxArea, 0, 0, 5000000);
       let rangeSwapped = false, areaSwapped = false;
@@ -6606,6 +6694,7 @@ export const OPS = {
         keptMask = cv.Mat.zeros(H, W, cv.CV_8UC1);
         const total = contours.size();
         let kept = 0, removedArea = 0, removedShape = 0;
+        const candidates = [];
         for (let i = 0; i < total; i++) {
           const c = contours.get(i);
           try {
@@ -6625,10 +6714,20 @@ export const OPS = {
               }
               if (!(val >= lo && val <= hi)) { removedShape++; continue; }
             }
-            kept++;
-            cv.drawContours(keptMask, contours, i, new cv.Scalar(255), cv.FILLED, cv.LINE_8, hier, 0);
+            if (keepN > 0) candidates.push({ i, area: s.n });
+            else {
+              kept++;
+              cv.drawContours(keptMask, contours, i, new cv.Scalar(255), cv.FILLED, cv.LINE_8, hier, 0);
+            }
           } finally {
             c.delete();
+          }
+        }
+        if (keepN > 0) {
+          candidates.sort((a, b) => (smallest ? a.area - b.area : b.area - a.area) || a.i - b.i);
+          for (const { i } of candidates.slice(0, keepN)) {
+            cv.drawContours(keptMask, contours, i, new cv.Scalar(255), cv.FILLED, cv.LINE_8, hier, 0);
+            kept++;
           }
         }
         cv.bitwise_and(keptMask, bin, keptMask); // รูของวัตถุที่เก็บยังดำ · วัตถุเกาะตามวัตถุชั้นนอก
@@ -6651,6 +6750,7 @@ export const OPS = {
           }
           if (rangeSwapped) info += " · สลับค่าต่ำสุด/สูงสุดให้แล้ว";
           if (areaSwapped) info += " · สลับพื้นที่ขั้นต่ำ/สูงสุดให้แล้ว";
+          if (keepN > 0) info += ` · เก็บ ${keepN} ชิ้น${smallest ? "เล็ก" : "ใหญ่"}สุด`;
           if (view === "overlay") info += " · ขาว = เก็บ แดง = คัดทิ้ง (ต่อเข้า Region Properties ได้เลย สีแดงจะถูกตัดทิ้งที่ 127)";
           ctx.info = info;
           ctx.values = scalarValues(SHAPE_FILTER_FIELDS, [total, kept, removedArea, removedShape]);
@@ -8032,6 +8132,138 @@ export const OPS = {
     },
   },
 
+  bf_score: {
+    name: "Boundary F1 Score (ความแม่นของเส้นขอบ)", needs: "any",
+    modeHint: "เทียบเส้นขอบ mask ใน A กับคำตอบใน B",
+    desc: "ต่างจาก IoU ตรงที่ดูเฉพาะเส้นขอบ · ขอบหยักหรือเลื่อนอาจได้ BF ต่ำแม้ IoU สูง · แปลงทั้งคู่เป็นเทาแล้วตัดที่ > 127 ใช้ขอบ 4 ทิศ นอกภาพเป็นดำ · ระยะยอมรับวัดเป็นเปอร์เซ็นต์ของเส้นทแยง A · เขียว = ตรง แดง = เกิน ฟ้า = ขาด · ต่อ mask คำตอบที่ช่อง เข้า B",
+    params: [{ key: "tolPct", type: "number", label: "ระยะยอมรับ (% ของเส้นทแยงภาพ)", min: 0.1, max: 5, step: 0.05, default: 0.75, hint: "เพิ่มเมื่อต้องการยอมให้ขอบเลื่อนเล็กน้อย" }],
+    apply(cv, src, p, ctx) {
+      if (isEmptyMat(src)) { if (ctx) { ctx.info = "ภาพว่าง"; ctx.values = scalarValues(BF_FIELDS, []); } return src.clone(); }
+      let ga = null, gb = null, matched = null, invA = null, invB = null, da = null, db = null, dst = null;
+      try {
+        if (!ctx || !ctx.src2 || isEmptyMat(ctx.src2)) {
+          dst = rgbIfNeeded(cv, src) || src.clone();
+          if (ctx) { ctx.info = ctx.src2 ? EMPTY_SRC2_INFO : NO_SRC2_INFO; delete ctx.values; }
+        } else {
+          ga = grayIfNeeded(cv, src); gb = grayIfNeeded(cv, ctx.src2);
+          const a = ga || src, b0 = gb || ctx.src2, W = a.cols, H = a.rows;
+          const resized = H !== b0.rows || W !== b0.cols;
+          if (resized) { matched = new cv.Mat(); cv.resize(b0, matched, new cv.Size(W, H), 0, 0, cv.INTER_NEAREST); }
+          const aa = boundary4(a.data, W, H), bb = boundary4((matched || b0).data, W, H);
+          let na = 0, nb = 0;
+          for (let i = 0; i < aa.length; i++) { na += aa[i]; nb += bb[i]; }
+          if (na && nb) {
+            invA = cv.matFromArray(H, W, cv.CV_8UC1, Uint8Array.from(aa, (v) => v ? 0 : 255));
+            invB = cv.matFromArray(H, W, cv.CV_8UC1, Uint8Array.from(bb, (v) => v ? 0 : 255));
+            da = new cv.Mat(); db = new cv.Mat();
+            cv.distanceTransform(invA, da, cv.DIST_L2, cv.DIST_MASK_PRECISE);
+            cv.distanceTransform(invB, db, cv.DIST_L2, cv.DIST_MASK_PRECISE);
+          }
+          const theta = numIn(p.tolPct, 0.75, 0.1, 5) / 100 * Math.sqrt(W * W + H * H), theta2 = theta * theta;
+          let ma = 0, mb = 0;
+          dst = new cv.Mat(H, W, cv.CV_8UC3, new cv.Scalar(0));
+          const dad = da && da.data32F, dbd = db && db.data32F, od = dst.data;
+          for (let i = 0; i < aa.length; i++) {
+            const am = !!(na && nb && Math.floor(dbd[i] * dbd[i] + 0.5) <= theta2);
+            const bm = !!(na && nb && Math.floor(dad[i] * dad[i] + 0.5) <= theta2);
+            if (bb[i]) { if (bm) mb++; else od.set([60, 140, 255], i * 3); }
+            if (aa[i]) { if (am) ma++; od.set(am ? [60, 200, 90] : [230, 60, 60], i * 3); }
+          }
+          const precision = na ? ma / na : 1, recall = nb ? mb / nb : 1;
+          const bf = precision + recall ? 2 * precision * recall / (precision + recall) : 0;
+          ctx.info = `BF ${fixed4(bf)} · precision ${fixed4(precision)} · recall ${fixed4(recall)} · ระยะยอมรับ ${fixed2(theta)} px` + (resized ? RESIZED_B_INFO : "");
+          ctx.values = scalarValues(BF_FIELDS, [bf, precision, recall]);
+        }
+        const out = dst; dst = null; return out;
+      } finally { for (const m of [dst, db, da, invB, invA, matched, gb, ga]) if (m) m.delete(); }
+    },
+  },
+
+  local_contrast: {
+    name: "Local Contrast (เพิ่มรายละเอียดเฉพาะที่)", needs: "any",
+    modeHint: "เพิ่มรายละเอียดจางหรือทำให้เรียบโดยคงขอบใหญ่",
+    desc: "ปรับรายละเอียดเฉพาะบริเวณด้วย Fast Local Laplacian Filter (Aubry et al. 2014) แนวเดียวกับ localcontrast ของ MATLAB แต่ตัวเลขไม่ได้ตรง MATLAB · ค่าบวกเพิ่มรายละเอียด ค่าลบทำให้เรียบ · ภาพสีปรับความสว่างแล้วคืนสีด้วยอัตราส่วนเดิม · ภาพด้านใดเล็กกว่า 16 px คืนภาพเดิม",
+    params: [
+      { key: "edgeThreshold", type: "number", label: "ความต่างที่ถือว่าเป็นขอบ (สัดส่วนของ 0–255)", min: 0.01, max: 1, step: 0.01, default: 0.3, hint: "ความต่างเล็กกว่าค่านี้ถือเป็นรายละเอียด" },
+      { key: "amount", type: "number", label: "บวก = เพิ่มรายละเอียด · ลบ = ทำให้เรียบ", min: -1, max: 1, step: 0.05, default: 0.5, hint: "0 = ภาพเดิม" },
+    ],
+    apply(cv, src, p, ctx) {
+      if (isEmptyMat(src)) { if (ctx) ctx.info = "ภาพว่าง"; return src.clone(); }
+      const amount = numIn(p.amount, 0.5, -1, 1), sigma = numIn(p.edgeThreshold, 0.3, 0.01, 1);
+      const nLev = Math.max(1, Math.min(8, Math.floor(Math.log2(Math.min(src.cols, src.rows))) - 3));
+      let rgb = null, gray = null, dst = null;
+      try {
+        rgb = dropAlpha(cv, src); const input = rgb || src;
+        const small = Math.min(src.cols, src.rows) < 16;
+        if (amount === 0 || small) dst = input.clone();
+        else {
+          gray = grayIfNeeded(cv, input); const g = gray || input;
+          const light = localLaplacian(cv, g, sigma, amount, nLev);
+          dst = new cv.Mat(src.rows, src.cols, input.type());
+          const channels = input.channels();
+          const gd = g.data, data = input.data, od = dst.data;
+          for (let i = 0; i < light.length; i++) {
+            const l = Math.max(0, Math.min(1, light[i]));
+            for (let c = 0; c < channels; c++) {
+              const value = channels === 1 || gd[i] === 0 ? l * 255 : data[i * channels + c] * (l / (gd[i] / 255));
+              od[i * channels + c] = Math.floor(Math.max(0, Math.min(255, value)) + 0.5);
+            }
+          }
+        }
+        if (ctx) ctx.info = `Local Contrast · amount ${amount} · edge σ ${sigma} · ${nLev} ชั้น` + (small ? " · ภาพเล็กกว่า 16 px คืนภาพเดิม" : "");
+        const out = dst; dst = null; return out;
+      } finally { for (const m of [dst, gray, rgb]) if (m) m.delete(); }
+    },
+  },
+
+  mask_overlay: {
+    name: "Mask Overlay (ซ้อนสี mask บนภาพ)", needs: "any",
+    modeHint: "ซ้อนสีจาก mask ใน B บนภาพ A",
+    desc: "ดูตำแหน่งวัตถุจาก mask โดยยังเห็นภาพจริง · B แปลงเป็นเทาแล้วใช้ค่า > 127 ต่างขนาดจะย่อขยายแบบ nearest-neighbor · เลือกระบายทั้งบริเวณ แยกสีทีละชิ้น หรือขอบด้านใน · ความทึบ 0 = ภาพเดิม 100 = สีล้วน · ต่อ mask ที่ช่อง เข้า B",
+    params: [
+      { key: "style", type: "select", label: "รูปแบบการซ้อนสี", options: [{ value: "fill", label: "ระบายทั้งบริเวณ" }, { value: "labels", label: "แยกสีทีละชิ้น" }, { value: "outline", label: "เฉพาะเส้นขอบ" }], default: "fill", hint: "แยกชิ้นด้วยเพื่อนบ้าน 8 ทิศ" },
+      { key: "color", visibleWhen: [{ key: "style", in: ["fill", "outline"] }], type: "select", label: "สีที่ซ้อน", options: Object.entries(OVERLAY_COLORS).map(([value, v]) => ({ value, label: v.th })), default: "red", hint: "ใช้กับระบายบริเวณและเส้นขอบ" },
+      { key: "opacity", type: "number", label: "ความทึบ (%)", min: 0, max: 100, step: 5, default: 50, hint: "0 = ภาพเดิม · 100 = สีล้วน" },
+      { key: "thickness", visibleWhen: [{ key: "style", in: ["outline"] }], type: "number", label: "ความหนาขอบ (px)", min: 1, max: 10, step: 1, default: 2, hint: "กัดขอบเข้าด้านในด้วย kernel สี่เหลี่ยม" },
+    ],
+    apply(cv, src, p, ctx) {
+      if (isEmptyMat(src)) { if (ctx) ctx.info = "ภาพว่าง"; return src.clone(); }
+      let rgb = null, gray = null, matched = null, bin = null, eroded = null, kernel = null, labels = null, dst = null;
+      try {
+        rgb = rgbIfNeeded(cv, src); dst = (rgb || src).clone();
+        if (!ctx || !ctx.src2 || isEmptyMat(ctx.src2)) { if (ctx) ctx.info = ctx.src2 ? EMPTY_SRC2_INFO : NO_SRC2_INFO; }
+        else {
+          gray = grayIfNeeded(cv, ctx.src2); const b0 = gray || ctx.src2;
+          const resized = b0.rows !== src.rows || b0.cols !== src.cols;
+          if (resized) { matched = new cv.Mat(); cv.resize(b0, matched, new cv.Size(src.cols, src.rows), 0, 0, cv.INTER_NEAREST); }
+          bin = new cv.Mat(); cv.threshold(matched || b0, bin, 127, 255, cv.THRESH_BINARY);
+          const style = ownKey({ fill: true, labels: true, outline: true }, p.style, "fill");
+          const color = OVERLAY_COLORS[ownKey(OVERLAY_COLORS, p.color, "red")].rgb, opacity = intIn(p.opacity, 50, 0, 100);
+          let objects = 0;
+          if (style === "labels") { labels = new cv.Mat(); objects = cv.connectedComponents(bin, labels, 8, cv.CV_32S) - 1; }
+          if (style === "outline") {
+            eroded = new cv.Mat(); kernel = cv.getStructuringElement(cv.MORPH_RECT, new cv.Size(3, 3));
+            cv.erode(bin, eroded, kernel, new cv.Point(-1, -1), intIn(p.thickness, 2, 1, 10), cv.BORDER_CONSTANT, new cv.Scalar(0));
+          }
+          const colors = new Map(); let count = 0;
+          for (let i = 0; i < bin.data.length; i++) if (bin.data[i] && (!eroded || !eroded.data[i])) {
+            count++;
+            let c = color;
+            if (labels) {
+              const label = labels.data32S[i];
+              // Watershed's first object is 2; connectedComponents' first object is 1.
+              if (!colors.has(label)) colors.set(label, markerLabelRGB(label + 1));
+              c = colors.get(label);
+            }
+            for (let k = 0; k < 3; k++) dst.data[i * 3 + k] = Math.floor((dst.data[i * 3 + k] * (100 - opacity) + c[k] * opacity) / 100 + 0.5);
+          }
+          ctx.info = `ซ้อน mask ${count} px (${fixed1(count / bin.data.length * 100)}% ของภาพ)` + (labels ? ` · ${objects} ชิ้น` : "") + (resized ? RESIZED_B_INFO : "");
+        }
+        const out = dst; dst = null; return out;
+      } finally { for (const m of [dst, labels, kernel, eroded, bin, matched, gray, rgb]) if (m) m.delete(); }
+    },
+  },
+
   lowlight_enhance: {
     name: "Low-light Enhance (เพิ่มแสงภาพมืด)",
     needs: "any",
@@ -8437,6 +8669,7 @@ export const OPS = {
         { value: "de_mean", label: "ΔE เฉลี่ย (ต่อหลัง Color Difference ΔE)" },
         { value: "iou", label: "IoU (ต่อหลัง Segmentation Score)" },
         { value: "dice", label: "Dice (ต่อหลัง Segmentation Score)" },
+        { value: "bf", label: "Boundary F1 Score (ต่อหลัง Boundary F1 Score)" },
         { value: "piqe", label: "PIQE (ต่อหลัง PIQE · ค่าต่ำ = คุณภาพดี)" },
       ], default: "count", desc: "เลือกค่าที่จะเอามาตัดสิน — ต้องต่อกล่องวัดชนิดที่ระบุในวงเล็บไว้ก่อนหน้ากล่องนี้" },
       { key: "cond", type: "select", label: "เงื่อนไขที่ถือว่าผ่าน", options: [
@@ -8899,6 +9132,9 @@ const MORPH_SPLIT = [
   { op: "shrink", name: "Shrink (หดเป็นจุด)",
     modeHint: SLOW_MODE_HINT + " · รักษาจำนวนวัตถุและรู · 0 = จนนิ่ง",
     desc: "หดขอบ N/S/E/W ด้วย simple point แบบ 8/4 · ลบพร้อมกันในแต่ละกลุ่มพิกเซลสลับ 2×2 เพื่อรักษา Euler · วัตถุไม่มีรูเหลือจุด วัตถุมีรูเหลือวงรอบรู · ภาพก้อนหนาอาจช้า ควรใช้ภาพนิ่ง" },
+  { op: "ult_erode", name: "Ultimate Erosion (หาจุดกลางวัตถุ)",
+    modeHint: "หายอดของระยะ Euclidean ใช้เป็น marker ให้ Watershed",
+    desc: "หาบริเวณยอดของระยะจากวัตถุถึงพื้นหลัง (Euclidean, เพื่อนบ้าน 8 ทิศ) · ใช้ค่า > 127 เป็นวัตถุ ผลเป็นขาว-ดำ · ใช้เป็น marker ให้ Watershed แยกวัตถุที่ติดกัน · วัตถุยาวอาจได้เส้นหรือหลายจุด ไม่มีพารามิเตอร์" },
   { op: "reconstruct_open", name: "Recon. Opening (คงรูปร่าง)",
     modeHint: "เหมือน Opening แต่รักษาขอบวัตถุที่รอดไว้แม่นกว่า (ไม่มุมมน)",
     desc: "เหมือน Opening แต่รักษาขอบวัตถุที่รอดไว้แม่นกว่า (ไม่มุมมน): กัดภาพเป็น marker แล้วคืนรูปร่างเดิมให้ทุกวัตถุที่ยังเหลือ marker อยู่ — ขนาด kernel/จำนวนรอบ คือขนาดกัดตอนสร้าง marker (ใช้ kernel สี่เหลี่ยมเสมอ จึงไม่มีตัวเลือกรูปร่าง)" },
@@ -9139,7 +9375,7 @@ export const FILTERS = {
   // (ไฟล์โปรเจกต์เก่าที่บันทึก mode ไว้ต้องเปิดได้เหมือนเดิม)
   // 2026-10-24 ecc_register ย้ายไปหมวด Image Registration — คงไว้เป็น legacyOpIds ให้ undo/โปรเจกต์เก่ายังรันได้ (migrateLegacyStep ย้ายเทมเพลตไป image_registration)
   image_arithmetic: mergeGroup("Image Arithmetic", "Image Arithmetic",
-    ["imabsdiff", "imfuse", "mask", "imarith", "logical_ops", "inpaint", "hist_match", "roi_apply"], "imabsdiff", ["ecc_register"], { inputs: 2 }),
+    ["imabsdiff", "imfuse", "mask", "mask_overlay", "imarith", "logical_ops", "inpaint", "hist_match", "roi_apply"], "imabsdiff", ["ecc_register"], { inputs: 2 }),
 
   // Template Matching (Tier 2, 18b) — กลุ่มเดี่ยวใหม่ inputs:2 (ตามแนวเดียวกับ morphology/watershed/
   // grabcut ที่มี op เดียวไม่ต้องมี mode select wrapper) primary = ภาพค้นหา, src2 = template
@@ -9166,7 +9402,7 @@ export const FILTERS = {
     ["grayscale", "colorspace", "colorspace_inverse", "debayer", "channel_split", "rgb_adjust", "color_inrange", "kmeans_segment", "slic", "white_balance", "invert", "pseudocolor"], "grayscale"),
 
   enhance_tools: mergeGroup("Enhance", "Enhance",
-    ["brightness_contrast", "gamma", "hist_equalize", "clahe", "contrast_stretch", "flatfield_correction", "quantize", "unsharp", "laplacian_sharpen", "custom_kernel", "dehaze", "lowlight_enhance"], "brightness_contrast"),
+    ["brightness_contrast", "gamma", "hist_equalize", "clahe", "contrast_stretch", "flatfield_correction", "quantize", "unsharp", "laplacian_sharpen", "custom_kernel", "dehaze", "lowlight_enhance", "local_contrast"], "brightness_contrast"),
 
   filter_denoise: mergeGroup("Filter & Denoise", "Filter & Denoise",
     ["salt_pepper_noise", "gaussian_noise", "median_blur", "gaussian_blur", "box_blur", "bilateral", "wiener_filter", "guided_filter", "anisotropic_diffusion", "nlm_denoise", "deconv_wiener", "deconv_lucy"], "salt_pepper_noise"),
@@ -9181,7 +9417,7 @@ export const FILTERS = {
 
   // PSNR/SSIM รับภาพ 2 ใบ → inputs:2 (ช่อง "เข้า B" ใน editor.js)
   image_quality: mergeGroup("Image Quality", "Image Quality",
-    ["psnr", "ssim", "delta_e", "seg_score", "piqe"], "psnr", [], { inputs: 2 }),
+    ["psnr", "ssim", "delta_e", "seg_score", "bf_score", "piqe"], "psnr", [], { inputs: 2 }),
 
   // Motion ทั้งสามจำ state ข้ามเฟรม → stateful:true · เปลี่ยนวิธี = params เปลี่ยน → getNodeState (fingerprint) reset+dispose state เก่าเอง
   motion: mergeGroup("Motion", "Motion",

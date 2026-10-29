@@ -513,6 +513,66 @@ function regional5APy() {
     "    return np.where(hm - recon5a(hm - 1, hm) >= 1, 255, 0).astype(np.uint8)",
   ];
 }
+function ultimate5CPy() {
+  return guarded5A(`_, binary = cv2.threshold(img, 127, 255, cv2.THRESH_BINARY)
+distance = cv2.distanceTransform(binary, cv2.DIST_L2, cv2.DIST_MASK_PRECISE).astype(np.float64)
+D = np.floor(distance * distance + 0.5)
+m = D - np.maximum(1.0, np.abs(D) * np.finfo(np.float64).eps)
+while True:
+    nxt = np.minimum(cv2.dilate(m, np.ones((3, 3), np.uint8)), D)
+    if np.array_equal(nxt, m):
+        break
+    m = nxt
+img = np.where((D - m >= 1) & (D > 0) & (binary > 0), 255, 0).astype(np.uint8)
+objects = cv2.connectedComponents(img, connectivity=8)[0] - 1
+print(f'ultimate erosion: {objects} regions' + (' (no objects with value > 127)' if objects == 0 else ''))`.split("\n"));
+}
+function localContrast5CPy(p, ctx) {
+  const amount = clampNum(p.amount, 0.5, -1, 1), sigma = clampNum(p.edgeThreshold, 0.3, 0.01, 1);
+  return guarded5A(`img = img[:, :, :3].copy() if img.ndim == 3 else img.copy()
+amount, sigma = ${amount}, ${sigma}
+nlev = max(1, min(8, int(np.floor(np.log2(min(img.shape[:2])))) - 3))
+top = nlev  # Detail levels; the residual is the extra Gaussian level.
+if amount != 0 and min(img.shape[:2]) >= 16:
+    gray = img if img.ndim == 2 else cv2.cvtColor(img, ${pyGrayCode(ctx)})
+    light = gray.astype(np.float64) / 255
+    gaussian = [light.astype(np.float32)]
+    for level in range(1, top + 1):
+        gaussian.append(cv2.pyrDown(gaussian[-1], borderType=cv2.BORDER_DEFAULT))
+    acc = [np.zeros(g.shape, np.float64) for g in gaussian[:-1]]
+    alpha = 1 - amount
+    noise_slope = 0.01 ** (alpha - 1)
+    for k in range(10):
+        gamma = k / 9
+        d = light - gamma
+        t = np.abs(d)
+        u = t / sigma
+        f = np.where(u >= 0.01, np.power(u, alpha), u * noise_slope)
+        r = np.where(t <= sigma, gamma + np.sign(d) * sigma * f, gamma + np.sign(d) * (sigma + (t - sigma)))
+        remapped = [r.astype(np.float32)]
+        for level in range(1, top + 1):
+            remapped.append(cv2.pyrDown(remapped[-1], borderType=cv2.BORDER_DEFAULT))
+        for level in range(top):
+            g = gaussian[level].astype(np.float64)
+            up = cv2.pyrUp(remapped[level + 1], dstsize=(g.shape[1], g.shape[0])).astype(np.float64)
+            weight = np.maximum(0, 1 - np.abs(g - gamma) * 9)
+            acc[level] += weight * (remapped[level].astype(np.float64) - up)
+        del remapped
+    result = gaussian[top].astype(np.float64)
+    for level in range(top - 1, -1, -1):
+        target = gaussian[level]
+        up = cv2.pyrUp(result.astype(np.float32), dstsize=(target.shape[1], target.shape[0])).astype(np.float64)
+        result = up + acc[level]
+    result = np.clip(result, 0, 1)
+    if img.ndim == 2:
+        out = result * 255
+    else:
+        ratio = np.divide(result, light, out=np.zeros_like(result), where=light != 0)
+        out = img.astype(np.float64) * ratio[:, :, None]
+        out[light == 0] = (result[light == 0] * 255)[:, None]
+    img = np.floor(np.clip(out, 0, 255) + 0.5).astype(np.uint8)
+print(f'Local Contrast: amount {amount}, edge sigma {sigma}, {nlev} levels' + (' (image smaller than 16 px)' if min(img.shape[:2]) < 16 else ''))`.split("\n"));
+}
 function binaryMorph5APy(p) {
   const op = p.op, it = Math.floor(clampNum(p.iterations, 1, op === "majority" ? 1 : 0, op === "majority" ? 5 : 100) + 0.5);
   const shrink = op === "shrink", thin = op === "thin";
@@ -853,6 +913,7 @@ const GEN = {
   // outOf แทน out คงที่ เพราะ endpoints_branchpoints (ใหม่ 2026-10-01) คืนภาพสี (BGR) เสมอ ส่วน op อื่น
   // ทั้งหมดในกลุ่มนี้คืนภาพขาวดำ — ตามแนวเดียวกับ region_growing ที่ out ขึ้นกับ view
   morphology: { needs: "gray", outOf: (p) => (p.op === "endpoints_branchpoints" ? "color" : "gray"), gen: (p) => {
+    if (p.op === "ult_erode") return ultimate5CPy();
     if (["clean", "majority", "spur", "thin", "shrink"].includes(p.op)) return binaryMorph5APy(p);
     if (p.op === "h_minima" || p.op === "extended_min") {
       const h = Math.floor(clampNum(p.hHeight, 10, 1, 255) + 0.5);
@@ -1562,6 +1623,7 @@ const GEN = {
 
   // IP batch 3 — Filter by Shape: เลือกเฉพาะแขนงของ prop ที่ใช้ตอน gen (ไม่มี if ใน Python) · ตัวเลข/prop/view clamp+สลับตอน gen เหมือน registry.js
   shape_filter: { needs: "gray", outOf: (p) => (pickOwn(SHAPE_FILTER_VIEW_PY, p.view, "overlay") === "mask" ? "gray" : "color"), gen: (p, ctx) => {
+    const keepN = Math.floor(clampNum(p.keepN, 0, 0, 1000) + 0.5), smallest = p.keepRank === "smallest";
     const prop = pickOwn(SHAPE_FILTER_PROP_PY, p.prop, "circularity");
     const mask = pickOwn(SHAPE_FILTER_VIEW_PY, p.view, "overlay") === "mask";
     let lo = clampNum(p.lo, 0.8, 0, 1), hi = clampNum(p.hi, 1, 0, 1);
@@ -1577,6 +1639,7 @@ const GEN = {
       `min_area, max_area = ${String(minA)}, ${String(maxA)}  # max_area 0 = ไม่จำกัด`,
       "kept_mask = np.zeros(bin_img.shape, np.uint8)",
       "kept = removed_area = removed_shape = 0",
+      ...(keepN > 0 ? ["candidates = []"] : []),
       "for i, c in enumerate(contours):",
       "    x, y, w, h = cv2.boundingRect(c)",
       "    if w * h < min_area:",
@@ -1605,13 +1668,19 @@ const GEN = {
       );
     }
     lines.push(
-      "    kept += 1",
-      "    cv2.drawContours(kept_mask, contours, i, 255, -1)",
+      ...(keepN > 0 ? [
+        "    candidates.append((i, st['area_px']))",
+        `candidates.sort(key=lambda c: (${smallest ? "c[1]" : "-c[1]"}, c[0]))  # ties: original RETR_EXTERNAL contour index`,
+        `for i, area in candidates[:${keepN}]:`,
+        "    kept += 1",
+        "    cv2.drawContours(kept_mask, contours, i, 255, -1)",
+      ] : ["    kept += 1", "    cv2.drawContours(kept_mask, contours, i, 255, -1)"]),
       "kept_mask = cv2.bitwise_and(kept_mask, bin_img)",
       'print(f"shape filter: kept {kept} of {len(contours)} objects (removed by area {removed_area}, by shape {removed_shape})")',
     );
     if (rangeSwapped) lines.push('print("note: lo/hi were swapped")');
     if (areaSwapped) lines.push('print("note: min/max area were swapped")');
+    if (keepN > 0) lines.push(`print('keep ${keepN} ${smallest ? "smallest" : "largest"} objects')`);
     if (mask) {
       lines.push("img = kept_mask");
     } else {
@@ -3314,6 +3383,76 @@ const GEN = {
     '    print(f"IoU {np.floor(iou * 10000 + 0.5) / 10000:.4f} Dice {np.floor(dice * 10000 + 0.5) / 10000:.4f} precision {np.floor(precision * 10000 + 0.5) / 10000:.4f} recall {np.floor(recall * 10000 + 0.5) / 10000:.4f}" + (" (resized B with nearest neighbor)" if resized else ""))',
   ], ["iou = dice = precision = recall = tp = fp = fn = None"]) },
 
+  bf_score: { needs: "any", out: "color", bgrChannelOrder: true, gen: (p, ctx) => guarded5A(`a = img if img.ndim == 2 else cv2.cvtColor(img, ${pyGrayCode(ctx)})
+if img_b is None or img_b.size == 0:
+    img = cv2.cvtColor(a, cv2.COLOR_GRAY2BGR) if img.ndim == 2 else img[:, :, :3].copy()
+    print('boundary F1: connect ground truth to input B')
+else:
+    b = img_b if img_b.ndim == 2 else cv2.cvtColor(img_b, ${pyBGrayCode(ctx)})
+    resized = a.shape[:2] != b.shape[:2]
+    if resized:
+        b = cv2.resize(b, (a.shape[1], a.shape[0]), interpolation=cv2.INTER_NEAREST)
+    def boundary4(mask):
+        p = np.pad(mask, 1, constant_values=False)
+        return mask & ~(p[:-2, 1:-1] & p[2:, 1:-1] & p[1:-1, :-2] & p[1:-1, 2:])
+    aa, bb = boundary4(a > 127), boundary4(b > 127)
+    na, nb = int(np.count_nonzero(aa)), int(np.count_nonzero(bb))
+    theta = ${clampNum(p.tolPct, 0.75, 0.1, 5)} / 100 * np.sqrt(a.shape[1] * a.shape[1] + a.shape[0] * a.shape[0])
+    theta2 = theta * theta
+    am, bm = np.zeros_like(aa), np.zeros_like(bb)
+    if na and nb:
+        da = cv2.distanceTransform(np.where(aa, 0, 255).astype(np.uint8), cv2.DIST_L2, cv2.DIST_MASK_PRECISE).astype(np.float64)
+        db = cv2.distanceTransform(np.where(bb, 0, 255).astype(np.uint8), cv2.DIST_L2, cv2.DIST_MASK_PRECISE).astype(np.float64)
+        am = aa & (np.floor(db * db + 0.5) <= theta2)
+        bm = bb & (np.floor(da * da + 0.5) <= theta2)
+    precision = int(np.count_nonzero(am)) / na if na else 1.0
+    recall = int(np.count_nonzero(bm)) / nb if nb else 1.0
+    bf = 2 * precision * recall / (precision + recall) if precision + recall else 0.0
+    img = np.zeros((*a.shape[:2], 3), np.uint8)
+    img[bb & ~bm] = (255, 140, 60)
+    img[aa & ~am] = (60, 60, 230)
+    img[am] = (90, 200, 60)
+    print(f'BF {np.floor(bf * 10000 + 0.5) / 10000:.4f} precision {np.floor(precision * 10000 + 0.5) / 10000:.4f} recall {np.floor(recall * 10000 + 0.5) / 10000:.4f} tolerance {np.floor(theta * 100 + 0.5) / 100:.2f} px' + (' (resized B with nearest neighbor)' if resized else ''))`.split("\n"), ["bf = precision = recall = None"]) },
+
+  local_contrast: { needs: "any", out: "same", gen: localContrast5CPy },
+
+  mask_overlay: { needs: "any", out: "color", gen: (p, ctx) => {
+    const style = pickOwn({ fill: "fill", labels: "labels", outline: "outline" }, p.style, "fill");
+    const color = pickOwn({ red: [230, 60, 60], green: [60, 200, 90], blue: [60, 140, 255], yellow: [240, 210, 40], cyan: [40, 210, 220], magenta: [220, 70, 200] }, p.color, "red");
+    const opacity = Math.floor(clampNum(p.opacity, 50, 0, 100) + 0.5), thickness = Math.floor(clampNum(p.thickness, 2, 1, 10) + 0.5);
+    return guarded5A([
+      "img = cv2.cvtColor(img, cv2.COLOR_GRAY2BGR) if img.ndim == 2 else img[:, :, :3].copy()",
+      "if img_b is None or img_b.size == 0:",
+      "    print('mask overlay: connect mask to input B')",
+      "else:",
+      `    b = img_b if img_b.ndim == 2 else cv2.cvtColor(img_b, ${pyBGrayCode(ctx)})`,
+      "    resized = img.shape[:2] != b.shape[:2]",
+      "    if resized:",
+      "        b = cv2.resize(b, (img.shape[1], img.shape[0]), interpolation=cv2.INTER_NEAREST)",
+      "    binary = np.where(b > 127, 255, 0).astype(np.uint8)",
+      "    overlay_mask = binary > 0",
+      ...(style === "outline" ? [`    eroded = cv2.erode(binary, np.ones((3, 3), np.uint8), iterations=${thickness}, borderType=cv2.BORDER_CONSTANT, borderValue=0)`, "    overlay_mask &= eroded == 0"] : []),
+      ...(style === "labels" ? [
+        "    objects, labels = cv2.connectedComponents(binary, connectivity=8)",
+        "    colors = np.zeros((objects, 3), np.int64)",
+        "    for label in range(1, objects):",
+        "        # markerLabelRGB(label + 1): watershed object 2 maps to component 1.",
+        "        hue = ((label - 1) * 137.508) % 360 / 60",
+        "        c = 200 / 255",
+        "        x = c * (1 - abs(hue % 2 - 1))",
+        "        m = 1 - c",
+        "        rgb = [c, x, 0] if hue < 1 else [x, c, 0] if hue < 2 else [0, c, x] if hue < 3 else [0, x, c] if hue < 4 else [x, 0, c] if hue < 5 else [c, 0, x]",
+        "        rgb = [int(np.floor((v + m) * 255 + 0.5)) for v in rgb]",
+        `        colors[label] = rgb${isMirrored(ctx) ? "[::-1]" : ""}`,
+        "    color = colors[labels[overlay_mask]]",
+      ] : [`    color = np.array(${pyColor(ctx, color)}, np.int64)`]),
+      // Integer numerator and the same half-up rounding as the application.
+      `    img[overlay_mask] = np.floor((img[overlay_mask].astype(np.int64) * (100 - ${opacity}) + color * ${opacity}) / 100 + 0.5).astype(np.uint8)`,
+      "    pixels = int(np.count_nonzero(overlay_mask))",
+      `    print(f'mask overlay: {pixels} px ({np.floor(pixels / binary.size * 100 * 10 + 0.5) / 10:.1f}%)'${style === "labels" ? " + f' {objects - 1} objects'" : ""} + (' (resized B with nearest neighbor)' if resized else ''))`,
+    ]);
+  } },
+
   lowlight_enhance: { needs: "any", out: "same", gen: (p, ctx) => {
     const amount = clampNum(p.amount, 1, 0.1, 1), patch = odd(clampNum(p.patch, 15, 3, 31));
     const blend = boolOr(p.alphaBlend, false);
@@ -3708,8 +3847,8 @@ function appOnlyHeader(appOnly) {
 // ข้อจำกัดที่รู้ (ยอมรับ): template_matching (ไม่มี template / ใหญ่เกินภาพ) และ psnr/ssim (ไม่ได้ต่อ B) แอปคืนภาพโดยไม่มี values แต่ที่นี่ยังนับเป็น
 // "กล่องวัดล่าสุด" เสมอ — ผลคือ Python ตัดสิน NG (กล่องผิดชนิด) ในกรณีที่แอปจะใช้ค่าของกล่องวัดก่อนหน้า · เอนเอียงไปทาง NG (fail-safe)
 export const PF_VALUE_OPS = new Set(["regionprops", "template_matching", "psnr", "ssim", "mog2", "farneback_optical_flow", "pyrlk_optical_flow", "feret",
-  "line_profile", "shape_filter", "roi_polygon", "slic", "focus_score", "delta_e", "roi_apply", "ecc_register", "gabor_filter", "glcm", "dehaze", "dct_jpeg", "watershed_marker", "seg_score", "euler_number", "image_pyramid", "frangi_vesselness", "piqe"]);
-const PF_PY_SOURCES = { regionprops: true, roi_polygon: true, focus_score: true, seg_score: true, piqe: true };
+  "line_profile", "shape_filter", "roi_polygon", "slic", "focus_score", "delta_e", "roi_apply", "ecc_register", "gabor_filter", "glcm", "dehaze", "dct_jpeg", "watershed_marker", "seg_score", "bf_score", "euler_number", "image_pyramid", "frangi_vesselness", "piqe"]);
+const PF_PY_SOURCES = { regionprops: true, roi_polygon: true, focus_score: true, seg_score: true, bf_score: true, piqe: true };
 // บรรทัดท้ายขั้นวัด: เก็บค่าที่ pass_fail ต้องใช้ลง `pf_up` ทันที (ตัวแปรของขั้นวัดอาจถูกทับโดยขั้นถัดไป) · เรียกเมื่อ pipeline มี pass_fail เท่านั้น
 function pfSnapshotLines(opId, local, ctx) {
   if (!PF_VALUE_OPS.has(opId)) return [];
@@ -3722,6 +3861,7 @@ function pfSnapshotLines(opId, local, ctx) {
   if (opId === "roi_polygon") return ["pf_up = {'value': roi_mean}  # ค่าให้ขั้น Pass / Fail"];
   if (opId === "focus_score") return ["pf_up = {'value': score}  # ค่าให้ขั้น Pass / Fail"];
   if (opId === "seg_score") return ["pf_up = {'iou': iou, 'dice': dice}  # ค่าให้ขั้น Pass / Fail"];
+  if (opId === "bf_score") return ["pf_up = {'value': bf}  # ค่าให้ขั้น Pass / Fail"];
   if (opId === "piqe") return ["pf_up = {'value': piqe}  # ค่าให้ขั้น Pass / Fail"];
   return [];
 }

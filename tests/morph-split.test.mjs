@@ -23,8 +23,8 @@ if (!isReady(cv)) {
 // ลำดับที่ผู้ใช้สั่ง (เขียนซ้ำอิสระจาก registry)
 const OPS_ORDER = ['erode', 'dilate', 'open', 'close', 'gradient', 'tophat', 'blackhat', 'fill_holes', 'clear_border', 'remove_small',
   'skeleton', 'reconstruct_open', 'convex_hull', 'endpoints_branchpoints', 'hit_or_miss', 'regional_max', 'regional_min', 'h_maxima', 'extended_max'];
-const APPENDED_5A = ['clean', 'majority', 'spur', 'thin', 'shrink', 'h_minima', 'extended_min'];
-const SPLIT_ORDER = ['erode', 'dilate', 'open', 'close', 'gradient', 'tophat', 'blackhat', 'fill_holes', 'clear_border', 'remove_small', 'clean', 'majority', 'skeleton', 'spur', 'thin', 'shrink', 'reconstruct_open', 'convex_hull', 'endpoints_branchpoints', 'hit_or_miss', 'regional_max', 'regional_min', 'h_maxima', 'h_minima', 'extended_max', 'extended_min'];
+const APPENDED_5A = ['clean', 'majority', 'spur', 'thin', 'shrink', 'h_minima', 'extended_min', 'ult_erode'];
+const SPLIT_ORDER = ['erode', 'dilate', 'open', 'close', 'gradient', 'tophat', 'blackhat', 'fill_holes', 'clear_border', 'remove_small', 'clean', 'majority', 'skeleton', 'spur', 'thin', 'shrink', 'ult_erode', 'reconstruct_open', 'convex_hull', 'endpoints_branchpoints', 'hit_or_miss', 'regional_max', 'regional_min', 'h_maxima', 'h_minima', 'extended_max', 'extended_min'];
 const NEW_IDS = SPLIT_ORDER.map((o) => 'morph_' + o);
 const BASIC = ['erode', 'dilate', 'open', 'close', 'gradient', 'tophat', 'blackhat'];
 
@@ -34,7 +34,7 @@ for (const o of BASIC) EXPECT_KEYS[o] = ['shape', 'ksize', 'iterations', 'lineAn
 Object.assign(EXPECT_KEYS, {
   fill_holes: [], clear_border: [], remove_small: ['minArea'], skeleton: [], reconstruct_open: ['ksize', 'iterations'], convex_hull: [],
   endpoints_branchpoints: [], hit_or_miss: ['hmPattern', 'hmRotate'], regional_max: [], regional_min: [], h_maxima: ['hHeight'], extended_max: ['hHeight'],
-  clean: [], majority: ['iterations'], spur: ['iterations'], thin: ['iterations'], shrink: ['iterations'], h_minima: ['hHeight'], extended_min: ['hHeight'],
+  clean: [], majority: ['iterations'], spur: ['iterations'], thin: ['iterations'], shrink: ['iterations'], ult_erode: [], h_minima: ['hHeight'], extended_min: ['hHeight'],
 });
 
 // ค่าที่ไม่ใช่ default ของแต่ละ op (ต้องต่างจาก default จริง — ตรวจในเทสต์)
@@ -57,6 +57,7 @@ const NONDEFAULT = {
   spur: { iterations: 3 },
   thin: { iterations: 1 },
   shrink: { iterations: 1 },
+  ult_erode: {},
   h_minima: { hHeight: 60 },
   extended_min: { hHeight: 60 },
 };
@@ -119,9 +120,9 @@ test('mp-1. 26 split ops registered (ids/order), group morph_tools registered, l
     assert.ok(OPS[id].desc && OPS[id].desc.length > 30, `${id}.desc`);
     assert.equal(typeof OPS[id].apply, 'function');
   }
-  assert.equal(new Set(NEW_IDS.map((i) => OPS[i].name)).size, 26, 'names unique');
+  assert.equal(new Set(NEW_IDS.map((i) => OPS[i].name)).size, 27, 'names unique');
   for (const i of NEW_IDS) assert.ok(OPS[i].name.length <= 34, `${i}: name must be short enough for a palette tile (${OPS[i].name})`);
-  assert.equal(new Set(NEW_IDS.map((i) => OPS[i].desc)).size, 26, 'desc unique');
+  assert.equal(new Set(NEW_IDS.map((i) => OPS[i].desc)).size, 27, 'desc unique');
   // ไม่ชน id เดิม: ไม่มี id ซ้ำใน OPS/FILTERS
   assert.equal(new Set(Object.keys(OPS)).size, Object.keys(OPS).length);
   assert.ok(FILTERS.morphology, 'legacy morphology stays registered');
@@ -268,7 +269,7 @@ test('mp-5. dropdown optgroups: 4 Thai groups in the required order/membership; 
   const ids = (list) => list.map((o) => o.value);
   assert.deepEqual(ids(g[0][1]), NEW_IDS.slice(0, 7));
   assert.deepEqual(ids(g[1][1]), ['morph_fill_holes', 'morph_clear_border', 'morph_remove_small', 'morph_clean', 'morph_majority']);
-  assert.deepEqual(ids(g[2][1]), ['morph_skeleton', 'morph_spur', 'morph_thin', 'morph_shrink', 'morph_reconstruct_open', 'morph_convex_hull', 'morph_endpoints_branchpoints', 'morph_hit_or_miss']);
+  assert.deepEqual(ids(g[2][1]), ['morph_skeleton', 'morph_spur', 'morph_thin', 'morph_shrink', 'morph_ult_erode', 'morph_reconstruct_open', 'morph_convex_hull', 'morph_endpoints_branchpoints', 'morph_hit_or_miss']);
   assert.deepEqual(ids(g[3][1]), ['morph_regional_max', 'morph_regional_min', 'morph_h_maxima', 'morph_h_minima', 'morph_extended_max', 'morph_extended_min']);
   // เรียงต่อกัน = ลำดับ dropdown เดิมเป๊ะ (ลำดับบนจอ = ลำดับ palette)
   assert.deepEqual(g.flatMap(([, o]) => ids(o)), NEW_IDS);

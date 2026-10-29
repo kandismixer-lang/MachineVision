@@ -110,6 +110,7 @@ export const OP_ICON = {
   morph_skeleton: "🦴", morph_reconstruct_open: "⥀", morph_convex_hull: "⬣", morph_endpoints_branchpoints: "⋔", morph_hit_or_miss: "⊘",
   watershed_marker: "♜", seg_score: "⩓", lowlight_enhance: "☾", colorspace_inverse: "⥂", euler_number: "♧",
   image_pyramid: "⧋", frangi_vesselness: "⑂", anisotropic_diffusion: "⥊", debayer: "⧄", piqe: "⧯",
+  bf_score: "⨳", local_contrast: "⩚", mask_overlay: "⨷", morph_ult_erode: "⧓",
   morph_clean: "⸭", morph_majority: "⠶", morph_spur: "⤙", morph_thin: "⫶", morph_shrink: "⤒", morph_h_minima: "⋎", morph_extended_min: "⌑",
   morph_regional_max: "▲", morph_regional_min: "▽", morph_h_maxima: "△", morph_extended_max: "⌂",
   // ใหม่ (Tier 2, 18d) — เช็คทุกตัวกับ glyph เดิมทั้งหมดด้านบน และกับ GROUP_ICON ใน ui-meta.js แล้วไม่ชนกันเลย
@@ -148,7 +149,7 @@ function psfCardText(p) {
 const IMARITH_LABEL = { add: "A + B", subtract: "A − B", multiply: "A × B ÷ 255", divide: "A ÷ B × 255" };
 const LOGICAL_LABEL = { and: "A AND B", or: "A OR B", xor: "A XOR B", a_and_not_b: "A AND NOT B" };
 // ชื่อสั้นของ metric ของ pass_fail บนการ์ด (key ตรงกับ PASS_FAIL_METRICS ใน registry.js)
-const PASS_FAIL_SHORT = { count: "จำนวนวัตถุ", area_sum: "พื้นที่รวม", area_max: "พื้นที่ใหญ่สุด", roi_mean: "สว่างใน ROI", focus: "ความคม", de_mean: "ΔE เฉลี่ย", iou: "IoU", dice: "Dice", piqe: "คุณภาพ PIQE" };
+const PASS_FAIL_SHORT = { count: "จำนวนวัตถุ", area_sum: "พื้นที่รวม", area_max: "พื้นที่ใหญ่สุด", roi_mean: "สว่างใน ROI", focus: "ความคม", de_mean: "ΔE เฉลี่ย", iou: "IoU", dice: "Dice", bf: "Boundary F1 Score", piqe: "คุณภาพ PIQE" };
 function ownOr(table, key, fallback) {
   return Object.hasOwn(table, key) ? table[key] : table[fallback];
 }
@@ -167,6 +168,9 @@ export const OP_PRIMARY = {
   colorspace: (p) => "BGR → " + (p.space || "HSV").toUpperCase(),
   colorspace_inverse: (p) => `${ownOr({ hsv: "HSV", hls: "HLS", lab: "LAB", ycrcb: "YCRCB", xyz: "XYZ", luv: "LUV", yuv: "YUV" }, p.space, "hsv")} → RGB`,
   watershed_marker: (p) => `${p.polarity === "bright" ? "วัตถุสว่าง" : "วัตถุมืด"} · h=${pnum("watershed_marker", "hHeight", p.hHeight, { int: true })}`,
+  bf_score: (p) => `เส้นขอบ · ระยะ ${pnum("bf_score", "tolPct", p.tolPct)}%`,
+  local_contrast: (p) => `รายละเอียด ${pnum("local_contrast", "amount", p.amount)} · ขอบ ${pnum("local_contrast", "edgeThreshold", p.edgeThreshold)}`,
+  mask_overlay: (p) => `ซ้อนสี mask · ${pnum("mask_overlay", "opacity", p.opacity, { int: true })}%`,
   seg_score: () => "IoU / Dice · A เทียบ mask คำตอบ B",
   lowlight_enhance: (p) => `เพิ่มแสง ${pnum("lowlight_enhance", "amount", p.amount)}` + (boolOr(p.alphaBlend, false) ? " · คงส่วนสว่าง" : ""),
   euler_number: (p) => `Euler = วัตถุ − รู · ${p.conn === "4" || p.conn === 4 ? 4 : 8} ทิศ`,
@@ -206,7 +210,8 @@ export const OP_PRIMARY = {
   box_blur: (p) => "ksize: " + (p.ksize ?? 5),
   bilateral: (p) => "d: " + (p.d ?? 7),
   morphology: (p) => (
-    p.op === "fill_holes" ? "เติมรูในวัตถุ"
+    p.op === "ult_erode" ? "หาจุดกลางวัตถุ"
+    : p.op === "fill_holes" ? "เติมรูในวัตถุ"
     : p.op === "clear_border" ? "ลบวัตถุที่แตะขอบ"
     : p.op === "remove_small" ? `ลบวัตถุ < ${p.minArea ?? 150}px`
     : p.op === "skeleton" ? "Skeleton / เส้นแกนกลาง"
@@ -432,14 +437,14 @@ export const OPTION_GROUPS = {
   "morph_tools.mode": [
     ["พื้นฐาน", ["morph_erode", "morph_dilate", "morph_open", "morph_close", "morph_gradient", "morph_tophat", "morph_blackhat"]],
     ["ทำความสะอาด", ["morph_fill_holes", "morph_clear_border", "morph_remove_small", "morph_clean", "morph_majority"]],
-    ["รูปร่าง", ["morph_skeleton", "morph_spur", "morph_thin", "morph_shrink", "morph_reconstruct_open", "morph_convex_hull", "morph_endpoints_branchpoints", "morph_hit_or_miss"]],
+    ["รูปร่าง", ["morph_skeleton", "morph_spur", "morph_thin", "morph_shrink", "morph_ult_erode", "morph_reconstruct_open", "morph_convex_hull", "morph_endpoints_branchpoints", "morph_hit_or_miss"]],
     ["ยอด/หุบ", ["morph_regional_max", "morph_regional_min", "morph_h_maxima", "morph_h_minima", "morph_extended_max", "morph_extended_min"]],
   ],
   "morphology.op": [
     ["พื้นฐาน — กัด / พอก", ["erode", "dilate", "open", "close"]],
     ["ดึงขอบ / ส่วนสว่าง-มืดเฉพาะที่", ["gradient", "tophat", "blackhat"]],
     ["เก็บกวาดวัตถุขาว-ดำ", ["remove_small", "clean", "majority", "fill_holes", "clear_border", "reconstruct_open", "convex_hull"]],
-    ["เส้นแกนกลางและลายเฉพาะ", ["skeleton", "spur", "thin", "shrink", "endpoints_branchpoints", "hit_or_miss"]],
+    ["เส้นแกนกลางและลายเฉพาะ", ["skeleton", "spur", "thin", "shrink", "ult_erode", "endpoints_branchpoints", "hit_or_miss"]],
     ["หายอด / หุบ (ทำ marker ให้ Watershed)", ["regional_max", "regional_min", "h_maxima", "h_minima", "extended_max", "extended_min"]],
   ],
   "analysis_detect.mode": [
@@ -457,7 +462,7 @@ export const OPTION_GROUPS = {
   "enhance_tools.mode": [
     ["ความสว่าง / คอนทราสต์", ["brightness_contrast", "gamma", "contrast_stretch", "hist_equalize", "clahe", "flatfield_correction"]],
     ["ความคม", ["unsharp", "laplacian_sharpen", "custom_kernel"]],
-    ["งานเฉพาะทาง", ["dehaze", "lowlight_enhance", "quantize"]],
+    ["งานเฉพาะทาง", ["dehaze", "lowlight_enhance", "local_contrast", "quantize"]],
   ],
   "filter_denoise.mode": [
     ["ทำภาพเสียเพื่อทดลอง (ใส่ noise)", ["salt_pepper_noise", "gaussian_noise"]],
@@ -471,7 +476,7 @@ export const OPTION_GROUPS = {
   ],
   "image_arithmetic.mode": [
     ["เทียบ / รวมสองภาพ", ["imabsdiff", "imfuse", "imarith", "logical_ops"]],
-    ["ใช้ B เป็นหน้ากาก / บริเวณ", ["mask", "roi_apply", "inpaint"]],
+    ["ใช้ B เป็นหน้ากาก / บริเวณ", ["mask", "mask_overlay", "roi_apply", "inpaint"]],
     ["ปรับ A ให้ตรงกับ B", ["hist_match"]],
   ],
   "custom_kernel.preset": [

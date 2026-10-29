@@ -588,8 +588,8 @@ for (const [variant, what] of [['A', 'the old params'], ['B', 'every new param p
 // ===================================================================
 // ip4b-S — static structure / text / clamps / codegen
 // ===================================================================
-test('ip4b-S1. (static structure) the 8 new ops exist with the right needs and host groups; OPS = 132 (101 + 26 morph_* after batch 5A + 5 after batch 5B), FILTERS = 35; Morphology has 26 operations (the old 14 first, in order); no select key is "mode"; defaultParams() == the OPS defaults (prefixed); legacy groups untouched; the category groups = the palette sections in order', () => {
-  assert.equal(Object.keys(OPS).length, 132); // 101 + 26 morph_* (batch 5A) + 5 (batch 5B: image_pyramid, frangi_vesselness, anisotropic_diffusion, debayer, piqe)
+test('ip4b-S1. (static structure) the 8 new ops exist with the right needs and host groups; OPS = 136 (101 + 26 morph_* after batch 5A + 5 after batch 5B + 4 after batch 5C), FILTERS = 35; Morphology has 27 operations (the old 14 first, in order); no select key is "mode"; defaultParams() == the OPS defaults (prefixed); legacy groups untouched; the category groups = the palette sections in order', () => {
+  assert.equal(Object.keys(OPS).length, 136); // 101 + 26 morph_* (batch 5A) + 5 (batch 5B) + 4 (batch 5C: bf_score, local_contrast, mask_overlay, morph_ult_erode)
   assert.equal(Object.keys(FILTERS).length, 35); // +morph_tools (2026-10-18) +image_registration (2026-10-24)
   for (const id of NEW_OPS) {
     assert.ok(OPS[id], id); assert.equal(OPS[id].needs, NEEDS[id], `${id}.needs`);
@@ -604,9 +604,9 @@ test('ip4b-S1. (static structure) the 8 new ops exist with the right needs and h
   for (const id of ['deconv_wiener', 'deconv_lucy', 'nlm_denoise', 'gabor_filter', 'glcm', 'dehaze', 'dct_jpeg']) assert.equal(FILTERS[HOST[id]].inputs, undefined, `${id} host is single-input`);
   // Morphology: 19 options, the first 14 unchanged and in order, the new 5 appended
   const opOptions = OPS.morphology.params.find((p) => p.key === 'op').options.map((o) => o.value);
-  assert.equal(opOptions.length, 26);
+  assert.equal(opOptions.length, 27);
   assert.deepEqual(opOptions.slice(0, 14), MORPH_OLD);
-  assert.deepEqual(opOptions.slice(14), [...MORPH_NEW, "clean", "majority", "spur", "thin", "shrink", "h_minima", "extended_min"]);
+  assert.deepEqual(opOptions.slice(14), [...MORPH_NEW, "clean", "majority", "spur", "thin", "shrink", "h_minima", "extended_min", "ult_erode"]);
   assert.equal(OPS.morphology.params.find((p) => p.key === 'op').default, 'erode');
   assert.deepEqual(OPS.morphology.params.slice(-3).map((p) => p.key), ['hmPattern', 'hmRotate', 'hHeight']);
   assert.deepEqual(OPS.morphology.params.slice(0, 6).map((p) => p.key), ['op', 'shape', 'ksize', 'iterations', 'minArea', 'lineAngle']);
@@ -626,7 +626,7 @@ test('ip4b-S1. (static structure) the 8 new ops exist with the right needs and h
     assert.equal(FILTERS[fid].params.find((p) => p.key === 'mode').default, dflt);
   }
   const sec = (t) => TOOL_SECTIONS.find((s) => s.title === t).ops;
-  assert.deepEqual(sec('ENHANCE').slice(-3), ['custom_kernel', 'dehaze', 'lowlight_enhance']);
+  assert.deepEqual(sec('ENHANCE').slice(-4), ['custom_kernel', 'dehaze', 'lowlight_enhance', 'local_contrast']);
   assert.deepEqual(sec('FILTER & DENOISE').slice(-6), ['wiener_filter', 'guided_filter', 'anisotropic_diffusion', 'nlm_denoise', 'deconv_wiener', 'deconv_lucy']);
   const ad = sec('ANALYSIS & DETECTION');
   assert.deepEqual(ad.slice(ad.indexOf('local_entropy_filter'), ad.indexOf('local_entropy_filter') + 5), ['local_entropy_filter', 'gabor_filter', 'glcm', 'focus_score', 'regionprops']);
@@ -635,7 +635,7 @@ test('ip4b-S1. (static structure) the 8 new ops exist with the right needs and h
   assert.deepEqual(sec('IMAGE REGISTRATION'), ['template_matching', 'ecc_register']);
   // 2026-10-18: MORPHOLOGY = 19 เครื่องมือ morph_* (ลำดับ/ความหมายล็อกใน tests/morph-split.test.mjs) · ตัวเก่า 'morphology' เป็น legacy ไม่อยู่บน palette
   assert.deepEqual(sec('MORPHOLOGY'), modes('morph_tools'));
-  assert.equal(sec('MORPHOLOGY').length, 26);
+  assert.equal(sec('MORPHOLOGY').length, 27);
   for (const id of NEW_OPS) assert.equal(TOOL_SECTIONS.filter((s) => s.ops.includes(id)).length, 1, `${id} in exactly one section`);
   // slow-mode hint on nlm_denoise / deconv_lucy / morph_thin / morph_shrink; it lands in the mode dropdown
   for (const id of Object.keys(OPS)) {
