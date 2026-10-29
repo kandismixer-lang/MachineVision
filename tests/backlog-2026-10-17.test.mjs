@@ -211,11 +211,15 @@ test('bl-B4b. harris_corners / shi_tomasi_corners: the analysis size goes throug
 // ===================================================================
 // B5 (P-10) Harris: Python ทำ dilate-then-count เหมือนแอป
 // ===================================================================
-test('bl-B5a. harris_corners Python mirrors the app (2026-10-21): threshold = thresh% of max R (no min-max normalize), 3x3 non-max suppression, 3000-corner cap', () => {
+test('bl-B5a. harris_corners Python mirrors the app: threshold = thresh% of max R (no min-max normalize), blockSize-based non-max suppression, 3000-corner cap', () => {
   const py = code([step('harris_corners', { thresh: 60 })]);
-  assert.ok(py.includes('dil = cv2.dilate(resp, np.ones((3, 3), np.uint8))'));
+  assert.ok(py.includes('dil = cv2.dilate(resp, np.ones((5, 5), np.uint8))'));
+  assert.ok(py.includes('taken[max(0, y - 2):y + 3, max(0, x - 2):x + 3] = True'));
+  const large = code([step('harris_corners', { blockSize: 5, thresh: 60 })]);
+  assert.ok(large.includes('dil = cv2.dilate(resp, np.ones((11, 11), np.uint8))'));
+  assert.ok(large.includes('taken[max(0, y - 5):y + 6, max(0, x - 5):x + 6] = True'));
   assert.ok(py.includes('thr = 60 / 100 * max_r'));
-  assert.ok(py.includes('(resp >= dil)'));
+  assert.ok(py.includes('(resp.astype(np.float64) >= dil.astype(np.float64) * (1 - 1e-5))'));
   assert.ok(py.includes('if len(pts) > 3000:'));
   assert.ok(!py.includes('NORM_MINMAX'));
   const app = readSrc('filters/registry.js');

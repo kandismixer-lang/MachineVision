@@ -2031,7 +2031,7 @@ export const OPS = {
   laplacian_sharpen: {
     name: "Laplacian Sharpening",
     needs: "any",
-    desc: "ใช้ Laplacian (อนุพันธ์อันดับสอง) หา 'จุดที่ความสว่างเปลี่ยนฉับพลัน' แล้วนำไปหักออกจากภาพเดิม ทำให้ขอบถูกเน้นขึ้น — เป็นวิธี sharpen แบบคลาสสิกในตำรา",
+    desc: "ใช้ Laplacian (อนุพันธ์อันดับสอง) เน้นขอบโดยหักออกจากภาพเดิม · ขยายจุดรบกวนราว 5.4 เท่าที่ความแรง 1 และ 14 เท่าที่ 3 ควรเบลอก่อนหรือใช้ Unsharp Mask กับภาพมีจุดรบกวน · ความแรงสูงอาจมีขอบสีเหลื่อม เพราะเพิ่มความคมแยกช่อง RGB",
     params: [
       { key: "strength", type: "number", label: "ความแรง", min: 0, max: 3, step: 0.1, default: 1, desc: "น้ำหนักที่หักเส้นขอบ (Laplacian) ออกจากภาพเดิม — มาก = ขอบเด่นขึ้น" },
     ],
@@ -2235,7 +2235,7 @@ export const OPS = {
         { value: "fill_holes", label: "Fill Holes (อุดรูในวัตถุ)", hint: "เติมรูปิดสนิทภายในวัตถุขาว โดยไม่กระทบขนาดรอบนอก — ภาพที่ไม่ใช่ขาว-ดำล้วนจะถูก binarize ที่ค่ากึ่งกลาง 127 ก่อนเสมอ" },
         { value: "clear_border", label: "Clear Border (ลบวัตถุที่แตะขอบภาพ)", hint: "ลบวัตถุขาวที่มีพิกเซลแม้แต่จุดเดียวติดขอบภาพทั้ง 4 ด้าน — เหลือแต่วัตถุที่อยู่เต็มตัวในเฟรม" },
         { value: "remove_small", label: "Remove Small Objects (ลบวัตถุเล็ก)", hint: "ลบวัตถุขาวที่มีพื้นที่น้อยกว่าเกณฑ์ทิ้ง — ใช้ค่า 'พื้นที่ขั้นต่ำ' ด้านล่างเป็นเกณฑ์" },
-        { value: "skeleton", label: "Skeleton / Thinning (เส้นแกนกลาง)", hint: "ลดวัตถุขาวให้เหลือเส้นแกนกลางหนา 1 พิกเซล (Zhang-Suen) ที่ความละเอียดเต็ม — ช้ากว่า operation อื่นในกลุ่มนี้ (วัตถุยิ่งหนายิ่งช้า ภาพ 1080p ที่มีก้อนใหญ่ราว 0.3 วินาที เหมาะกับภาพนิ่งมากกว่ากล้องสด) ไม่ใช้ค่า 'รูปร่าง kernel'/'ขนาด kernel'/'จำนวนรอบ' ด้านล่างเลย — ถ้าเส้นแกนกลางไปวิ่งอยู่ในพื้นหลังแทนที่จะอยู่ในวัตถุ แปลว่าพื้นหลังเป็นสีขาว ให้สลับขาว-ดำ (Invert) มาก่อน เพราะ op นี้คิดว่าพิกเซลขาวคือ 'วัตถุ' เสมอ (นอกขอบภาพนับเป็นพื้นหลัง)" },
+        { value: "skeleton", label: "Skeleton / Thinning (เส้นแกนกลาง)", hint: "ลดวัตถุขาวเป็นเส้นแกนกลาง 1 พิกเซล (Zhang-Suen) ที่ความละเอียดเต็ม · ก้อนหนาช้า (1080p ราว 0.3 วินาที) เหมาะกับภาพนิ่ง ไม่ใช้รูปร่าง/ขนาด kernel/จำนวนรอบ · ไวต่อจุดรบกวนที่ขอบ (10% เคยพบปลายกิ่งราว 142 จุด) ควรทำ Median Blur หรือ Opening ก่อน · ก้อนกลมทึบเหลือราวจุดเดียวหรือเส้นสั้น · ขาวคือวัตถุ นอกภาพคือพื้นหลัง ถ้าแกนวิ่งในพื้นหลังให้ Invert ก่อน" },
         { value: "reconstruct_open", label: "Opening by Reconstruction (คงรูปร่างเดิม)", hint: "เหมือน Opening แต่รักษาขอบวัตถุที่รอดไว้แม่นกว่า (ไม่มุมมน) — ใช้ ksize/จำนวนรอบ ด้านล่างเป็นขนาดกัดตอนสร้าง marker แต่ 'รูปร่าง kernel' ด้านล่างไม่มีผล (ใช้ Rect เสมอตอนกัด marker)" },
         { value: "convex_hull", label: "Convex Hull (ห่อด้วยรูปนูน)", hint: "ห่อแต่ละวัตถุด้วยรูปนูนที่เล็กที่สุดที่ครอบวัตถุไว้ได้พอดี (เหมือนรัดหนังยางรอบวัตถุ) แล้วเทียบพื้นที่เดิมกับพื้นที่รูปนูนเป็นค่า solidity (รวมทุกชิ้น ชิ้นใหญ่มีน้ำหนักมากกว่า) เส้นบาง/จุดเดี่ยวก็ถูกห่อและนับเป็นหนึ่งชิ้นด้วย — ใช้หารอยบิ่น/รอยเว้าของวัตถุ (solidity ยิ่งต่ำ ยิ่งเว้าแหว่งมาก) ไม่ใช้ค่า 'รูปร่าง kernel'/'ขนาด kernel'/'จำนวนรอบ' ด้านล่างเลย" },
         { value: "endpoints_branchpoints", label: "Endpoints & Branchpoints (จุดปลาย/จุดแยก)", hint: "⚠️ ใช้ต่อจาก Skeleton เสมอ — เพื่อนบ้านขาว 8 ทิศ 1 จุด = จุดปลาย (วงเขียว) รวมพิกเซลที่มีเพื่อนบ้านขาวตั้งแต่ 3 จุดเป็นกลุ่ม ถ้ามีกิ่งแยกออกจากกลุ่มตั้งแต่ 3 กิ่งให้นับเป็นจุดแยกเดียว (วงแดง) รองรับจุดตัด X ที่อยู่ระหว่างพิกเซล ข้ามกลุ่มใหญ่ตั้งแต่ 256 พิกเซลเพราะยังเป็นก้อนหนา ใช้นับกิ่งและปลายรอยร้าวหรือลายเส้น ไม่ใช้ค่า 'รูปร่าง kernel'/'ขนาด kernel'/'จำนวนรอบ' ด้านล่างเลย" },
@@ -3840,7 +3840,7 @@ export const OPS = {
       { key: "blockSize", type: "number", label: "ขนาดพื้นที่รอบจุด", min: 2, max: 15, step: 1, default: 2, hint: "① พื้นที่ (px) ที่ใช้ดูรอบแต่ละพิกเซล" },
       { key: "ksize", type: "number", label: "ขนาด Sobel kernel", min: 1, max: 7, step: 2, default: 3, hint: "② ต้องเป็นเลขคี่เสมอ — ปรับความคมของขอบที่ใช้วิเคราะห์" },
       { key: "k", type: "number", label: "ค่า k (Harris)", min: 0.01, max: 0.3, step: 0.01, default: 0.04, hint: "③ ปกติ 0.04–0.06" },
-      { key: "thresh", type: "number", label: "ความไวจับมุม (%)", min: 1, max: 100, step: 1, default: 1, hint: "④ เกณฑ์ = กี่ % ของค่าตอบสนองสูงสุดในภาพ (1% = MinQuality 0.01 ค่าเริ่มต้นของ MATLAB) · ต่ำ=เจอมุมเยอะ(มีของปลอมปน), สูง=เฉพาะมุมชัด" },
+      { key: "thresh", type: "number", label: "ความไวจับมุม (%)", min: 0.1, max: 100, step: 0.1, default: 1, hint: "④ เกณฑ์ = กี่ % ของค่าตอบสนองสูงสุดในภาพ (1% = MinQuality 0.01 ค่าเริ่มต้นของ MATLAB) · ต่ำ=เจอมุมเยอะ(มีของปลอมปน), สูง=เฉพาะมุมชัด" },
     ],
     apply(cv, src, p, ctx) {
       // ภาพใหญ่วิ่ง cornerHarris เต็มความละเอียดจะช้า — วิเคราะห์บนภาพย่อไม่เกิน 480px แล้วคูณพิกัดกลับ
@@ -3849,7 +3849,9 @@ export const OPS = {
       const analysis = new cv.Mat();
       const resp = new cv.Mat();
       const dil = new cv.Mat();
-      const kern = cv.Mat.ones(3, 3, cv.CV_8U);
+      const nmsRadius = Math.max(1, Math.round(p.blockSize));
+      const nmsSize = 2 * nmsRadius + 1; // คี่และอย่างน้อย 3; ครอบคลุมกลุ่มยอดรอบมุมตาม blockSize
+      const kern = cv.Mat.ones(nmsSize, nmsSize, cv.CV_8U);
       let out = null;
       try {
         if (scale < 1) {
@@ -3860,26 +3862,31 @@ export const OPS = {
           src.copyTo(analysis);
         }
         const ksize = p.ksize % 2 === 0 ? p.ksize + 1 : p.ksize; // Sobel kernel ต้องเป็นเลขคี่
+        // ใช้ float32 เหมือน Python export; การ normalize uint8 ทำให้ยอดสมมาตรต่างกัน 1 ULP แล้ว NMS เลือกคนละจุด
+        analysis.convertTo(analysis, cv.CV_32F);
         cv.cornerHarris(analysis, resp, p.blockSize, ksize, p.k, cv.BORDER_DEFAULT);
         // เกณฑ์ = thresh% ของค่า R สูงสุด (แบบ MinQuality ของ MATLAB corner/detectHarrisFeatures) — เดิม normalize
         // min-max ก่อน ซึ่ง R ของขอบติดลบ ทำให้พื้นเรียบ (R≈0) กลายเป็น ~70–85/255 และผ่านเกณฑ์ต่ำ ๆ ทั้งภาพ
-        // แล้วเก็บเฉพาะจุดที่เป็นค่าสูงสุดในหน้าต่าง 3x3 (non-max suppression) → 1 จุดต่อ 1 มุม ไม่ใช่นับพิกเซล
+        // เก็บเฉพาะยอดในหน้าต่าง (2*blockSize+1)²; ยอดเท่ากันในหน้าต่างเก็บตัวแรกตามแถว (y แล้ว x)
         cv.dilate(resp, dil, kern);
         const maxR = cv.minMaxLoc(resp).maxVal;
         const R = resp.data32F;
         const D = dil.data32F;
         const cols = resp.cols;
-        const taken = new Uint8Array(R.length); // ค่าเท่ากันติดกัน (plateau) เก็บแค่ตัวแรกตามลำดับแถว
+        const taken = new Uint8Array(R.length); // กันยอดซ้ำ/plateau ด้วยหน้าต่างเดียวกับ dilate (ตรงกับ Python)
         const points = [];
         if (maxR > 0) {
           const thr = (p.thresh / 100) * maxR;
+          // ยอด = ไม่ต่ำกว่าค่าสูงสุดในหน้าต่างเกิน 1e-5 (สัมพัทธ์) — float ของ opencv.js กับ cv2 ต่างกันราว 1 ULP
+          // ยอดที่เกือบเท่ากันจึงให้ทั้งคู่ผ่าน แล้วเลือกตัวแรกตามแถวเหมือนกันทั้งแอปและ Python
+          const near = 1 - 1e-5;
           for (let idx = 0; idx < R.length; idx++) {
-            if (R[idx] < thr || R[idx] < D[idx] || taken[idx]) continue; // >= เกณฑ์ → 100% ยังได้จุดสูงสุด
+            if (R[idx] < thr || R[idx] < D[idx] * near || taken[idx]) continue; // >= เกณฑ์ → 100% ยังได้จุดสูงสุด
             const x = idx % cols, y = (idx / cols) | 0;
             points.push(x, y);
             if (points.length / 2 > 3000) break; // threshold ต่ำเกินไป → เจอเป็นพัน หยุดก่อนค้าง
-            for (let dy = -1; dy <= 1; dy++) {
-              for (let dx = -1; dx <= 1; dx++) {
+            for (let dy = -nmsRadius; dy <= nmsRadius; dy++) {
+              for (let dx = -nmsRadius; dx <= nmsRadius; dx++) {
                 const xx = x + dx, yy = y + dy;
                 if (xx >= 0 && xx < cols && yy >= 0 && yy < resp.rows) taken[yy * cols + xx] = 1;
               }
@@ -8882,7 +8889,7 @@ const MORPH_SPLIT = [
     desc: "ลดจุดรบกวนด้วยเสียงข้างมากใน 3×3 รวมตัวกลาง · ทำซ้ำตามจำนวนรอบ หยุดก่อนเมื่อนิ่ง นอกภาพเป็นดำ" },
   { op: "skeleton", name: "Skeleton (เส้นแกนกลาง)",
     modeHint: "ลดวัตถุขาวให้เหลือเส้นแกนกลางหนา 1 พิกเซล",
-    desc: "ลดวัตถุขาวให้เหลือเส้นแกนกลางหนา 1 พิกเซล (Zhang-Suen) ที่ความละเอียดเต็ม — ช้ากว่า operation อื่นในหมวดนี้ (วัตถุยิ่งหนายิ่งช้า ภาพ 1080p ที่มีก้อนใหญ่ราว 0.3 วินาที เหมาะกับภาพนิ่งมากกว่ากล้องสด) ไม่มีพารามิเตอร์ให้ปรับ · ถ้าเส้นแกนกลางไปวิ่งอยู่ในพื้นหลังแทนที่จะอยู่ในวัตถุ แปลว่าพื้นหลังเป็นสีขาว ให้สลับขาว-ดำ (Invert) มาก่อน เพราะ op นี้คิดว่าพิกเซลขาวคือ 'วัตถุ' เสมอ (นอกขอบภาพนับเป็นพื้นหลัง)" },
+    desc: "ลดวัตถุขาวเป็นเส้นแกนกลาง 1 พิกเซล (Zhang-Suen) ที่ความละเอียดเต็ม · ก้อนหนาช้า (1080p ราว 0.3 วินาที) เหมาะกับภาพนิ่ง ไม่มีพารามิเตอร์ · ไวต่อจุดรบกวนที่ขอบ (10% เคยพบปลายกิ่งราว 142 จุด) ควรทำ Median Blur หรือ Opening ก่อน · ก้อนกลมทึบเหลือราวจุดเดียวหรือเส้นสั้น · ขาวคือวัตถุ นอกภาพคือพื้นหลัง ถ้าแกนวิ่งในพื้นหลังให้ Invert ก่อน" },
   { op: "spur", name: "Spur (ตัดกิ่งเส้น)",
     modeHint: "ลบจุดปลายที่มีเพื่อนบ้านขาวพอดีหนึ่งจุด",
     desc: "ตัดปลายเส้นพร้อมกันทั้งภาพต่อรอบ · จุดเดี่ยวไม่ถูกลบ · 0 = จนนิ่ง ไม่เกินด้านยาวของภาพ ใช้ค่า > 127" },

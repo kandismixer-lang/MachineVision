@@ -2227,6 +2227,8 @@ const GEN = {
   // ทุกจุดที่ปัดเลขจาก runtime dimensions (บทเรียนจาก FFT downscale bug ที่ qa เจอรอบ Tier 1.5)
   harris_corners: { needs: "gray", out: "color", gen: (p) => {
     const ksize = p.ksize % 2 === 0 ? p.ksize + 1 : p.ksize;
+    const nmsRadius = Math.max(1, int(p.blockSize));
+    const nmsSize = 2 * nmsRadius + 1;
     return [
       "rows, cols = img.shape",
       "scale = min(1.0, 480 / max(rows, cols))  # ย่อก่อนวิเคราะห์เหมือนแอปตัวจริง",
@@ -2236,21 +2238,21 @@ const GEN = {
       "    analysis = img",
       "gray_f = np.float32(analysis)",
       `resp = cv2.cornerHarris(gray_f, ${int(p.blockSize)}, ${ksize}, ${num(p.k)})`,
-      // เกณฑ์ = thresh% ของ R สูงสุด (แบบ MinQuality ของ MATLAB) + non-max suppression 3x3 → 1 จุดต่อ 1 มุม เหมือนแอป
-      "dil = cv2.dilate(resp, np.ones((3, 3), np.uint8))",
+      // หน้าต่าง NMS ตาม blockSize; ยอดเท่ากันในหน้าต่างเก็บตัวแรกตามแถว (y แล้ว x) เหมือนแอป
+      `dil = cv2.dilate(resp, np.ones((${nmsSize}, ${nmsSize}), np.uint8))`,
       "max_r = float(resp.max())",
       "pts = []",
       "if max_r > 0:",
       `    thr = ${num(p.thresh)} / 100 * max_r`,
-      "    cand = (resp.astype(np.float64) >= thr) & (resp >= dil)  # เทียบแบบ float64 เหมือน JS",
-      "    taken = np.zeros(resp.shape, dtype=bool)  # ค่าเท่ากันติดกัน (plateau) เก็บแค่ตัวแรกตามลำดับแถว",
+      "    cand = (resp.astype(np.float64) >= thr) & (resp.astype(np.float64) >= dil.astype(np.float64) * (1 - 1e-5))  # ยอดเกือบเท่ากันผ่านทั้งคู่ เหมือน JS",
+      "    taken = np.zeros(resp.shape, dtype=bool)  # กันยอดซ้ำ/plateau ด้วยหน้าต่างเดียวกับ dilate",
       "    for y, x in zip(*np.nonzero(cand)):",
       "        if taken[y, x]:",
       "            continue",
       "        pts.append((x, y))",
       "        if len(pts) > 3000:",
       "            break",
-      "        taken[max(0, y - 1):y + 2, max(0, x - 1):x + 2] = True",
+      `        taken[max(0, y - ${nmsRadius}):y + ${nmsRadius + 1}, max(0, x - ${nmsRadius}):x + ${nmsRadius + 1}] = True`,
       "img = cv2.cvtColor(img, cv2.COLOR_GRAY2BGR)",
       "inv_scale = 1 / scale",
       "if len(pts) > 3000:  # เหมือนแอป: มุมเยอะเกินไม่วาดอะไร",

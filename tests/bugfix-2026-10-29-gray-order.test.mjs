@@ -69,7 +69,7 @@ test("gray-order. two-image A/B and nested B keep independent order and reset af
 
 // Generated once from git show HEAD:src/renderer/codegen.js at bcdbf4a in OS temp.
 // Freeze these cases independently of future OPS additions; each pin names its export.
-// Approved export fixes (rounding, FFT mask precision, K-means analysis resize/thin-image clamp): rgb_adjust, distance_transform, fft_magnitude, fft_filter, ssim, kmeans_segment.
+// Approved export fixes: rounding, FFT mask precision, K-means analysis resize/thin-image clamp and Harris blockSize-based NMS.
 const MIRRORED_OP_IDS = [
   "grayscale", "colorspace", "channel_split", "rgb_adjust", "brightness_contrast", "gamma",
   "hist_equalize", "clahe", "contrast_stretch", "flatfield_correction", "quantize", "unsharp",
@@ -136,7 +136,7 @@ const MIRRORED_SHA256 = {
   "bounding_boxes": "36552bc96cf40f7e91457f92a8210b5a25b804c27bcd2b0b28a35eadefbac95d",
   "hough_circles": "1ea0e248075e8af24afcbaaad535bd081d7d91fb79a3cff0e4a1e66212d32280",
   "hough_lines": "7fdfcf448ff5813f71e206e939439b430749f74ad5457e0c8db2fdd94afba2d2",
-  "harris_corners": "556e4d1923d7b60e7c3743e4a7b57710f4f0460d367f96f18bb80a0ed1b50a19",
+  "harris_corners": "3e5176e93109fe799ec7011fc2fef9a5f8e2a7fc31c14a0f20960d3eca306434",
   "shi_tomasi_corners": "66cda269b9d05cb6a534edcf22873bece05ad5351ef823d6bf0b3abdaebe4822",
   "orb_keypoints": "61d8dd5f3d67414ece5a9d654f53658fedd463f8d9917bf9497db94556153b78",
   "akaze_keypoints": "e20139db9489a104b4ad8347a8925a29153deeb3cb9ee838e74531e42775b6a9",
@@ -230,7 +230,8 @@ const MIRRORED_SHA256 = {
   "gaussian_blur -> grayscale": "6c79f97d073a937cdb87f253b62bc138b9d88e3063133a04751cd46bb23c047f"
 };
 
-test("gray-order. frozen mirrored exports match bcdbf4a except approved export rounding, FFT mask precision and K-means analysis resize/thin-image clamp", () => {
+test("gray-order. frozen mirrored exports match bcdbf4a except approved export rounding, FFT mask precision, K-means fixes and Harris NMS", () => {
+  const result = {};
   for (const id of [...MIRRORED_OP_IDS, "gaussian_blur -> grayscale"]) {
     let pipe;
     if (id === "gaussian_blur -> grayscale") pipe = [step("gaussian_blur"), step("grayscale")];
@@ -240,8 +241,13 @@ test("gray-order. frozen mirrored exports match bcdbf4a except approved export r
       pipe = [st];
     }
     const hash = crypto.createHash("sha256").update(buildPythonCode(pipe)).digest("hex");
+    result[id] = hash;
     assert.equal(hash, MIRRORED_SHA256[id], id + ": mirrored export changed from its pinned baseline");
   }
+  // Measured at HEAD bc5eeef before Harris edits: every other export retains its exact bytes.
+  const unchanged = Object.fromEntries(Object.entries(result).filter(([id]) => id !== "harris_corners"));
+  assert.equal(Object.keys(unchanged).length, 132);
+  assert.equal(crypto.createHash("sha256").update(JSON.stringify(unchanged)).digest("hex"), "e7bead0b80df83bf459c653b104fbb712283ab3a24ce663e779995bb17a6e225");
   assert.ok(buildPythonCode([step("grayscale")]).includes("img = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)"));
 });
 
