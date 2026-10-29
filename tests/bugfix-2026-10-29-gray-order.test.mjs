@@ -69,6 +69,7 @@ test("gray-order. two-image A/B and nested B keep independent order and reset af
 
 // Generated once from git show HEAD:src/renderer/codegen.js at bcdbf4a in OS temp.
 // Freeze these cases independently of future OPS additions; each pin names its export.
+// rgb_adjust was re-pinned for the approved float32/ties-to-even rounding fix.
 const MIRRORED_OP_IDS = [
   "grayscale", "colorspace", "channel_split", "rgb_adjust", "brightness_contrast", "gamma",
   "hist_equalize", "clahe", "contrast_stretch", "flatfield_correction", "quantize", "unsharp",
@@ -97,7 +98,7 @@ const MIRRORED_SHA256 = {
   "grayscale": "7e91be9f9d662f3b34c90c5ebba127dd7990c33ed7d1b615d9e213e9398269ee",
   "colorspace": "c8fb8ab0542a133b25e2a2b9b4d73b3dd78bc88a944842333dbae1182efa8ae6",
   "channel_split": "6467ea211f2682a886e4a34d54cb81443c8548e56c261095d0a67902844b2dd5",
-  "rgb_adjust": "ae0e71c0c9e96d65cf17103ca35ea91ec5e07e5f4e758d475283c5bd64b1932f",
+  "rgb_adjust": "947698183e82cbaf406c176c7cc12cf3c9b1682e48e6f1a33ce5cc87d8b66bd9",
   "brightness_contrast": "b808d21deb1afaa13f36007cdb4d32fdf921b89ac3b74599caee67f303bc256b",
   "gamma": "eaac661bfd0112d1fb877d5891945dc602c20e26e2310309d89dfece88dd160c",
   "hist_equalize": "d583c62ee161b2e7096b9869c8643021078b8e72e5f73488ba4786e5f8d231cb",
@@ -229,7 +230,7 @@ const MIRRORED_SHA256 = {
   "gaussian_blur -> grayscale": "6c79f97d073a937cdb87f253b62bc138b9d88e3063133a04751cd46bb23c047f"
 };
 
-test("gray-order. frozen mirrored exports remain byte-identical to HEAD bcdbf4a", () => {
+test("gray-order. frozen mirrored exports match bcdbf4a except approved rgb_adjust rounding", () => {
   for (const id of [...MIRRORED_OP_IDS, "gaussian_blur -> grayscale"]) {
     let pipe;
     if (id === "gaussian_blur -> grayscale") pipe = [step("gaussian_blur"), step("grayscale")];
@@ -239,7 +240,7 @@ test("gray-order. frozen mirrored exports remain byte-identical to HEAD bcdbf4a"
       pipe = [st];
     }
     const hash = crypto.createHash("sha256").update(buildPythonCode(pipe)).digest("hex");
-    assert.equal(hash, MIRRORED_SHA256[id], id + ": mirrored export changed from HEAD bcdbf4a");
+    assert.equal(hash, MIRRORED_SHA256[id], id + ": mirrored export changed from its pinned baseline");
   }
   assert.ok(buildPythonCode([step("grayscale")]).includes("img = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)"));
 });

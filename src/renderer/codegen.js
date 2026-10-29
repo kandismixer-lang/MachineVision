@@ -600,9 +600,11 @@ const GEN = {
     lines.push(`${channels} = cv2.split(img)`);
     // ใช้ np.clip แทน cv2.convertScaleAbs — convertScaleAbs หาค่าสัมบูรณ์ก่อนตัด ทำให้ offset ติดลบ
     // "สะท้อนค่ากลับ" แทนที่จะทำให้มืดลงจริง (ต้องตรงกับ Mat.convertTo ฝั่งแอป)
-    lines.push(`r = np.clip(r.astype(np.float32) * ${num(p.rGain)} + ${int(p.rOffset)}, 0, 255).astype(np.uint8)`);
-    lines.push(`g = np.clip(g.astype(np.float32) * ${num(p.gGain)} + ${int(p.gOffset)}, 0, 255).astype(np.uint8)`);
-    lines.push(`b = np.clip(b.astype(np.float32) * ${num(p.bGain)} + ${int(p.bOffset)}, 0, 255).astype(np.uint8)`);
+    // 8U convertTo uses float32 gain, product and offset, then rounds ties to even.
+    // ห้ามเปลี่ยนเป็น cv2.convertScaleAbs/addWeighted: cv2 desktop ใช้ fused multiply-add ผลต่างจากแอปบางพิกเซล
+    lines.push(`r = np.clip(np.rint(r.astype(np.float32) * np.float32(${num(p.rGain)}) + np.float32(${num(p.rOffset)})), 0, 255).astype(np.uint8)`);
+    lines.push(`g = np.clip(np.rint(g.astype(np.float32) * np.float32(${num(p.gGain)}) + np.float32(${num(p.gOffset)})), 0, 255).astype(np.uint8)`);
+    lines.push(`b = np.clip(np.rint(b.astype(np.float32) * np.float32(${num(p.bGain)}) + np.float32(${num(p.bOffset)})), 0, 255).astype(np.uint8)`);
     lines.push(`img = cv2.merge([${channels}])`);
     return lines;
   } },
@@ -3807,11 +3809,6 @@ if __name__ == "__main__":
 const bImageVar = (depth) => (depth <= 1 ? "img_b" : `img_b${depth}`);
 // PIQE lives in a two-input category but measures A alone, even when B is connected.
 const usesSecondImage = (step) => FILTERS[step.id]?.inputs === 2 && OPS[resolveOp(step).opId]?.usesSrc2 !== false;
-const BATCH5B_OPS = new Set(["image_pyramid", "frangi_vesselness", "anisotropic_diffusion", "debayer", "piqe"]);
-// Keep the legacy storage field; isMirrored reads it for every generator.
-function context5B(opId, ctx) {
-  return BATCH5B_OPS.has(opId) ? { ...ctx, mirrored: ctx.mirrored5B !== false } : ctx;
-}
 function trackOrder5B(g, p, ctx) {
   if (g.appChannelOrder) ctx.mirrored5B = false;
   else if (g.bgrChannelOrder || ctx.gray || (g.grayOutOf && g.grayOutOf(p))) ctx.mirrored5B = true;
@@ -3848,7 +3845,7 @@ function emitBChain(step, depth, body, appOnly) {
       ctxB.gray = true;
       ctxB.mirrored5B = true;
     }
-    for (const line of g2.gen(r2.local, context5B(r2.opId, ctxB))) body.push(line.replace(/\bimg_b\b|\bimg\b/g, (t) => (t === "img" ? w : second)));
+    for (const line of g2.gen(r2.local, ctxB)) body.push(line.replace(/\bimg_b\b|\bimg\b/g, (t) => (t === "img" ? w : second)));
     const out2 = g2.outOf ? g2.outOf(r2.local) : g2.out;
     if (out2 === "gray") ctxB.gray = true;
     else if (out2 === "color") ctxB.gray = false;
@@ -3895,7 +3892,7 @@ function buildPythonCode2Image(pipeline, opts = {}) {
     }
     bodyA.push(`# ── ขั้นที่ ${stepNo}: ${thaiName(opId)} (${opId}) ──`);
     if (TEACH[opId]) bodyA.push(`# ${TEACH[opId]}`);
-    for (const line of g.gen(local, context5B(opId, ctxA))) bodyA.push(line);
+    for (const line of g.gen(local, ctxA)) bodyA.push(line);
     if (hasPf) bodyA.push(...pfSnapshotLines(opId, local, ctxA));
     const out = g.outOf ? g.outOf(local) : g.out;
     if (out === "gray") ctxA.gray = true;

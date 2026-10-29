@@ -632,7 +632,8 @@ test("ip5b-P-sequences. Bayer mosaic/demosaic, color-space channel order and dow
 });
 
 // Measured twice on clean HEAD 0129f4d before any production edit.
-test("ip5b-G. 550 pre-edit cases: all old ops/options in the five hosts retain pixels, info, values and Python", () => {
+// Re-pinned for rgb_adjust rounding: only its five Python fields changed.
+test("ip5b-G. 550 pre-edit cases retain pixels, info, values and Python except approved rgb_adjust rounding", () => {
   const result = {};
   const hosts = ['geometry', 'color_tools', 'segment_edge', 'filter_denoise', 'image_quality'];
   const oldIds = ["crop","roi_polygon","resize","rotate","flip","perspective_warp","undistort","translate_shear","grayscale","colorspace","colorspace_inverse","channel_split","rgb_adjust","color_inrange","kmeans_segment","slic","white_balance","invert","pseudocolor","binary_threshold","otsu_threshold","adaptive_threshold","multi_otsu_threshold","canny","sobel","laplacian_edge","scharr_edge","prewitt_edge","roberts_edge","log_edge","watershed","watershed_marker","grabcut","region_growing","salt_pepper_noise","gaussian_noise","median_blur","gaussian_blur","box_blur","bilateral","wiener_filter","guided_filter","nlm_denoise","deconv_wiener","deconv_lucy","psnr","ssim","delta_e","seg_score"];
@@ -681,5 +682,5 @@ test("ip5b-G. 550 pre-edit cases: all old ops/options in the five hosts retain p
     }
   }
   assert.equal(Object.keys(result).length, 550);
-  assert.equal(hash(JSON.stringify(result)), "1186cd10c7a6cdc9396d3da64704c410d88d3c53b9721e1dd37754bc05311ddc");
+  assert.equal(hash(JSON.stringify(result)), "7803e35b87e619fea92117bd053dc224595a8c93965846a74400d0086480931c");
 });
