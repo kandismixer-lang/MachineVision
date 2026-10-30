@@ -1,6 +1,6 @@
 {
   "appId": "com.irish.machinevision",
-  "productName": "Machine Vision By IRiSH",
+  "productName": "Argus",
   "directories": {
     "output": "release-mac"
   },
@@ -19,11 +19,11 @@
       "dmg"
     ],
     "extendInfo": {
-      "NSCameraUsageDescription": "Machine Vision ใช้กล้องเพื่อประมวลผลภาพแบบสด (camera is used for live image processing)"
+      "NSCameraUsageDescription": "Argus ใช้กล้องเพื่อประมวลผลภาพแบบสด (camera is used for live image processing)"
     }
   },
   "dmg": {
-    "artifactName": "Machine-Vision-By-IRiSH-${version}-mac-${arch}.${ext}"
+    "artifactName": "Argus-${version}-mac-${arch}.${ext}"
   },
   "publish": null,
   "afterPack": ".github/mac/adhoc-sign.cjs"

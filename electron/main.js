@@ -7,6 +7,8 @@ import electronUpdater from "electron-updater"; // electron-updater เป็น
 const { autoUpdater } = electronUpdater;
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
+// Keep existing templates and settings after the productName changes to Argus.
+app.setPath('userData', path.join(app.getPath('appData'), 'Machine Vision By IRiSH'));
 const isDev = process.env.NODE_ENV === "development";
 // บางเครื่อง (GPU/driver บางรุ่น) พอกล้องเปิดพร้อม hardware-accelerated rendering
 // จะทำให้ display driver ค้าง/รีสตาร์ทตัวเอง จนทั้งเครื่องต้อง restart — ปิด GPU accel
@@ -34,7 +36,7 @@ function createWindow() {
   const win = new BrowserWindow({
     width: 1280,
     height: 800,
-    title: "Machine Vision — เรียนรู้การประมวลผลภาพ",
+    title: "Argus by IRiSH",
     backgroundColor: "#1e1e1e",
     icon: appIcon,
     show: false, // กันหน้าต่างกะพริบดำตอนเปิด — โชว์ทีหลังตอนวาดเสร็จแล้วเท่านั้น (ดูจุด ready-to-show ด้านล่าง)

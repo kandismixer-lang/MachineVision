@@ -645,8 +645,9 @@ textarea {
   letter-spacing: 0.2px;
 }
 .loading-logo {
-  width: min(360px, 60vw);
-  max-height: 200px;
+  width: min(200px, 60vw);
+  height: auto;
+  aspect-ratio: 1;
   object-fit: contain;
   border-radius: 14px;
   background: #fff;

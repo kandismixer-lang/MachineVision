@@ -3,7 +3,7 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Machine Vision — เรียนรู้การประมวลผลภาพ</title>
+    <title>Argus by IRiSH</title>
     <!-- ตั้งธีม (สว่าง/มืด) ก่อนวาดเฟรมแรก กันจอมืดวาบ — ต้องตรงกับ renderer/ui/theme.js (key mv-theme, ค่าเริ่มต้น light) -->
     <script>
       (function () {
@@ -17,18 +17,18 @@
   <body>
     <!-- หน้า loading รอ OpenCV.js (wasm) โหลดเสร็จ -->
     <div id="loading" class="loading">
-      <img src="./assets/irish-logo.jpg" alt="IRiSH — Intelligent Robot and Industrial System Hub" class="loading-logo" />
+      <img src="./assets/argus-logo.png" alt="Argus by IRiSH" class="loading-logo" />
       <div class="spinner"></div>
-      <p id="loading-text">กำลังโหลด OpenCV.js …</p>
+      <p id="loading-text">Argus by IRiSH · กำลังโหลด OpenCV.js …</p>
     </div>
 
     <div id="app" class="app hidden">
       <header class="topbar">
         <div class="brand">
-          <img src="./assets/irish-mark.jpg" alt="IRiSH" class="brand-logo" />
+          <img src="./assets/argus-logo.png" alt="Argus" class="brand-logo" />
           <div class="brand-text">
-            <h1>Machine Vision</h1>
-            <span class="subtitle">by IRiSH </span>
+            <h1>Argus</h1>
+            <span class="subtitle">by IRiSH</span>
           </div>
         </div>
         <!-- แถบเลือกแหล่งภาพ: กล้อง / นำเข้าภาพ -->
@@ -255,7 +255,7 @@
           <span id="status-gpu" class="hidden">GPU —</span>
         </div>
         <div class="status-right">
-          <span class="status-ver" id="status-ver">Machine Vision by IRiSH</span>
+          <span class="status-ver" id="status-ver">Argus by IRiSH</span>
         </div>
       </footer>
     </div>
