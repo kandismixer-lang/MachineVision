@@ -696,15 +696,16 @@ test('ipB-7. (static structure) the 4 ops exist in OPS (the OPS total is NOT pin
   const ia = FILTERS.image_arithmetic;
   assert.equal(ia.inputs, 2);
   const modes = ia.params.find((p) => p.key === 'mode').options.map((o) => o.value);
-  // op ใหม่ batch 4 ต่อท้าย — ห้ามสลับลำดับเดิม (IP batch 4A เพิ่ม roi_apply)
-  assert.deepEqual(modes.slice(0, 9), ['imabsdiff', 'imfuse', 'mask', 'mask_overlay', 'reconstruct', 'imarith', 'logical_ops', 'inpaint', 'hist_match']);
+  // Keep the old mode order intact; batch 5F inserts exposure_fusion after reconstruct.
+  assert.deepEqual(modes.filter((id) => id !== 'exposure_fusion').slice(0, 9), ['imabsdiff', 'imfuse', 'mask', 'mask_overlay', 'reconstruct', 'imarith', 'logical_ops', 'inpaint', 'hist_match']);
+  assert.equal(modes[modes.indexOf('reconstruct') + 1], 'exposure_fusion');
   for (const id of NEW_OPS) {
     assert.equal(OPS[id].needs, 'any', `${id}.needs`);
     for (const p of OPS[id].params) assert.notEqual(p.key, 'mode', `${id}: param key "mode" would collide with MODE_KEY`);
   }
   assert.deepEqual(OPS.imarith.params.find((p) => p.key === 'operation').options.map((o) => o.value), IMARITH_MODES);
   assert.deepEqual(OPS.logical_ops.params.find((p) => p.key === 'operation').options.map((o) => o.value), LOGICAL_MODES);
-  assert.deepEqual(OPS.inpaint.params.find((p) => p.key === 'method').options.map((o) => o.value), INPAINT_METHODS);
+  assert.deepEqual(OPS.inpaint.params.find((p) => p.key === 'method').options.map((o) => o.value), [...INPAINT_METHODS, 'laplace']);
   assert.deepEqual(OPS.hist_match.params, []);
   const dp = defaultParams('image_arithmetic');
   assert.equal(dp.mode, 'imabsdiff');
@@ -763,8 +764,9 @@ test('ipB-9. ui-meta.js OP_PRIMARY: card text for every operation/method, clampe
 
 test('ipB-10. palette-panel.js: the IMAGE ARITHMETIC section lists the 3 original ops then the 4 new ones, each resolves to the image_arithmetic node through OP_TO_FILTER, and the 4 new OP_ICON glyphs are distinct from every other OP_ICON glyph and every GROUP_ICON glyph', () => {
   const sec = TOOL_SECTIONS.find((s) => s.title === 'IMAGE ARITHMETIC');
-  // op ใหม่ batch 4 ต่อท้าย — ห้ามสลับลำดับเดิม (IP batch 4A เพิ่ม roi_apply)
-  assert.deepEqual(sec.ops.slice(0, 9), ['imabsdiff', 'imfuse', 'mask', 'mask_overlay', 'reconstruct', 'imarith', 'logical_ops', 'inpaint', 'hist_match']);
+  // Keep old modes in order; batch 5F places exposure_fusion after reconstruct.
+  assert.deepEqual(sec.ops.filter((id) => id !== 'exposure_fusion').slice(0, 9), ['imabsdiff', 'imfuse', 'mask', 'mask_overlay', 'reconstruct', 'imarith', 'logical_ops', 'inpaint', 'hist_match']);
+  assert.equal(sec.ops[sec.ops.indexOf('reconstruct') + 1], 'exposure_fusion');
   for (const id of NEW_OPS) assert.equal(OP_TO_FILTER[id], 'image_arithmetic');
   for (const id of NEW_OPS) assert.equal(TOOL_SECTIONS.filter((s) => s.ops.includes(id)).length, 1, `${id} must appear in exactly one section`);
   const src = fs.readFileSync(new URL('../src/renderer/filters/ui-meta.js', import.meta.url), 'utf8');

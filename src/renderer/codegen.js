@@ -1,4 +1,5 @@
 import { color5EPy, jacobi5EPy } from "./codegen-batch5e.js";
+import { withTaper5FPy, regularized5FPy, active5FPy, laplace5FPy, blind5FPy, localLaplacian5FPy, multissim5FPy, fusion5FPy } from "./codegen-batch5f.js";
 // สร้างโค้ด Python (OpenCV) ตามลำดับ Box ที่ภาพวิ่งผ่านจริง ๆ ในกล่องผลลัพธ์หนึ่งกล่อง
 // (คนละอย่างกับปุ่ม Export ที่เป็นโค้ดเทรน YOLO)
 //
@@ -794,6 +795,12 @@ print(f'Accumulator rho x theta = {nr} x 180; peaks {peaks}')`.split("\n"),
 }
 
 const GEN = {
+  active_contour: {needs:"gray",outOf:p=>p.view==="mask"?"gray":"color",gen:p=>guarded5A(active5FPy(p),["area5f = None"])},
+  deconv_blind: {needs:"any",outOf:p=>p.view==="psf"?"gray":"same",gen:(p,ctx)=>guarded5A(blind5FPy(p,pyGrayCode(ctx)))},
+  deconv_reg: {needs:"any",out:"same",gen:p=>guarded5A(regularized5FPy(GEN.deconv_wiener.gen({...p,taper:false,nsr:clampNum(p.lambda,.01,.0001,1),nsrUnclamped:true}),p))},
+  local_laplacian: {needs:"any",out:"same",gen:(p,ctx)=>guarded5A(localLaplacian5FPy(p,pyGrayCode(ctx)))},
+  multissim: {needs:"gray",out:"gray",grayMayPass5E:()=>true,gen:(p,ctx)=>guarded5A(multissim5FPy(pyBGrayCode(ctx)),["msssim5f = None"])},
+  exposure_fusion: {needs:"any",out:"color",bgrChannelOrder:true,gen:(p,ctx)=>guarded5A(fusion5FPy(p,isMirrored(ctx),pyAlignBColor(ctx)))},
   rank_filter: { needs: "any", out: "same", gen: (p) => {
     const mode = pickOwn({ percentile: "percentile", min: "min", max: "max", range: "range", mode: "mode" }, p.mode, "percentile");
     const size = Math.min(15, Math.round(clampNum(p.size, 3, 3, 15)) | 1), r = size >> 1;
@@ -3007,6 +3014,7 @@ for c, components in enumerate(((z,z,t,value,value,q), (t,value,value,q,z,z), (v
   // inpaint: out:"same" · guard ทั้งสองข้อ mirror แอปด้วยเลขจำนวนเต็มแบบเดียวกัน (nz * 100 > 25 * total) ·
   // radius clamp ช่วงเดียวกับ registry (intIn(p.radius, 3, 1, 7))
   inpaint: { needs: "any", out: "same", gen: (p, ctx) => {
+    if(p.method==="laplace")return guarded5A(laplace5FPy(bBinaryLines(ctx)));
     const radius = Math.round(clampNum(p.radius, 3, 1, 7));
     const ns = p.method === "ns";
     const flag = ns ? "cv2.INPAINT_NS" : "cv2.INPAINT_TELEA";
@@ -3437,9 +3445,10 @@ for c, components in enumerate(((z,z,t,value,value,q), (t,value,value,q,z,z), (v
   // ---- IP batch 4B (2026-10-15) — 8 op ใหม่ · ใช้อัลกอริทึมเดียวกับแอป (ไม่ใช่ตัวสำเร็จรูปของ cv2 ที่ให้ผลต่าง) · ค่าคงที่ความเร็วมาจาก registry (ไม่ hardcode ซ้ำ) ----
   // Wiener: psf_kernel (ฝาแฝด 4A) → psf2otf ด้วย np.roll → G·H*/(|H|²+NSR) ด้วย float64 → dft ย้อน · parity เป็น tolerance (dft ของ cv2 5.0 กับ 4.10 ต่างระดับ ulp แล้วถูกขยาย)
   deconv_wiener: { needs: "any", out: "same", gen: (p) => {
+    if(boolOr(p.taper,false))return withTaper5FPy(GEN.deconv_wiener.gen({...p,taper:false}));
     const kind = pickOwn({ motion: "motion", disk: "disk" }, p.psf, "motion");
     const size = Math.round(clampNum(p.psfSize, 9, 1, 50)), ang = Math.round(clampNum(p.psfAngle, 0, 0, 179));
-    const nsr = clampNum(p.nsr, 0.01, 0, 0.5);
+    const nsr = boolOr(p.nsrUnclamped,false) ? finiteOr(p.nsr,0.01) : clampNum(p.nsr, 0.01, 0, 0.5);
     return [
       ...psfKernelPyLines(),
       `psf = psf_kernel("${kind}", ${size}, ${ang})`,
@@ -3477,6 +3486,7 @@ for c, components in enumerate(((z,z,t,value,value,q), (t,value,value,q,z,z), (v
 
   // Lucy-Richardson: float32 ทุกขั้นเหมือนแอป · filter2D เป็น correlation → kf (PSF พลิก) เป็น convolution, kk (PSF ตรง) เป็น adjoint
   deconv_lucy: { needs: "any", out: "same", gen: (p) => {
+    if(boolOr(p.taper,false))return withTaper5FPy(GEN.deconv_lucy.gen({...p,taper:false}));
     const kind = pickOwn({ motion: "motion", disk: "disk" }, p.psf, "motion");
     const size = Math.round(clampNum(p.psfSize, 9, 1, 50)), ang = Math.round(clampNum(p.psfAngle, 0, 0, 179));
     const iters = Math.round(clampNum(p.iterations, 10, 1, LUCY_MAX_ITERS));
@@ -4238,13 +4248,14 @@ function appOnlyHeader(appOnly) {
 // PF_PY_SOURCES = ตัวที่ gen โค้ด snapshot ให้ได้ (ที่เหลือ: metric ตรงกับ op นั้นแต่ Python ยังไม่รองรับ = คำเตือน)
 // ข้อจำกัดที่รู้ (ยอมรับ): template_matching (ไม่มี template / ใหญ่เกินภาพ) และ psnr/ssim (ไม่ได้ต่อ B) แอปคืนภาพโดยไม่มี values แต่ที่นี่ยังนับเป็น
 // "กล่องวัดล่าสุด" เสมอ — ผลคือ Python ตัดสิน NG (กล่องผิดชนิด) ในกรณีที่แอปจะใช้ค่าของกล่องวัดก่อนหน้า · เอนเอียงไปทาง NG (fail-safe)
-export const PF_VALUE_OPS = new Set(["select_object", "image_stats", "corr2", "regionprops", "template_matching", "psnr", "ssim", "mog2", "farneback_optical_flow", "pyrlk_optical_flow", "feret",
+export const PF_VALUE_OPS = new Set(["active_contour", "multissim", "select_object", "image_stats", "corr2", "regionprops", "template_matching", "psnr", "ssim", "mog2", "farneback_optical_flow", "pyrlk_optical_flow", "feret",
   "line_profile", "shape_filter", "roi_polygon", "slic", "focus_score", "delta_e", "roi_apply", "ecc_register", "gabor_filter", "glcm", "dehaze", "dct_jpeg", "watershed_marker", "seg_score", "bf_score", "euler_number", "image_pyramid", "frangi_vesselness", "piqe"]);
-const PF_PY_SOURCES = { select_object: true, image_stats: true, corr2: true, regionprops: true, roi_polygon: true, focus_score: true, seg_score: true, bf_score: true, piqe: true };
+const PF_PY_SOURCES = { multissim: true, select_object: true, image_stats: true, corr2: true, regionprops: true, roi_polygon: true, focus_score: true, seg_score: true, bf_score: true, piqe: true };
 // บรรทัดท้ายขั้นวัด: เก็บค่าที่ pass_fail ต้องใช้ลง `pf_up` ทันที (ตัวแปรของขั้นวัดอาจถูกทับโดยขั้นถัดไป) · เรียกเมื่อ pipeline มี pass_fail เท่านั้น
 function pfSnapshotLines(opId, local, ctx) {
   if (!PF_VALUE_OPS.has(opId)) return [];
   ctx.pfSource = opId;
+  if (opId === "multissim") return ["pf_up = {'value': msssim5f}  # MS-SSIM"];
   if (opId === "image_stats") return ["pf_up = {'mean': stats_mean, 'std': stats_std, 'entropy': stats_entropy}  # ค่าให้ขั้น Pass / Fail"];
   if (opId === "select_object") return ["pf_up = {'value': area5e}  # selected object area"];
   if (opId === "corr2") return ["pf_up = {'value': corr2_value}  # ค่าให้ขั้น Pass / Fail"];

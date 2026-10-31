@@ -588,8 +588,8 @@ for (const [variant, what] of [['A', 'the old params'], ['B', 'every new param p
 // ===================================================================
 // ip4b-S — static structure / text / clamps / codegen
 // ===================================================================
-test('ip4b-S1. (static structure) the 8 new ops exist with the right needs and host groups; OPS = 141 (101 + 26 morph_* after batch 5A + 5 after batch 5B + 4 after batch 5C + 5 after batch 5D), FILTERS = 35; Morphology has 27 operations (the old 14 first, in order); no select key is "mode"; defaultParams() == the OPS defaults (prefixed); legacy groups untouched; the category groups = the palette sections in order', () => {
-  assert.equal(Object.keys(OPS).length, 149); // 101 + 26 morph_* (batch 5A) + 5 (batch 5B) + 4 (batch 5C: bf_score, local_contrast, mask_overlay, morph_ult_erode)
+test('ip4b-S1. (static structure) the 8 new ops exist with the right needs and host groups; OPS = 155 (149 before batch 5F + 6 new ops), FILTERS = 35; Morphology has 27 operations (the old 14 first, in order); no select key is "mode"; defaultParams() == the OPS defaults (prefixed); legacy groups untouched; the category groups = the palette sections in order', () => {
+  assert.equal(Object.keys(OPS).length, 155); // 149 before batch 5F + 6 new ops
   assert.equal(Object.keys(FILTERS).length, 35); // +morph_tools (2026-10-18) +image_registration (2026-10-24)
   for (const id of NEW_OPS) {
     assert.ok(OPS[id], id); assert.equal(OPS[id].needs, NEEDS[id], `${id}.needs`);
@@ -626,8 +626,8 @@ test('ip4b-S1. (static structure) the 8 new ops exist with the right needs and h
     assert.equal(FILTERS[fid].params.find((p) => p.key === 'mode').default, dflt);
   }
   const sec = (t) => TOOL_SECTIONS.find((s) => s.title === t).ops;
-  assert.deepEqual(sec('ENHANCE').slice(-4), ['custom_kernel', 'dehaze', 'lowlight_enhance', 'local_contrast']);
-  assert.deepEqual(sec('FILTER & DENOISE').slice(-6), ['wiener_filter', 'guided_filter', 'anisotropic_diffusion', 'nlm_denoise', 'deconv_wiener', 'deconv_lucy']);
+  assert.deepEqual(sec('ENHANCE').slice(-5), ['custom_kernel', 'dehaze', 'lowlight_enhance', 'local_contrast', 'local_laplacian']);
+  assert.deepEqual(sec('FILTER & DENOISE').slice(-8), ['wiener_filter', 'guided_filter', 'anisotropic_diffusion', 'nlm_denoise', 'deconv_wiener', 'deconv_lucy', 'deconv_blind', 'deconv_reg']);
   const ad = sec('ANALYSIS & DETECTION');
   assert.deepEqual(ad.slice(ad.indexOf('local_entropy_filter'), ad.indexOf('local_entropy_filter') + 5), ['local_entropy_filter', 'gabor_filter', 'glcm', 'focus_score', 'regionprops']);
   assert.deepEqual(sec('FREQUENCY DOMAIN').slice(-2), ['bandpass_notch', 'dct_jpeg']);
@@ -637,10 +637,10 @@ test('ip4b-S1. (static structure) the 8 new ops exist with the right needs and h
   assert.deepEqual(sec('MORPHOLOGY'), modes('morph_tools'));
   assert.equal(sec('MORPHOLOGY').length, 30);
   for (const id of NEW_OPS) assert.equal(TOOL_SECTIONS.filter((s) => s.ops.includes(id)).length, 1, `${id} in exactly one section`);
-  // slow-mode hint on nlm_denoise / deconv_lucy / morph_thin / morph_shrink; it lands in the mode dropdown
+  // ตรวจว่าคำใบ้งานช้าปรากฏกับโหมดที่ใช้เวลามากและแสดงใน dropdown
   for (const id of Object.keys(OPS)) {
     const has = typeof OPS[id].modeHint === 'string' && OPS[id].modeHint.includes('ช้า — เหมาะกับภาพนิ่ง');
-    assert.equal(has, ['nlm_denoise', 'deconv_lucy', 'morph_thin', 'morph_shrink', 'frangi_vesselness', 'anisotropic_diffusion'].includes(id), `${id} slow modeHint`);
+    assert.equal(has, ['nlm_denoise', 'deconv_lucy', 'deconv_blind', 'local_laplacian', 'exposure_fusion', 'morph_thin', 'morph_shrink', 'frangi_vesselness', 'anisotropic_diffusion'].includes(id), `${id} slow modeHint`);
   }
   assert.ok(FILTERS.filter_denoise.params[0].options.find((o) => o.value === 'nlm_denoise').hint.includes('ช้า'));
   assert.ok(FILTERS.filter_denoise.params[0].options.find((o) => o.value === 'deconv_lucy').hint.includes('ช้า'));

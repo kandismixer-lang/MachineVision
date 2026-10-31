@@ -1,4 +1,5 @@
 import { byte5E, yiq5E, srgbLut5E, decorr5E, pca5E, angle5E, guardThicken5E } from "./batch5e.js";
+import { byte5F, edgeTaper5F, activeContour5F, laplace5F, lucyStep5F, blind5F, multissim5F, fusion5F } from "./batch5f.js";
 // Registry ของ filter — แหล่งข้อมูลเดียว (single source of truth)
 // จัดกลุ่มตามหัวข้อการสอน Image Processing:
 //   1. Color Space      2. Enhancement
@@ -1202,6 +1203,7 @@ export function psfParamDefs() {
     { key: "psfAngle", visibleWhen: [{key:"psf",in:["motion"]}], type: "number", label: "มุม PSF (องศา) — ใช้กับ Motion เท่านั้น", min: 0, max: 179, step: 1, default: 0, desc: "0° = ขยับแนวนอน · 90° = แนวตั้ง · มุมเพิ่มทวนเข็มนาฬิกา" },
   ];
 }
+function taperParam5F() { return {key:"taper",type:"boolean",label:"Edgetaper (ลดรอยขอบก่อนแก้เบลอ)",default:false,hint:"ผสมภาพกับภาพเบลอใกล้ขอบด้วย autocorrelation ของ PSF"}; }
 export function psfInfo(kind, size, angle, n) {
   return kind === "disk" ? `disk รัศมี ${size} px (${n}x${n})` : `motion ยาว ${size} px มุม ${angle}° (${n}x${n})`;
 }
@@ -1551,6 +1553,7 @@ export const PASS_FAIL_METRICS = {
   entropy: { op: "image_stats", th: "Image Statistics", pick: (v) => pfScalar(v, "entropy") },
   corr2: { op: "corr2", th: "Correlation Coefficient", pick: (v) => pfScalar(v, "corr2") },
   area: { op: "select_object", th: "Select Object", pick: (v) => pfScalar(v, "area") },
+  msssim: { op: "multissim", th: "Multi-scale SSIM", pick: (v) => pfScalar(v, "msssim") },
 };
 // เกณฑ์แสดงบนข้อความ: ปัด 2 ตำแหน่งแล้วตัดศูนย์ท้าย (0.30000000000000004 → 0.3 · 1 → 1)
 export const pfNum = (x) => String(Math.round(x * 100) / 100);
@@ -1630,7 +1633,7 @@ function ultimateErode(cv, src, p, ctx) {
     const out = dst; dst = null; return out;
   } finally { for (const m of [dst, labels, dist, bin, gray]) if (m) m.delete(); }
 }
-function localLaplacian(cv, gray, sigma, amount, nLev) {
+function localLaplacian(cv, gray, sigma, amount, nLev, beta = 1, K = 10, alphaOverride) {
   const gaussian = [], owned = [];
   const top = nLev; // nLev detail bands plus the Gaussian residual G[nLev].
   const pixels = gray.data;
@@ -1639,16 +1642,16 @@ function localLaplacian(cv, gray, sigma, amount, nLev) {
     const base = mat(); gray.convertTo(base, cv.CV_32F, 1 / 255); gaussian.push(base);
     for (let l = 1; l <= top; l++) { const m = mat(); cv.pyrDown(gaussian[l - 1], m); gaussian.push(m); }
     const acc = gaussian.slice(0, -1).map((g) => new Float64Array(g.rows * g.cols));
-    const alpha = 1 - amount, noiseSlope = Math.pow(0.01, alpha - 1);
+    const alpha = alphaOverride ?? 1 - amount, noiseSlope = Math.pow(0.01, alpha - 1);
     // Remap from the original U8 luminance in float64, then enter the float32 pyramid.
-    for (let k = 0; k < 10; k++) {
-      const remapped = [], gamma = k / 9;
+    for (let k = 0; k < K; k++) {
+      const remapped = [], gamma = k / (K - 1);
       let up = null;
       try {
         const r = new Float32Array(pixels.length);
         for (let i = 0; i < r.length; i++) {
           const d = pixels[i] / 255 - gamma, t = Math.abs(d), u = t / sigma;
-          r[i] = t <= sigma ? gamma + Math.sign(d) * sigma * (u >= 0.01 ? Math.pow(u, alpha) : u * noiseSlope) : gamma + Math.sign(d) * (sigma + (t - sigma));
+          r[i] = t <= sigma ? gamma + Math.sign(d) * sigma * (u >= 0.01 ? Math.pow(u, alpha) : u * noiseSlope) : gamma + Math.sign(d) * (sigma + beta * (t - sigma));
         }
         remapped.push(cv.matFromArray(gray.rows, gray.cols, cv.CV_32F, r));
         for (let l = 1; l <= top; l++) { const m = new cv.Mat(); remapped.push(m); cv.pyrDown(remapped[l - 1], m); }
@@ -1658,7 +1661,7 @@ function localLaplacian(cv, gray, sigma, amount, nLev) {
           cv.pyrUp(remapped[l + 1], up, new cv.Size(g.cols, g.rows));
           const gd = g.data32F, fd = fine.data32F, ud = up.data32F, a = acc[l];
           for (let i = 0; i < acc[l].length; i++) {
-            const w = Math.max(0, 1 - Math.abs(gd[i] - gamma) * 9);
+            const w = Math.max(0, 1 - Math.abs(gd[i] - gamma) * (K - 1));
             a[i] += w * (fd[i] - ud[i]);
           }
         }
@@ -1818,6 +1821,117 @@ function simplifiedContours5D(cv, src, p, ctx, epsilon) {
 }
 
 export const OPS = {
+  active_contour: {
+    name: "Active Contour (Chan-Vese)", needs: "gray", modeHint: "แยกวัตถุด้วยค่าเฉลี่ยภายในและภายนอก",
+    desc: "Chan-Vese แบบ binary level set และ majority 3×3 · MATLAB ใช้ sparse-field level set ผลจึงไม่เท่ากันทุกพิกเซล · bias บวกทำให้วัตถุหดเข้า · ขอบ majority ใช้พิกเซลใกล้สุด",
+    params: [
+      {key:"init",type:"select",label:"เริ่มต้นวัตถุ",options:[{value:"rect",label:"สี่เหลี่ยมเว้นขอบ"},{value:"otsu",label:"เริ่มจาก Otsu"}],default:"rect",hint:"Otsu เลือกบริเวณสว่าง"},
+      {key:"margin",type:"number",label:"เว้นขอบ (%)",min:1,max:45,step:1,default:10,visibleWhen:[{key:"init",in:["rect"]}],hint:"ระยะขอบแต่ละด้านของสี่เหลี่ยม"},
+      {key:"iterations",type:"number",label:"จำนวนรอบสูงสุด",min:1,max:1000,step:1,default:100,hint:"หยุดก่อนเมื่อ mask คงเดิม"},
+      {key:"smooth",type:"number",label:"รอบ majority ต่อการอัปเดต",min:0,max:5,step:1,default:1,hint:"มากขึ้นทำให้ขอบเรียบขึ้น"},
+      {key:"bias",type:"number",label:"Contraction Bias (บวก = หดเข้า)",min:-1,max:1,step:.05,default:0,hint:"ลบช่วยขยายวัตถุ"},
+      {key:"view",type:"select",label:"แสดงผล",options:[{value:"overlay",label:"เส้นขอบแดงบนภาพเดิม"},{value:"mask",label:"Mask ขาวดำ"}],default:"overlay",hint:"เส้นขอบด้านใน 1 px"},
+    ],
+    apply(cv,src,p,ctx){
+      if(isEmptyMat(src)){if(ctx){ctx.info="ภาพว่าง";ctx.values=scalarValues([],[]);}return src.clone();}
+      let gray=null,bin=null,dst=null;
+      try{
+        gray=grayIfNeeded(cv,src);const g=gray||src,w=g.cols,h=g.rows,asked=intIn(p.iterations,100,1,1000),smooth=intIn(p.smooth,1,0,5);
+        const iters=lucyBudgetIters(w,h,1+smooth,asked);let initial;
+        if(p.init==="otsu"){bin=new cv.Mat();cv.threshold(g,bin,0,255,cv.THRESH_BINARY+cv.THRESH_OTSU);initial=Uint8Array.from(bin.data,v=>v?1:0);}
+        else{const m=numIn(p.margin,10,1,45),mx=Math.floor(w*m/100+.5),my=Math.floor(h*m/100+.5);initial=Uint8Array.from({length:w*h},(_,i)=>{const x=i%w,y=Math.floor(i/w);return x>=mx&&x<w-mx&&y>=my&&y<h-my?1:0;});}
+        const q=activeContour5F(g.data,w,h,initial,iters,smooth,numIn(p.bias,0,-1,1));
+        if(p.view==="mask")dst=cv.matFromArray(h,w,cv.CV_8UC1,Uint8Array.from(q.mask,v=>v*255));
+        else{dst=new cv.Mat();cv.cvtColor(g,dst,cv.COLOR_GRAY2RGB);const d=dst.data;for(let y=0;y<h;y++)for(let x=0;x<w;x++){const i=y*w+x;if(q.mask[i]&&(x===0||y===0||x===w-1||y===h-1||!q.mask[i-1]||!q.mask[i+1]||!q.mask[i-w]||!q.mask[i+w]))d.set([255,0,0],i*3);}}
+        if(ctx){ctx.info=`Chan-Vese · ${q.used} รอบ (${q.stable?"หยุดเมื่อนิ่ง":"ครบ"}) · c_in ${fixed1(q.cin)} · c_out ${fixed1(q.cout)}`+(iters<asked?` · ภาพใหญ่ จึงลดเหลือ ${iters} รอบ (ขอ ${asked} รอบ)`:"");ctx.values=scalarValues([["area","พื้นที่วัตถุ (px)"]],[q.area]);}
+        const out=dst;dst=null;return out;
+      }finally{for(const m of [dst,bin,gray])if(m)m.delete();}
+    },
+  },
+  deconv_blind: {
+    name:"Blind Deconvolution (แก้เบลอโดยไม่รู้ PSF)",needs:"any",modeHint:SLOW_MODE_HINT,
+    desc:"สลับ Lucy-Richardson กับการประมาณ PSF เริ่มจากค่าเท่ากัน · ไม่มีตัวเร่งแบบ MATLAB deconvblind · ภาพสีใช้ PSF ร่วมจากภาพเทาและอัปเดตทีละช่องด้วย PSF เดียวกันในแต่ละรอบ",
+    params:[
+      {key:"psfSize",type:"number",label:"ขนาด PSF (คี่)",min:3,max:31,step:2,default:9,hint:"PSF เริ่มเป็นค่าเท่ากันทุกช่อง"},
+      {key:"iterations",type:"number",label:"จำนวนรอบ",min:1,max:50,step:1,default:10,hint:"รอบมากขึ้นช้าลงและอาจขยาย noise"},
+      {key:"view",type:"select",label:"แสดงผล",options:[{value:"result",label:"ภาพแก้เบลอ"},{value:"psf",label:"PSF ที่ประมาณได้"}],default:"result",hint:"PSF ขยายแบบ nearest ให้ด้านเท่าด้านสั้นของภาพ"},
+      taperParam5F(),
+    ],
+    apply(cv,src,p,ctx){
+      if(isEmptyMat(src)){if(ctx)ctx.info="ภาพว่าง";return src.clone();}
+      let rgb=null,gray=null,tapered=null;
+      try{
+        rgb=dropAlpha(cv,src);const input=rgb||src,n=Math.min(31,intIn(p.psfSize,9,3,31)|1),asked=intIn(p.iterations,10,1,50);
+        const work=input.channels()+1+Math.ceil(n*n/9),iters=lucyBudgetIters(src.cols,src.rows,work,asked);
+        if(boolOr(p.taper,false))tapered=edgeTaper5F(cv,input,{n,k:Array(n*n).fill(1/(n*n))});
+        const x=tapered||input;gray=grayIfNeeded(cv,x);const q=blind5F(cv,x,gray||x,n,iters);
+        if(ctx)ctx.info=`Blind deconvolution ${iters} รอบ · PSF ${n}×${n}`+(iters<asked?` · ภาพใหญ่ จึงลดเหลือ ${iters} รอบ (ขอ ${asked} รอบ)`:"")+(tapered?" · edgetaper":"");
+        if(p.view==="psf"){const side=Math.min(src.cols,src.rows),max=Math.max(...q.psf);return cv.matFromArray(side,side,cv.CV_8UC1,Uint8Array.from({length:side*side},(_,i)=>byte5F(q.psf[Math.floor(Math.floor(i/side)*n/side)*n+Math.floor((i%side)*n/side)]/max*255)));}
+        return cv.matFromArray(src.rows,src.cols,input.type(),q.data);
+      }finally{for(const m of [gray,tapered,rgb])if(m)m.delete();}
+    },
+  },
+  deconv_reg: {
+    name:"Regularized Deconvolution (deconvreg)",needs:"any",modeHint:"แก้เบลอพร้อมลดการขยาย noise",
+    desc:"F = conj(H)·G / (|H|² + λ·|L|²) โดย L เป็น Laplacian 4 ทิศ · แอปให้ตั้ง λ เอง ส่วน MATLAB deconvreg หา λ อัตโนมัติจากพลังงาน noise · FFT และขอบสะท้อนแบบ Wiener",
+    params:[...psfParamDefs(),{key:"lambda",type:"number",label:"λ (น้ำหนักความเรียบ)",min:.0001,max:1,step:.0001,default:.01,hint:"มากขึ้นลด noise แต่รายละเอียดน้อยลง"},taperParam5F()],
+    apply(cv,src,p,ctx){
+      if(isEmptyMat(src)){if(ctx)ctx.info="ภาพว่าง";return src.clone();}
+      const {kind,size,angle,psf}=psfFromParams(p),lambda=numIn(p.lambda,.01,.0001,1);let rgb=null,tapered=null;
+      try{rgb=dropAlpha(cv,src);const x=rgb||src;if(boolOr(p.taper,false))tapered=edgeTaper5F(cv,x,psf);
+        const dst=wienerDeconvolve(cv,tapered||x,psf,lambda,true);if(ctx)ctx.info=`Regularized deconvolution · PSF ${psfInfo(kind,size,angle,psf.n)} · λ ${lambda}`+(tapered?" · edgetaper":"");return dst;
+      }finally{for(const m of [tapered,rgb])if(m)m.delete();}
+    },
+  },
+  local_laplacian: {
+    name:"Local Laplacian Filter (locallapfilt)",needs:"any",modeHint:SLOW_MODE_HINT,
+    desc:"Fast Local Laplacian แบบ local_contrast · alpha < 1 เพิ่มรายละเอียด, alpha > 1 ทำให้เรียบ · beta < 1 บีบช่วงความสว่าง, beta > 1 ขยาย · ภาพสีปรับ luminance แล้วคืนอัตราส่วนสี · 32 ระดับใช้เวลามาก · ด้านสั้น < 16 px คืนภาพเดิม",
+    params:[
+      {key:"sigma",type:"number",label:"σ (ขอบระหว่างรายละเอียดกับโครงสร้าง)",min:.01,max:1,step:.01,default:.2,hint:"สัดส่วนของช่วง 0–255"},
+      {key:"alpha",type:"number",label:"α (< 1 เพิ่มรายละเอียด)",min:.01,max:5,step:.01,default:.5,hint:"> 1 ทำให้รายละเอียดเรียบ"},
+      {key:"beta",type:"number",label:"β (ความต่างของโครงสร้างใหญ่)",min:0,max:5,step:.05,default:1,hint:"< 1 tone map, > 1 ขยายความต่าง"},
+      {key:"levels",type:"select",label:"จำนวนระดับความเข้ม",options:[8,16,32].map(v=>({value:String(v),label:String(v)})),default:"16",hint:"มากขึ้นละเอียดขึ้นและช้าลง"},
+    ],
+    apply(cv,src,p,ctx){
+      if(isEmptyMat(src)){if(ctx)ctx.info="ภาพว่าง";return src.clone();}
+      const sigma=numIn(p.sigma,.2,.01,1),alpha=numIn(p.alpha,.5,.01,5),beta=numIn(p.beta,1,0,5),K=[8,16,32].includes(Number(p.levels))?Number(p.levels):16;
+      const nlev=Math.max(1,Math.min(8,Math.floor(Math.log2(Math.min(src.cols,src.rows)))-3));let rgb=null,gray=null;
+      try{rgb=dropAlpha(cv,src);const x=rgb||src;if(ctx)ctx.info=`Local Laplacian · σ ${sigma} · α ${alpha} · β ${beta} · ${K} ระดับ · ${nlev} ชั้น`;
+        if((alpha===1&&beta===1)||Math.min(src.cols,src.rows)<16)return x.clone();
+        gray=grayIfNeeded(cv,x);const g=gray||x,light=localLaplacian(cv,g,sigma,0,nlev,beta,K,alpha),data=x.data,gd=g.data,ch=x.channels();
+        return cv.matFromArray(src.rows,src.cols,x.type(),Uint8Array.from({length:data.length},(_,j)=>{const i=Math.floor(j/ch),l=Math.max(0,Math.min(1,light[i]));return byte5F(ch===1||gd[i]===0?l*255:data[j]*(l/(gd[i]/255)));}));
+      }finally{for(const m of [gray,rgb])if(m)m.delete();}
+    },
+  },
+  multissim: {
+    name:"Multi-scale SSIM (multissim)",needs:"gray",modeHint:"เปรียบเทียบโครงสร้างภาพหลายสเกล",
+    desc:"MS-SSIM สูงสุด 5 scale ใช้ Gaussian 11, σ 1.5 และลดภาพด้วยค่าเฉลี่ย 2×2 ตัดแถวคอลัมน์คี่ · cs ติดลบใช้ 0 · ภาพเล็กลด scale และ normalize น้ำหนัก · ภาพสีแปลงเป็นเทา · ผลภาพเป็น SSIM map ของ scale แรก",
+    params:[],
+    apply(cv,src,p,ctx){
+      if(isEmptyMat(src)){if(ctx){ctx.info="ภาพว่าง";ctx.values=scalarValues([],[]);}return src.clone();}
+      let ga=null,gb=null,matched=null;
+      try{ga=grayIfNeeded(cv,src);const a=ga||src,pass=passthroughNoSrc2(src,ctx);
+        if(pass){if(ctx)ctx.values=scalarValues([],[]);return pass;}
+        gb=grayIfNeeded(cv,ctx.src2);const m=matchSize(cv,a,gb||ctx.src2);matched=m.resized?m.mat:null;
+        const q=multissim5F(cv,a.data,(matched||gb||ctx.src2).data,a.cols,a.rows);
+        if(ctx){ctx.info=`MS-SSIM ${q.score.toFixed(4)} (${q.scales} scale)`+(m.resized?RESIZED_B_INFO:"");ctx.values=scalarValues([["msssim","MS-SSIM"]],[q.score]);}
+        return cv.matFromArray(a.rows,a.cols,cv.CV_8UC1,q.map);
+      }finally{for(const m of [matched,gb,ga])if(m)m.delete();}
+    },
+  },
+  exposure_fusion: {
+    name:"Exposure Fusion (รวมภาพสองความสว่าง)",needs:"any",modeHint:SLOW_MODE_HINT,
+    desc:"Mertens et al. 2007: น้ำหนัก contrast จาก Laplacian 4-neighbour ของภาพเทา 8-bit (ksize=1), saturation และ well-exposedness แล้วรวมด้วย pyramid 5-tap แบบ float64 · MATLAB รับหลายภาพ แอปรับ 2 ภาพ A,B · ภาพต้องตรงตำแหน่งกัน ใช้ ECC Register ก่อนถ้าขยับ · B ต่างขนาดปรับแบบ linear",
+    params:[['wContrast','น้ำหนักความคม'],['wSaturation','น้ำหนักความสดสี'],['wExposure','น้ำหนักแสงพอดี']].map(([key,label])=>({key,label,type:"number",min:0,max:3,step:.1,default:1,hint:"0 = ไม่ใช้เกณฑ์นี้"})),
+    apply(cv,src,p,ctx){
+      const pass=passthroughNoSrc2(src,ctx);if(pass)return pass;if(isEmptyMat(src)){if(ctx)ctx.info="ภาพว่าง";return src.clone();}
+      let ra=null,rb=null,ga=null,gb=null,matched=null;
+      try{ra=rgbIfNeeded(cv,src);rb=rgbIfNeeded(cv,ctx.src2);const a=ra||src,m=matchSize(cv,a,rb||ctx.src2);matched=m.resized?m.mat:null;const b=matched||rb||ctx.src2;
+        ga=grayIfNeeded(cv,a);gb=grayIfNeeded(cv,b);const q=fusion5F(cv,a,b,ga||a,gb||b,['wContrast','wSaturation','wExposure'].map(k=>numIn(p[k],1,0,3)));
+        if(ctx)ctx.info=`Exposure fusion · ${q.levels} ชั้น`+(m.resized?RESIZED_B_INFO:"");return cv.matFromArray(a.rows,a.cols,cv.CV_8UC3,q.data);
+      }finally{for(const m of [gb,ga,matched,rb,ra])if(m)m.delete();}
+    },
+  },
   rank_filter: {
     name: "Rank / Range / Mode Filter (กรองตามลำดับค่า)", needs: "any",
     modeHint: "เลือกค่าจากเพื่อนบ้านแต่ละช่องสี โดยสะท้อนขอบภาพ",
@@ -5875,8 +5989,9 @@ export const OPS = {
       { key: "method", type: "select", label: "วิธีซ่อม", options: [
         { value: "telea", label: "Telea (Fast Marching)", hint: "เติมจากขอบเข้าด้านใน ถ่วงน้ำหนักตามระยะ" },
         { value: "ns", label: "Navier-Stokes", hint: "ต่อแนวเส้น/ขอบของภาพเข้าไปในบริเวณที่ซ่อม" },
+        { value: "laplace", label: "Laplace (regionfill)", hint: "เติมค่า harmonic ด้วย red-black SOR จากค่าเริ่มต้นแบบ coarse-to-fine" },
       ], default: "telea" },
-      { key: "radius", type: "number", label: "รัศมีอ้างอิง (px)", min: 1, max: 7, step: 1, default: 3, hint: "ระยะรอบจุดที่ใช้เดาสี — ใหญ่ = ช้าลงมาก · วัดจริงที่ r=7 mask ครอบ 25% ภาพสี (Node, OpenCV.js 4.10): 640×480 ≈ 0.12–0.29 วินาที · 1280×720 ≈ 0.37–0.86 วินาทีต่อเฟรม ขึ้นกับรูปทรงของ mask (จุดกระจายช้ากว่าก้อนเดียว)", desc: "รัศมีของบริเวณรอบ ๆ ที่ใช้คำนวณสีที่จะเติม — รอยเล็กใช้ 3 ก็พอ" },
+      { key: "radius", type: "number", label: "รัศมีอ้างอิง (px)", min: 1, max: 7, step: 1, default: 3, visibleWhen: [{ key: "method", in: ["telea", "ns"] }], hint: "ระยะรอบจุดที่ใช้เดาสี — ใหญ่ = ช้าลงมาก · วัดจริงที่ r=7 mask ครอบ 25% ภาพสี (Node, OpenCV.js 4.10): 640×480 ≈ 0.12–0.29 วินาที · 1280×720 ≈ 0.37–0.86 วินาทีต่อเฟรม ขึ้นกับรูปทรงของ mask (จุดกระจายช้ากว่าก้อนเดียว)", desc: "รัศมีของบริเวณรอบ ๆ ที่ใช้คำนวณสีที่จะเติม — รอยเล็กใช้ 3 ก็พอ" },
     ],
     apply(cv, src, p, ctx) {
       const pass = passthroughNoSrc2(src, ctx);
@@ -5908,6 +6023,12 @@ export const OPS = {
         if (src.channels() === 4) {
           rgb = new cv.Mat();
           cv.cvtColor(src, rgb, cv.COLOR_RGBA2RGB);
+        }
+        if(p.method==="laplace"){
+          const x=rgb||src,budget=lucyBudgetIters(nz,1,x.channels(),5000),q=laplace5F(x.data,x.cols,x.rows,x.channels(),maskBin.data,budget);
+          dst=cv.matFromArray(x.rows,x.cols,x.type(),q.data);
+          ctx.info=`Laplace (regionfill) · ${nz} px · ${q.used} รอบ`+(q.stable?" · หยุดเมื่อนิ่ง":" · ครบ")+(budget<5000?` · ภาพใหญ่ จึงลดเหลือ ${budget} รอบ (ขอ 5000 รอบ)`:"")+suffix;
+          return dst;
         }
         dst = new cv.Mat();
         cv.inpaint(rgb || src, maskBin, dst, radius, useNS ? cv.INPAINT_NS : cv.INPAINT_TELEA);
@@ -7946,19 +8067,23 @@ export const OPS = {
     params: [
       ...psfParamDefs(),
       { key: "nsr", type: "number", label: "NSR (noise ÷ สัญญาณ)", min: 0, max: 0.5, step: 0.001, default: 0.01, desc: "0 = หารตรง (inverse filter) ขยาย noise รุนแรง · มากขึ้น = เนียนขึ้นแต่คมน้อยลง · MATLAB deconvwnr ใช้ความหมายเดียวกัน" },
+      taperParam5F(),
     ],
     apply(cv, src, p, ctx) {
       if (isEmptyMat(src)) { if (ctx) ctx.info = "ภาพว่าง"; return src.clone(); }
       const { kind, size, angle, psf } = psfFromParams(p);
       const nsr = numIn(p.nsr, 0.01, 0, 0.5);
-      let rgb = null, dst = null;
+      let rgb = null, dst = null, tapered = null;
       try {
         rgb = dropAlpha(cv, src);
-        dst = wienerDeconvolve(cv, rgb || src, psf, nsr);
+        if(boolOr(p.taper,false))tapered=edgeTaper5F(cv,rgb||src,psf);
+        dst = wienerDeconvolve(cv, tapered || rgb || src, psf, nsr);
         if (ctx) ctx.info = `Wiener deconvolution · PSF ${psfInfo(kind, size, angle, psf.n)} · NSR ${nsr}` + (nsr === 0 ? " · NSR = 0 คือหารตรง (inverse filter) — noise และรอยปัดเศษ 8 bit ถูกขยายมาก" : "") + bigImageNote(src, 0);
+        if(ctx&&tapered)ctx.info+=" · edgetaper";
         const out = dst; dst = null;
         return out;
       } finally {
+        if (tapered) tapered.delete();
         if (dst) dst.delete();
         if (rgb) rgb.delete();
       }
@@ -7974,21 +8099,25 @@ export const OPS = {
     params: [
       ...psfParamDefs(),
       { key: "iterations", type: "number", label: "จำนวนรอบ", min: 1, max: LUCY_MAX_ITERS, step: 1, default: 10, desc: "มากขึ้น = คมขึ้นแต่ noise และ ringing เพิ่ม · MATLAB ค่าเริ่มต้น 10" },
+      taperParam5F(),
     ],
     apply(cv, src, p, ctx) {
       if (isEmptyMat(src)) { if (ctx) ctx.info = "ภาพว่าง"; return src.clone(); }
       const { kind, size, angle, psf } = psfFromParams(p);
       const asked = intIn(p.iterations, 10, 1, LUCY_MAX_ITERS);
-      let rgb = null, dst = null;
+      let rgb = null, dst = null, tapered = null;
       try {
         rgb = dropAlpha(cv, src);
-        const x = rgb || src;
+        if(boolOr(p.taper,false))tapered=edgeTaper5F(cv,rgb||src,psf);
+        const x = tapered || rgb || src;
         const iters = lucyBudgetIters(x.cols, x.rows, x.channels(), asked); // B6: ภาพใหญ่ลดรอบ ไม่ย่อภาพ
         dst = lucyDeconvolve(cv, x, psf, iters);
         if (ctx) ctx.info = `Lucy-Richardson ${iters} รอบ · PSF ${psfInfo(kind, size, angle, psf.n)}` + (x.channels() === 3 ? " · ภาพสีใช้เวลาราว 3 เท่าของภาพเทา" : "") + (iters < asked ? ` · ภาพใหญ่ จึงลดเหลือ ${iters} รอบ (ขอ ${asked} รอบ)` : "") + bigImageNote(src, iters);
+        if(ctx&&tapered)ctx.info+=" · edgetaper";
         const out = dst; dst = null;
         return out;
       } finally {
+        if (tapered) tapered.delete();
         if (dst) dst.delete();
         if (rgb) rgb.delete();
       }
@@ -9371,9 +9500,9 @@ const MORPH_NEW_LABEL = { regional_max: "Regional Maxima", regional_min: "Region
 
 // แกน Wiener / Lucy (export ให้เทสต์ใช้ PSF ที่ไม่สมมาตรได้ — psfKernel สร้างแต่ PSF ที่สมมาตรจุดกลาง ซึ่ง OTF เป็นจำนวนจริง เทสต์ conj / การพลิก kernel จึงต้องใช้ PSF อื่น)
 // x = Mat 8U 1 หรือ 3 ช่อง (ไม่มี alpha) · psf = { n (คี่), k: array n·n } · คืน Mat 8U ใหม่ขนาดเท่า x (ผู้เรียก delete)
-export function wienerDeconvolve(cv, x, psf, nsr) {
+export function wienerDeconvolve(cv, x, psf, nsr, regularized = false) {
   const n = psf.n, hc = (n - 1) / 2;
-  let vec = null, phMat = null, Hm = null;
+  let vec = null, phMat = null, Hm = null, Lm = null, lap = null;
   try {
     const W = x.cols, H = x.rows, ch = x.channels();
     const Wp = cv.getOptimalDFTSize(W + 2 * n), Hp = cv.getOptimalDFTSize(H + 2 * n);
@@ -9383,19 +9512,25 @@ export function wienerDeconvolve(cv, x, psf, nsr) {
     phMat = cv.matFromArray(Hp, Wp, cv.CV_32FC1, ph);
     Hm = new cv.Mat();
     cv.dft(phMat, Hm, cv.DFT_COMPLEX_OUTPUT);
+    if(regularized){
+      const ld=new Float32Array(Hp*Wp);ld[0]=-4;ld[1]=1;ld[Wp-1]=1;ld[Wp]=1;ld[(Hp-1)*Wp]=1;
+      lap=cv.matFromArray(Hp,Wp,cv.CV_32F,ld);Lm=new cv.Mat();cv.dft(lap,Lm,cv.DFT_COMPLEX_OUTPUT);
+    }
     const res = new Uint8Array(W * H * ch);
     if (ch === 1) {
-      wienerChannel(cv, x, W, H, n, Wp, Hp, Hm, nsr, res, 0, 1);
+      wienerChannel(cv, x, W, H, n, Wp, Hp, Hm, nsr, res, 0, 1, Lm);
     } else {
       vec = new cv.MatVector();
       cv.split(x, vec);
       for (let c = 0; c < ch; c++) {
         const m = vec.get(c);
-        try { wienerChannel(cv, m, W, H, n, Wp, Hp, Hm, nsr, res, c, ch); } finally { m.delete(); }
+        try { wienerChannel(cv, m, W, H, n, Wp, Hp, Hm, nsr, res, c, ch, Lm); } finally { m.delete(); }
       }
     }
     return cv.matFromArray(H, W, x.type(), res); // คืน Mat ใหม่ที่ผู้เรียกเป็นเจ้าของ (matFromArray เป็นขั้นสุดท้าย — ถ้า throw ก็ยังไม่มี Mat ของผลลัพธ์ให้ต้องลบ)
   } finally {
+    if (Lm) Lm.delete();
+    if (lap) lap.delete();
     if (Hm) Hm.delete();
     if (phMat) phMat.delete();
     if (vec) vec.delete();
@@ -9435,7 +9570,7 @@ function bigImageNote(src, iters) {
 }
 
 // Wiener ต่อ 1 ช่อง: ขอบสะท้อน → dft → G·H*/(|H|²+NSR) (double) → dft ย้อน → ตัดขอบ → ปัดครึ่งขึ้น · เขียนลง res (interleaved) ช่อง c
-function wienerChannel(cv, m, W, H, n, Wp, Hp, Hm, nsr, res, c, ch) {
+function wienerChannel(cv, m, W, H, n, Wp, Hp, Hm, nsr, res, c, ch, Lm) {
   let big = null, f = null, G = null, inv = null;
   try {
     big = new cv.Mat();
@@ -9445,10 +9580,10 @@ function wienerChannel(cv, m, W, H, n, Wp, Hp, Hm, nsr, res, c, ch) {
     G = new cv.Mat();
     cv.dft(f, G, cv.DFT_COMPLEX_OUTPUT);
     { // ไม่จองแมตใหม่ระหว่างถือ view (heap อาจขยายแล้ว view เก่าใช้ไม่ได้)
-      const g = G.data32F, hd = Hm.data32F, len = Hp * Wp;
+      const g = G.data32F, hd = Hm.data32F, len = Hp * Wp, ld = Lm?.data32F;
       for (let i = 0; i < len; i++) {
         const gr = g[2 * i], gi = g[2 * i + 1], hr = hd[2 * i], hi = hd[2 * i + 1];
-        const den = hr * hr + hi * hi + nsr;
+        const den = hr * hr + hi * hi + (ld ? nsr * (ld[2*i]*ld[2*i]+ld[2*i+1]*ld[2*i+1]) : nsr);
         if (den > 0) { g[2 * i] = (gr * hr + gi * hi) / den; g[2 * i + 1] = (gi * hr - gr * hi) / den; }
         else { g[2 * i] = 0; g[2 * i + 1] = 0; }
       }
@@ -9476,12 +9611,9 @@ function lucyChannel(cv, m, K, Kf, iters, res, c, ch) {
     est = g.clone();
     cc = new cv.Mat(); corr = new cv.Mat();
     r = new cv.Mat(g.rows, g.cols, cv.CV_32FC1);
-    const n = g.rows * g.cols, anchor = new cv.Point(-1, -1);
+    const n = g.rows * g.cols;
     for (let it = 0; it < iters; it++) {
-      cv.filter2D(est, cc, -1, Kf, anchor, 0, cv.BORDER_REFLECT_101);
-      { const gd = g.data32F, cd = cc.data32F, rd = r.data32F; for (let i = 0; i < n; i++) rd[i] = cd[i] > 1e-6 ? gd[i] / cd[i] : 0; }
-      cv.filter2D(r, corr, -1, K, anchor, 0, cv.BORDER_REFLECT_101);
-      { const ed = est.data32F, cr = corr.data32F; for (let i = 0; i < n; i++) ed[i] = ed[i] * cr[i]; }
+      lucyStep5F(cv,g,est,K,Kf,cc,r,corr);
     }
     const ed = est.data32F;
     for (let i = 0; i < n; i++) {
@@ -9605,6 +9737,7 @@ OPS.morphology.params.find(q=>q.key==="iterations").visibleWhen[0].in.push("thic
 OPS.morphology.params.push({key:"perimConn",type:"select",label:"เพื่อนบ้านที่ใช้หาเส้นรอบ",options:[{value:"4",label:"4 ทิศ"},{value:"8",label:"8 ทิศ"}],default:"4",visibleWhen:[{key:"op",in:["perimeter"]}],desc:"นอกภาพเป็นพื้นหลัง · 8 ทิศรวมมุมทแยง"});
 
 OPS.pass_fail.params[0].options.push({value:"area",label:"พื้นที่วัตถุที่เลือก (ต่อหลัง Select Object)"});
+OPS.pass_fail.params[0].options.push({value:"msssim",label:"MS-SSIM (ต่อหลัง Multi-scale SSIM)"});
 const MORPH_SPLIT = [
   { op: "erode", name: "Erosion (กัดให้เล็กลง)",
     modeHint: "กัดขอบวัตถุขาวให้ผอมลง ลบจุดจิ๋วรบกวน",
@@ -9901,7 +10034,7 @@ export const FILTERS = {
   // (ไฟล์โปรเจกต์เก่าที่บันทึก mode ไว้ต้องเปิดได้เหมือนเดิม)
   // 2026-10-24 ecc_register ย้ายไปหมวด Image Registration — คงไว้เป็น legacyOpIds ให้ undo/โปรเจกต์เก่ายังรันได้ (migrateLegacyStep ย้ายเทมเพลตไป image_registration)
   image_arithmetic: mergeGroup("Image Arithmetic", "Image Arithmetic",
-    ["imabsdiff", "imfuse", "mask", "mask_overlay", "reconstruct", "imarith", "logical_ops", "inpaint", "hist_match", "roi_apply"], "imabsdiff", ["ecc_register"], { inputs: 2 }),
+    ["imabsdiff", "imfuse", "mask", "mask_overlay", "reconstruct", "exposure_fusion", "imarith", "logical_ops", "inpaint", "hist_match", "roi_apply"], "imabsdiff", ["ecc_register"], { inputs: 2 }),
 
   // Template Matching (Tier 2, 18b) — กลุ่มเดี่ยวใหม่ inputs:2 (ตามแนวเดียวกับ morphology/watershed/
   // grabcut ที่มี op เดียวไม่ต้องมี mode select wrapper) primary = ภาพค้นหา, src2 = template
@@ -9928,13 +10061,13 @@ export const FILTERS = {
     ["grayscale", "colorspace", "colorspace_inverse", "srgb_linear", "debayer", "channel_split", "rgb_adjust", "color_matrix", "color_inrange", "kmeans_segment", "slic", "white_balance", "decorrstretch", "invert", "pseudocolor"], "grayscale"),
 
   enhance_tools: mergeGroup("Enhance", "Enhance",
-    ["brightness_contrast", "gamma", "custom_lut", "hist_equalize", "clahe", "contrast_stretch", "flatfield_correction", "quantize", "unsharp", "laplacian_sharpen", "custom_kernel", "dehaze", "lowlight_enhance", "local_contrast"], "brightness_contrast"),
+    ["brightness_contrast", "gamma", "custom_lut", "hist_equalize", "clahe", "contrast_stretch", "flatfield_correction", "quantize", "unsharp", "laplacian_sharpen", "custom_kernel", "dehaze", "lowlight_enhance", "local_contrast", "local_laplacian"], "brightness_contrast"),
 
   filter_denoise: mergeGroup("Filter & Denoise", "Filter & Denoise",
-    ["salt_pepper_noise", "gaussian_noise", "median_blur", "rank_filter", "gaussian_blur", "box_blur", "bilateral", "wiener_filter", "guided_filter", "anisotropic_diffusion", "nlm_denoise", "deconv_wiener", "deconv_lucy"], "salt_pepper_noise"),
+    ["salt_pepper_noise", "gaussian_noise", "median_blur", "rank_filter", "gaussian_blur", "box_blur", "bilateral", "wiener_filter", "guided_filter", "anisotropic_diffusion", "nlm_denoise", "deconv_wiener", "deconv_lucy", "deconv_blind", "deconv_reg"], "salt_pepper_noise"),
 
   segment_edge: mergeGroup("Segment & Edge", "Segmentation & Edge",
-    ["binary_threshold", "otsu_threshold", "adaptive_threshold", "multi_otsu_threshold", "canny", "sobel", "gradient_dir", "laplacian_edge", "scharr_edge", "prewitt_edge", "roberts_edge", "log_edge", "frangi_vesselness", "watershed", "watershed_marker", "grabcut", "region_growing"], "binary_threshold"),
+    ["binary_threshold", "otsu_threshold", "adaptive_threshold", "multi_otsu_threshold", "canny", "sobel", "gradient_dir", "laplacian_edge", "scharr_edge", "prewitt_edge", "roberts_edge", "log_edge", "frangi_vesselness", "watershed", "watershed_marker", "grabcut", "region_growing", "active_contour"], "binary_threshold"),
 
   analysis_detect: mergeGroup("Analyze / Detect", "Analysis & Detection",
     ["find_contours", "connected_components", "distance_transform", "local_std_filter", "local_entropy_filter", "gabor_filter", "glcm", "focus_score", "regionprops", "euler_number", "image_stats", "feret", "line_profile", "shape_filter", "select_object", "bounding_boxes", "hough_circles", "hough_lines", "harris_corners", "shi_tomasi_corners", "orb_keypoints", "akaze_keypoints", "fast_keypoints", "pass_fail"], "find_contours"),
@@ -9943,7 +10076,7 @@ export const FILTERS = {
 
   // PSNR/SSIM รับภาพ 2 ใบ → inputs:2 (ช่อง "เข้า B" ใน editor.js)
   image_quality: mergeGroup("Image Quality", "Image Quality",
-    ["psnr", "ssim", "delta_e", "seg_score", "bf_score", "corr2", "piqe"], "psnr", [], { inputs: 2 }),
+    ["psnr", "ssim", "multissim", "delta_e", "seg_score", "bf_score", "corr2", "piqe"], "psnr", [], { inputs: 2 }),
 
   // Motion ทั้งสามจำ state ข้ามเฟรม → stateful:true · เปลี่ยนวิธี = params เปลี่ยน → getNodeState (fingerprint) reset+dispose state เก่าเอง
   motion: mergeGroup("Motion", "Motion",

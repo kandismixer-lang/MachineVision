@@ -47,6 +47,7 @@ export const GROUP_ICON = {
 };
 
 export const OP_ICON = {
+  active_contour:"⦾", deconv_blind:"⟠", deconv_reg:"⥁", local_laplacian:"⩘", multissim:"⫷", exposure_fusion:"⨂",
   morph_perimeter: "⬰", morph_thicken: "⬱", morph_keep_border: "⬲", reconstruct: "⬳", select_object: "⬴", srgb_linear: "⬵", decorrstretch: "⬶", color_matrix: "⬷",
   rank_filter: "⧖", custom_lut: "⩒", image_stats: "⨏", corr2: "⥈", gradient_dir: "⤧",
   grayscale: "◐", colorspace: "🎨", channel_split: "◉", rgb_adjust: "🎚", color_inrange: "🌈", invert: "◑",
@@ -151,7 +152,7 @@ function psfCardText(p) {
 const IMARITH_LABEL = { add: "A + B", subtract: "A − B", multiply: "A × B ÷ 255", divide: "A ÷ B × 255" };
 const LOGICAL_LABEL = { and: "A AND B", or: "A OR B", xor: "A XOR B", a_and_not_b: "A AND NOT B" };
 // ชื่อสั้นของ metric ของ pass_fail บนการ์ด (key ตรงกับ PASS_FAIL_METRICS ใน registry.js)
-const PASS_FAIL_SHORT = { count: "จำนวนวัตถุ", area_sum: "พื้นที่รวม", area_max: "พื้นที่ใหญ่สุด", roi_mean: "สว่างใน ROI", focus: "ความคม", de_mean: "ΔE เฉลี่ย", iou: "IoU", dice: "Dice", bf: "Boundary F1 Score", piqe: "คุณภาพ PIQE", mean: "ความสว่างเฉลี่ย", std: "ส่วนเบี่ยงเบน", entropy: "เอนโทรปี", corr2: "ความสัมพันธ์", area: "พื้นที่วัตถุที่เลือก" };
+const PASS_FAIL_SHORT = { msssim: "MS-SSIM", count: "จำนวนวัตถุ", area_sum: "พื้นที่รวม", area_max: "พื้นที่ใหญ่สุด", roi_mean: "สว่างใน ROI", focus: "ความคม", de_mean: "ΔE เฉลี่ย", iou: "IoU", dice: "Dice", bf: "Boundary F1 Score", piqe: "คุณภาพ PIQE", mean: "ความสว่างเฉลี่ย", std: "ส่วนเบี่ยงเบน", entropy: "เอนโทรปี", corr2: "ความสัมพันธ์", area: "พื้นที่วัตถุที่เลือก" };
 function ownOr(table, key, fallback) {
   return Object.hasOwn(table, key) ? table[key] : table[fallback];
 }
@@ -166,6 +167,12 @@ function mmTail(opId, p) {
 }
 
 export const OP_PRIMARY = {
+  active_contour:()=>"แบ่งวัตถุด้วย Chan-Vese",
+  deconv_blind:()=>"ประมาณ PSF และแก้เบลอ",
+  deconv_reg:()=>"แก้เบลอพร้อมควบคุมความเรียบ",
+  local_laplacian:()=>"ปรับรายละเอียดและช่วงแสง",
+  multissim:()=>"เทียบโครงสร้างหลายสเกล",
+  exposure_fusion:()=>"รวมภาพสองความสว่าง",
   reconstruct: () => "คืนวัตถุด้วย marker + mask",
   select_object: () => "เลือกวัตถุจากจุด",
   srgb_linear: () => "แปลง sRGB / เชิงเส้น",
@@ -474,17 +481,17 @@ export const OPTION_GROUPS = {
   "segment_edge.mode": [
     ["แยกขาว-ดำ (Threshold)", ["binary_threshold", "otsu_threshold", "adaptive_threshold", "multi_otsu_threshold"]],
     ["หาขอบ (Edge)", ["canny", "sobel", "gradient_dir", "scharr_edge", "prewitt_edge", "roberts_edge", "laplacian_edge", "log_edge", "frangi_vesselness"]],
-    ["แยกวัตถุเป็นชิ้น", ["watershed", "watershed_marker", "grabcut", "region_growing"]],
+    ["แยกวัตถุเป็นชิ้น", ["watershed", "watershed_marker", "grabcut", "region_growing", "active_contour"]],
   ],
   "enhance_tools.mode": [
     ["ความสว่าง / คอนทราสต์", ["brightness_contrast", "gamma", "custom_lut", "contrast_stretch", "hist_equalize", "clahe", "flatfield_correction"]],
     ["ความคม", ["unsharp", "laplacian_sharpen", "custom_kernel"]],
-    ["งานเฉพาะทาง", ["dehaze", "lowlight_enhance", "local_contrast", "quantize"]],
+    ["งานเฉพาะทาง", ["dehaze", "lowlight_enhance", "local_contrast", "local_laplacian", "quantize"]],
   ],
   "filter_denoise.mode": [
     ["ทำภาพเสียเพื่อทดลอง (ใส่ noise)", ["salt_pepper_noise", "gaussian_noise"]],
     ["ลด noise / เบลอ", ["median_blur", "rank_filter", "gaussian_blur", "box_blur", "bilateral", "guided_filter", "anisotropic_diffusion", "nlm_denoise", "wiener_filter"]],
-    ["แก้ภาพเบลอ (รู้ PSF)", ["deconv_wiener", "deconv_lucy"]],
+    ["แก้ภาพเบลอ", ["deconv_wiener", "deconv_lucy", "deconv_blind", "deconv_reg"]],
   ],
   "color_tools.mode": [
     ["แปลง / ดูช่องสี", ["grayscale", "invert", "colorspace", "colorspace_inverse", "srgb_linear", "debayer", "channel_split", "pseudocolor"]],
@@ -492,7 +499,7 @@ export const OPTION_GROUPS = {
     ["เลือก / แบ่งตามสี", ["color_inrange", "kmeans_segment", "slic"]],
   ],
   "image_arithmetic.mode": [
-    ["เทียบ / รวมสองภาพ", ["imabsdiff", "imfuse", "imarith", "logical_ops"]],
+    ["เทียบ / รวมสองภาพ", ["imabsdiff", "imfuse", "exposure_fusion", "imarith", "logical_ops"]],
     ["ใช้ B เป็นหน้ากาก / บริเวณ", ["mask", "mask_overlay", "reconstruct", "roi_apply", "inpaint"]],
     ["ปรับ A ให้ตรงกับ B", ["hist_match"]],
   ],
