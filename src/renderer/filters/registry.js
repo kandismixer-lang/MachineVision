@@ -6025,9 +6025,9 @@ export const OPS = {
           cv.cvtColor(src, rgb, cv.COLOR_RGBA2RGB);
         }
         if(p.method==="laplace"){
-          const x=rgb||src,budget=lucyBudgetIters(nz,1,x.channels(),5000),q=laplace5F(x.data,x.cols,x.rows,x.channels(),maskBin.data,budget);
+          const x=rgb||src,budget=lucyBudgetIters(nz,1,1,5000),q=laplace5F(x.data,x.cols,x.rows,x.channels(),maskBin.data,budget);
           dst=cv.matFromArray(x.rows,x.cols,x.type(),q.data);
-          ctx.info=`Laplace (regionfill) · ${nz} px · ${q.used} รอบ`+(q.stable?" · หยุดเมื่อนิ่ง":" · ครบ")+(budget<5000&&!q.stable&&q.used>=budget?` · ภาพใหญ่ จึงลดเหลือ ${budget} รอบ (ขอ 5000 รอบ)`:"")+suffix;
+          ctx.info=`Laplace (regionfill) · ${nz} px · ${q.used} รอบ`+(q.stable?" · หยุดเมื่อนิ่ง":" · ครบ")+(budget<5000&&q.fineExhausted?` · ภาพใหญ่ จึงลดเหลือ ${budget} รอบ (ขอ 5000 รอบ)`:"")+suffix;
           return dst;
         }
         dst = new cv.Mat();

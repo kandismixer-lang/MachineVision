@@ -2,7 +2,6 @@
 export const byte5F = v => Number.isFinite(v) ? Math.max(0, Math.min(255, Math.floor(v + .5))) : 0;
 const roundFusion5F = v => {const x=Math.max(0,Math.min(255,v)),lo=Math.floor(x);return lo+(x-lo>=.5-1e-10?1:0);};
 const reflect101 = (x, n) => { if(n===1)return 0; const p=2*n-2,k=((x%p)+p)%p; return k<n?k:p-k; };
-const wrap5F = (x,n) => ((x%n)+n)%n;
 // Projection autocorrelation at distance from the nearer frame edge. Overlapping
 // taper bands on tiny images use the nearer edge; singleton axes are fully blurred.
 export function taperAxis5F(projection, length) {
@@ -14,19 +13,23 @@ export function edgeTaper5F(cv, src, psf) {
   const n=psf.n,r=(n-1)/2,w=src.cols,h=src.rows,ch=src.channels();
   const px=new Float64Array(n),py=new Float64Array(n);
   for(let y=0;y<n;y++)for(let x=0;x<n;x++){const k=psf.k[y*n+x];px[x]+=k;py[y]+=k;}
-  const ax=taperAxis5F(px,w),ay=taperAxis5F(py,h),input=src.data,out=new Uint8Array(w*h*ch);
-  const sy=Array.from({length:h},(_,y)=>Int32Array.from({length:n},(_,ky)=>wrap5F(y+r-ky,h)));
-  const sx=Array.from({length:w},(_,x)=>Int32Array.from({length:n},(_,kx)=>wrap5F(x+r-kx,w)));
-  for(let y=0;y<h;y++)for(let x=0;x<w;x++){
-    const i=(y*w+x)*ch,a=ay[y]*ax[x];
-    if(a===1){for(let c=0;c<ch;c++)out[i+c]=input[i+c];continue;}
-    for(let c=0;c<ch;c++){
-      let blur=0;
-      for(let ky=0;ky<n;ky++)for(let kx=0;kx<n;kx++)blur+=input[(sy[y][ky]*w+sx[x][kx])*ch+c]*psf.k[ky*n+kx];
-      out[i+c]=byte5F(a*input[i+c]+(1-a)*blur);
+  const ax=taperAxis5F(px,w),ay=taperAxis5F(py,h),out=new Uint8Array(w*h*ch),owned=[];
+  const mat=()=>{const m=new cv.Mat();owned.push(m);return m;};
+  try{
+    const source=mat(),padded=mat(),kernel=cv.matFromArray(n,n,cv.CV_64FC1,Float64Array.from(psf.k));owned.push(kernel);
+    const flipped=mat(),blur=mat();
+    src.convertTo(source,cv.CV_64F);
+    cv.copyMakeBorder(source,padded,r,r,r,r,cv.BORDER_WRAP);
+    cv.flip(kernel,flipped,-1);
+    cv.filter2D(padded,blur,-1,flipped,new cv.Point(-1,-1),0,cv.BORDER_CONSTANT);
+    const blurred=blur.data64F,pw=padded.cols,input=src.data;
+    for(let y=0;y<h;y++)for(let x=0;x<w;x++){
+      const i=(y*w+x)*ch,a=ay[y]*ax[x],bi=((y+r)*pw+x+r)*ch;
+      if(a===1){for(let c=0;c<ch;c++)out[i+c]=input[i+c];continue;}
+      for(let c=0;c<ch;c++)out[i+c]=byte5F(a*input[i+c]+(1-a)*blurred[bi+c]);
     }
-  }
-  return cv.matFromArray(h,w,src.type(),out);
+    return cv.matFromArray(h,w,src.type(),out);
+  }finally{for(const m of owned)m.delete();}
 }
 export function means5F(data,mask) {
   let si=0,so=0,ni=0,no=0;
@@ -91,7 +94,7 @@ function solveLaplace5F(level,budget) {
 export function laplace5F(data,w,h,ch,mask,budget) {
   const totalBudget=Math.max(1,budget),hierarchy=[laplaceState5F(data,w,h,ch,mask)];
   while(Math.max(hierarchy.at(-1).w,hierarchy.at(-1).h)>32&&hierarchy.length<totalBudget)hierarchy.push(downLaplace5F(hierarchy.at(-1)));
-  const maxCoarse=hierarchy.length>1?Math.floor((totalBudget-1)/(hierarchy.length-1)):0,coarseShare=hierarchy.length>1?Math.min(12,maxCoarse,Math.max(4,Math.floor(totalBudget/(4*hierarchy.length)))):0,fineShare=totalBudget-coarseShare*(hierarchy.length-1);let used=0,stable=false;
+  const maxCoarse=hierarchy.length>1?Math.floor((totalBudget-1)/(hierarchy.length-1)):0,coarseShare=hierarchy.length>1?Math.min(12,maxCoarse,Math.max(4,Math.floor(totalBudget/(4*hierarchy.length)))):0,fineShare=totalBudget-coarseShare*(hierarchy.length-1);let used=0,stable=false,fineUsed=0;
   for(let li=hierarchy.length-1;li>=0;li--){
     const level=hierarchy[li];
     if(li<hierarchy.length-1){
@@ -104,9 +107,9 @@ export function laplace5F(data,w,h,ch,mask,budget) {
         }
       }
     }
-    const q=solveLaplace5F(level,li===0?fineShare:coarseShare);used+=q.used;if(li===0)stable=q.stable;
+    const q=solveLaplace5F(level,li===0?fineShare:coarseShare);used+=q.used;if(li===0){stable=q.stable;fineUsed=q.used;}
   }
-  return {data:Uint8Array.from(hierarchy[0].values,byte5F),used,stable};
+  return {data:Uint8Array.from(hierarchy[0].values,byte5F),used,stable,fineExhausted:!stable&&fineUsed>=fineShare};
 }
 // The shared Lucy update uses exactly the original float32 filter2D path.
 export function lucyStep5F(cv,g,est,K,Kf,cc,ratio,corr) {

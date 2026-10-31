@@ -21,17 +21,16 @@ export function taper5FPy() { return lines(`def edgetaper5f(src, psf):
     gray = src.ndim == 2
     source = src[:,:,None].astype(np.float64) if gray else src.astype(np.float64)
     active5f = np.flatnonzero(alpha.reshape(-1) != 1)
-    yy5f,xx5f = active5f//w,active5f%w
-    blur5f = np.zeros((len(active5f),source.shape[2]),np.float64)
-    kernel5f = psf.astype(np.float64)
-    for ky5f in range(n):
-        sy5f = (yy5f+r-ky5f)%h
-        for kx5f in range(n):
-            sx5f = (xx5f+r-kx5f)%w
-            blur5f += source[sy5f,sx5f]*kernel5f[ky5f,kx5f]
+    image5f = source[:,:,0] if gray else source
+    padded5f = cv2.copyMakeBorder(image5f,r,r,r,r,cv2.BORDER_WRAP)
+    kernel5f = np.ascontiguousarray(np.flip(psf.astype(np.float64),(0,1)))
+    blur5f = cv2.filter2D(padded5f,-1,kernel5f,borderType=cv2.BORDER_CONSTANT)[r:r+h,r:r+w]
+    if gray:
+        blur5f = blur5f[:,:,None]
     flat5f = source.reshape((-1,source.shape[2]))
     aa5f = alpha.reshape(-1)[active5f,None]
-    flat5f[active5f] = np.clip(np.floor(aa5f*flat5f[active5f]+(1-aa5f)*blur5f+.5),0,255)
+    flatBlur5f = blur5f.reshape((-1,source.shape[2]))
+    flat5f[active5f] = np.clip(np.floor(aa5f*flat5f[active5f]+(1-aa5f)*flatBlur5f[active5f]+.5),0,255)
     out5f = flat5f.reshape(source.shape).astype(np.uint8)
     return out5f[:,:,0] if gray else out5f`); }
 export function withTaper5FPy(base) {
@@ -120,8 +119,17 @@ else:
         black = (yy5f[parity5f==1],xx5f[parity5f==1])
         redn = (red[0]>0).astype(np.int32)+(red[0]<h-1)+(red[1]>0)+(red[1]<w-1)
         blackn = (black[0]>0).astype(np.int32)+(black[0]<h-1)+(black[1]>0)+(black[1]<w-1)
+        def neighbors5f(coords):
+            y,x = coords
+            near = []
+            for dy,dx in [(-1,0),(1,0),(0,-1),(0,1)]:
+                yn,xn = y+dy,x+dx
+                ok = (yn>=0)&(yn<h)&(xn>=0)&(xn<w)
+                near.append((np.clip(yn,0,h-1)*w+np.clip(xn,0,w-1),ok))
+            return tuple(near)
+        rednb5f,blacknb5f = neighbors5f(red),neighbors5f(black)
         span = max(1,int(np.max(xx5f)-np.min(xx5f)+1) if len(xx5f) else 1,int(np.max(yy5f)-np.min(yy5f)+1) if len(yy5f) else 1)
-        return {'values':values,'mask':mask,'h':h,'w':w,'ch':ch,'span5f':span,'red5f':red,'black5f':black,'redn5f':redn,'blackn5f':blackn}
+        return {'values':values,'mask':mask,'h':h,'w':w,'ch':ch,'span5f':span,'red5f':red,'black5f':black,'redn5f':redn,'blackn5f':blackn,'rednb5f':rednb5f,'blacknb5f':blacknb5f}
     def down5f(level):
         data,mask = level['values'],level['mask']
         h,w,ch = data.shape
@@ -141,34 +149,34 @@ else:
     def solve5f(level,limit):
         values,mask = level['values'],level['mask']
         h,w = mask.shape
+        flat = values.reshape((-1,level['ch']))
         omega = 2/(1+np.sin(np.pi/(level['span5f']+1)))
         stable = False
         for used in range(1,limit+1):
             change = 0.
-            for coords,n in ((level['red5f'],level['redn5f']),(level['black5f'],level['blackn5f'])):
+            for coords,n,near in ((level['red5f'],level['redn5f'],level['rednb5f']),(level['black5f'],level['blackn5f'],level['blacknb5f'])):
                 y,x = coords
+                indices = y*w+x
                 sums = np.zeros((len(y),level['ch']),np.float64)
-                for dy,dx in [(-1,0),(1,0),(0,-1),(0,1)]:
-                    yn,xn = y+dy,x+dx
-                    ok = (yn>=0)&(yn<h)&(xn>=0)&(xn<w)
-                    sums[ok] += values[yn[ok],xn[ok]]
-                old = values[y,x].copy()
+                for neighbor,valid in near:
+                    sums += flat[neighbor]*valid[:,None]
+                old = flat[indices].copy()
                 updated = old+omega*(sums/np.maximum(1,n)[:,None]-old)
                 if len(y):
                     change = max(change,float(np.max(np.abs(updated-old))))
-                    values[y,x] = updated
+                    flat[indices] = updated
             if change < .01:
                 stable = True
                 break
         return (used if limit else 0),stable
     hierarchy5f = [state5f(src5f.astype(np.float64),mask5f)]
-    budget5f = min(5000,max(1,${LUCY_WORK_BUDGET}//(nz5f*ch5f)))
+    budget5f = min(5000,max(1,${LUCY_WORK_BUDGET}//nz5f))
     while max(hierarchy5f[-1]['w'],hierarchy5f[-1]['h']) > 32 and len(hierarchy5f)<budget5f:
         hierarchy5f.append(down5f(hierarchy5f[-1]))
     max_coarse5f = (budget5f-1)//(len(hierarchy5f)-1) if len(hierarchy5f)>1 else 0
     coarse_share5f = min(12,max_coarse5f,max(4,budget5f//(4*len(hierarchy5f)))) if len(hierarchy5f)>1 else 0
     fine_share5f = budget5f-coarse_share5f*(len(hierarchy5f)-1)
-    used5f,stable5f = 0,False
+    used5f,stable5f,fine_used5f = 0,False,0
     for level_index5f in range(len(hierarchy5f)-1,-1,-1):
         level5f = hierarchy5f[level_index5f]
         if level_index5f<len(hierarchy5f)-1:
@@ -184,10 +192,12 @@ else:
             level5f['values'][y5f,x5f] = a5f*(1-dx5f[:,None])*(1-dy5f[:,None])+b5f*dx5f[:,None]*(1-dy5f[:,None])+c5f*(1-dx5f[:,None])*dy5f[:,None]+d5f*dx5f[:,None]*dy5f[:,None]
         rounds5f,stable5f = solve5f(level5f,fine_share5f if level_index5f==0 else coarse_share5f)
         used5f += rounds5f
+        if level_index5f==0:
+            fine_used5f = rounds5f
     img = np.clip(np.floor(hierarchy5f[0]['values']+.5),0,255).astype(np.uint8)
     if gray5f:
         img = img[:,:,0]
-    note5f = f' · ภาพใหญ่ จึงลดเหลือ {budget5f} รอบ (ขอ 5000 รอบ)' if budget5f < 5000 and not stable5f and used5f>=budget5f else ''
+    note5f = f' · ภาพใหญ่ จึงลดเหลือ {budget5f} รอบ (ขอ 5000 รอบ)' if budget5f < 5000 and not stable5f and fine_used5f>=fine_share5f else ''
     print(f"Laplace (regionfill) · {nz5f} px · {used5f} รอบ · {'หยุดเมื่อนิ่ง' if stable5f else 'ครบ'}{note5f}")`)];
 }
 export function blind5FPy(p,grayCode) {

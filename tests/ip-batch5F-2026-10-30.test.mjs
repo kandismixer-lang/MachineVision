@@ -116,10 +116,11 @@ test('ip5f-laplace: harmonic ramp, edge mask, constant color and unchanged exter
     const edge=image(15,13,(x,y)=>x===0&&y===0?255:0,1);try{const out=run('inpaint',src,{method:'laplace'},{src2:edge});try{assert.deepEqual(Array.from(out.data.slice(0,3)),[6,60,180]);assert.deepEqual(Array.from(out.data.slice(3)),Array.from(src.data.slice(3)));}finally{out.delete();}}finally{edge.delete();}
   }finally{src.delete();mask.delete();}
 });
-test('ip5f-laplace: one red-black update starts from the measured border mean',()=>{
-  const data=Uint8Array.from([0,10,20,30,40,50,60,70,80]),mask=Uint8Array.from([0,0,0,0,1,0,0,0,0]);
-  const q=laplace5F(data,3,3,1,mask,1);
-  assert.equal(q.data[4],40,'the four border values average to 40 before the first update');
+test('ip5f-laplace: one red-black update keeps the measured border mean as its initial value',()=>{
+  const data=new Uint8Array(25).fill(200),mask=new Uint8Array(25);
+  for(let y=1;y<3;y++)for(let x=1;x<3;x++)mask[y*5+x]=1;
+  const q=laplace5F(data,5,5,1,mask,1);
+  for(let y=1;y<3;y++)for(let x=1;x<3;x++)assert.equal(q.data[y*5+x],200);
 });
 test('ip5f-laplace: coarse initialization converges to a harmonic ramp before the budget ends',()=>{
   const src=image(60,50,(x,y)=>2*x+2*y,1),mask=image(60,50,(x,y)=>x>=20&&x<40&&y>=15&&y<35?255:0,1),ctx={src2:mask};
@@ -141,6 +142,14 @@ test('ip5f-laplace: 80x80 and budgeted 240x180 holes converge with the coarse so
     }finally{out.delete();}}finally{src.delete();mask.delete();}
   }
 });
+test('ip5f-laplace: report reduction when the fine level exhausts its share',()=>{
+  const w=1920,h=1080,src=image(w,h,(x,y)=>[(x*13+y*3)%256,(x*13+y*3+7)%256,(x*13+y*3+14)%256]);
+  const mask=image(w,h,(x,y)=>x>=810&&x<1110&&y>=440&&y<640?255:0,1),ctx={src2:mask};
+  try{
+    const out=run('inpaint',src,{method:'laplace'},ctx);
+    try{assert.match(ctx.info,/ลดเหลือ \d+ รอบ \(ขอ 5000 รอบ\)/,ctx.info);}finally{out.delete();}
+  }finally{src.delete();mask.delete();}
+});
 test('ip5f-laplace: coarse-to-fine stays within two levels of the exact large-hole solve',()=>{
   const w=640,h=480,x0=200,x1=440,y0=150,y1=330,hole=(x1-x0)*(y1-y0);
   for(const ch of [1,3]){
@@ -157,11 +166,30 @@ test('ip5f-laplace: coarse-to-fine stays within two levels of the exact large-ho
     assert.ok(max<=2,`${ch===1?'gray':'RGB'} large-hole maximum error ${max}`);
   }
 });
+test('ip5f-laplace: smooth-gradient RGB 240x180 hole stays within two levels of the exact solve',()=>{
+  const w=640,h=480,x0=200,x1=440,y0=150,y1=330;
+  const src=image(w,h,(x,y)=>{
+    return [0,1,2].map(c=>30+.3*x+.2*y+40*Math.sin(x/11+c*1.1)+40*Math.sin(y/9+c*.9));
+  });
+  const mask=image(w,h,(x,y)=>x>=x0&&x<x1&&y>=y0&&y<y1?255:0,1),ctx={src2:mask};
+  try{
+    const exact=exactLaplaceRect(src.data,w,h,3,x0,x1,y0,y1),out=run('inpaint',src,{method:'laplace'},ctx);
+    try{
+      let max=0;
+      for(let y=y0;y<y1;y++)for(let x=x0;x<x1;x++)for(let c=0;c<3;c++){
+        const i=(y*w+x)*3+c;max=Math.max(max,Math.abs(out.data[i]-Math.floor(exact[i]+.5)));
+      }
+      assert.ok(max<=2,`smooth RGB large-hole maximum error ${max}`);
+    }finally{out.delete();}
+  }finally{src.delete();mask.delete();}
+});
 test('ip5f-laplace: Python caches parity coordinates and neighbour counts outside sweeps',()=>{
   const st=step('inpaint',{method:'laplace'});st.src2={pipeline:[]};
   const code=buildPythonCode([st]),solve=code.slice(code.indexOf('def solve5f'),code.indexOf('hierarchy5f ='));
   assert.match(code,/red5f/);assert.match(code,/black5f/);assert.match(code,/redn5f/);assert.match(code,/blackn5f/);
   assert.match(code,/values\[mask\]\s*=\s*mean/);
+  assert.match(code,/budget5f = min\(5000,max\(1,\d+\/\/nz5f\)\)/);
+  assert.doesNotMatch(code,/nz5f\*ch5f/);
   assert.doesNotMatch(solve,/np\.nonzero/);
 });
 test('ip5f-local-laplacian: identity short circuit and beta changes large contrast',()=>{
@@ -209,6 +237,24 @@ test('ip5f-edgetaper: both edges use nearest-edge distance and blur weight',()=>
       assert.equal(q.data[(3*7+6)*3],102,'right edge is also fully blurred, rather than using left-edge distance');
       assert.equal(q.data[(3*7+1)*3],7,'the interior blend uses alpha*input + (1-alpha)*blur');
     }finally{q.delete();}
+    assertWrapperBalance(cv,'edgetaper float64 Mats',c=>edgeTaper5F(c,src,{n:3,k:Array(9).fill(1/9)}).delete(),{minCreated:6});
+  }finally{src.delete();}
+  const js=fs.readFileSync(new URL('../src/renderer/filters/batch5f.js',import.meta.url),'utf8');
+  assert.match(js,/src\.convertTo\(source,cv\.CV_64F\)/);
+  assert.match(js,/cv\.copyMakeBorder\(source,padded,r,r,r,r,cv\.BORDER_WRAP\)/);
+  assert.match(js,/cv\.filter2D\(padded,blur,-1,flipped/);
+  const py=buildPythonCode([step('deconv_wiener',{taper:true})]);
+  assert.match(py,/cv2\.copyMakeBorder\(image5f,r,r,r,r,cv2\.BORDER_WRAP\)/);
+  assert.match(py,/cv2\.filter2D\(padded5f,-1,kernel5f,borderType=cv2\.BORDER_CONSTANT\)/);
+});
+test('ip5f-edgetaper: source pixels survive WASM heap growth on a large RGB image',()=>{
+  const src=image(2000,1500,()=>[120,128,136]);
+  try{
+    const out=run('deconv_wiener',src,{psfSize:50,taper:true});
+    try{
+      let total=0;for(const v of out.data)total+=v;
+      assert.ok(total/out.data.length>50,`expected visible mid-grey output, mean=${total/out.data.length}`);
+    }finally{out.delete();}
   }finally{src.delete();}
 });
 test('ip5f-blind/reg: constant signal, normalized nonnegative PSF visualization and taper compatibility',()=>{
@@ -224,6 +270,19 @@ test('ip5f-blind/reg: constant signal, normalized nonnegative PSF visualization 
       finally{out.delete();}
     }
   }finally{src.delete();}
+});
+test('ip5f-edgetaper: large and disk PSFs run on every deconvolution path',()=>{
+  const src=image(45,37,(x,y)=>[(x*17+y*3)%256,(x*5+y*19)%256,(x*11+y*7)%256]);
+  const cases=[
+    ['deconv_wiener',{psfSize:50,taper:true}],
+    ['deconv_wiener',{psf:'disk',psfSize:20,taper:true}],
+    ['deconv_lucy',{psfSize:50,iterations:2,taper:true}],
+    ['deconv_blind',{psfSize:31,iterations:1,taper:true}],
+    ['deconv_reg',{psfSize:50,taper:true}],
+  ];
+  try{for(const [id,p]of cases){const ctx={},out=run(id,src,p,ctx);try{
+    assert.deepEqual([out.cols,out.rows],[src.cols,src.rows]);assert.match(ctx.info,/edgetaper/);
+  }finally{out.delete();}}}finally{src.delete();}
 });
 test('ip5f-deconv-reg: regularization keeps its Laplacian penalty at large lambda',()=>{
   const src=image(23,19,(x,y)=>[(x*19+y*7)%256,(x*5+y*23)%256,(x*13+y*3)%256]);
@@ -260,9 +319,12 @@ test('ip5f-parity: every 5F path uses distinct files, bytes-safe stdin and docum
   const other=image(23,19,(x,y)=>[(x*11+y*5+40)%256,(x*7+y*13+20)%256,(x*3+y*19+80)%256]);
   const gray=new cv.Mat(),rgba=new cv.Mat();cv.cvtColor(rgb,gray,cv.COLOR_RGB2GRAY);cv.cvtColor(rgb,rgba,cv.COLOR_RGB2RGBA);
   const tinyH=image(1,9,(x,y)=>[y*23,y*11,255-y*19]),tinyW=image(9,1,(x,y)=>[x*23,255-x*17,x*11]);
-  const mask=image(45,37,(x,y)=>{const v=x>=17&&x<=22&&y>=13&&y<=18?255:0;return[v,v,v];});
+  const mask=image(45,37,(x,y)=>x>=17&&x<=22&&y>=13&&y<=18?255:0,1);
   const edgeMask=image(45,37,(x,y)=>x===0||y===0?255:0,1);
   const large=image(640,480,(x,y)=>[(x*13+y*3)%256,(x*3+y*17)%256,(x*7+y*11)%256]);
+  const largeMask=image(640,480,(x,y)=>x>=170&&x<470&&y>=120&&y<360?255:0,1);
+  const convergedMask=image(640,480,(x,y)=>x>=288&&x<352&&y>=208&&y<272?255:0,1);
+  const borderMask=image(640,480,(x,y)=>x<14||x>=626||y<14||y>=466?255:0,1);
   const cases=[
     {id:'active_contour',src:gray,p:{init:'otsu',view:'mask',smooth:2,bias:.2}},
     {id:'deconv_blind',src:rgba,p:{psfSize:3,iterations:2,taper:true}},
@@ -274,7 +336,14 @@ test('ip5f-parity: every 5F path uses distinct files, bytes-safe stdin and docum
     {id:'exposure_fusion',src:rgb,b:other,p:{wContrast:0,wSaturation:0,wExposure:0}},
     {id:'inpaint',src:rgba,b:mask,p:{method:'laplace'}},
     {id:'inpaint',src:rgb,b:edgeMask,p:{method:'laplace'}},
-    {id:'deconv_wiener',src:large,p:{taper:true}},
+    {id:'inpaint',src:large,b:largeMask,p:{method:'laplace'},reducedBudgetNote:true},
+    {id:'inpaint',src:large,b:convergedMask,p:{method:'laplace'},reducedBudgetNote:false},
+    {id:'inpaint',src:large,b:borderMask,p:{method:'laplace'},reducedBudgetNote:true},
+    {id:'deconv_wiener',src:large,p:{psfSize:50,taper:true}},
+    {id:'deconv_wiener',src:large,p:{psf:'disk',psfSize:20,taper:true}},
+    {id:'deconv_lucy',src:large,p:{psfSize:50,iterations:2,taper:true}},
+    {id:'deconv_blind',src:rgb,p:{psfSize:31,iterations:1,taper:true}},
+    {id:'deconv_reg',src:large,p:{psfSize:50,taper:true}},
     {id:'deconv_wiener',src:tinyH,p:{taper:true}},
     {id:'deconv_lucy',src:tinyW,p:{iterations:2,taper:true}},
     {id:'active_contour',src:large,p:{init:'otsu',view:'mask',smooth:1,iterations:1000}},
@@ -296,7 +365,7 @@ test('ip5f-parity: every 5F path uses distinct files, bytes-safe stdin and docum
       });
       const file=path.join(dir,`c${i}.py`),out=path.join(dir,`o${i}.bin`);fs.writeFileSync(file,code,'utf8');
       const ctx={...(j.b?{src2:j.b}:{})},app=run(j.id,j.src,j.p,ctx);apps.push(app);
-      return {file,inputs,out,app,ctx,id:j.id,p:j.p};
+      return {file,inputs,out,app,ctx,id:j.id,p:j.p,reducedBudgetNote:j.reducedBudgetNote};
     });
     const manifestFile=path.join(dir,'manifest.json'),resultsFile=path.join(dir,'results.json');
     fs.writeFileSync(manifestFile,JSON.stringify(manifest.map(({file,inputs,out})=>({file,inputs,out}))));
@@ -308,7 +377,7 @@ test('ip5f-parity: every 5F path uses distinct files, bytes-safe stdin and docum
       if(py.shape.length===3)for(let k=0;k<data.length;k+=3)[data[k],data[k+2]]=[data[k+2],data[k]];
       const actual=Array.from(j.app.data),diff=actual.map((v,k)=>Math.abs(v-data[k]));
       assert.deepEqual(py.shape,[j.app.rows,j.app.cols,...(j.app.channels()>1?[j.app.channels()]:[])],j.id+' shape');
-      const max=j.id==='active_contour'||j.id==='inpaint'||j.id==='exposure_fusion'?0:j.id==='deconv_wiener'?2:1;
+      const max=j.p.taper?(j.id==='deconv_wiener'?2:1):j.id==='active_contour'||j.id==='inpaint'||j.id==='exposure_fusion'?0:j.id==='deconv_wiener'?2:1;
       const maxDiff=diff.reduce((m,v)=>Math.max(m,v),0);
       assert.ok(maxDiff<=max,`${j.id} max difference ${maxDiff}`);
       const diffLimit=j.id==='active_contour'||j.id==='inpaint'||j.id==='exposure_fusion'?0:.005;
@@ -318,10 +387,16 @@ test('ip5f-parity: every 5F path uses distinct files, bytes-safe stdin and docum
         assert.ok(j.ctx.info.endsWith(suffix),j.ctx.info);
         assert.ok(py.stdout.trimEnd().endsWith(suffix),py.stdout);
       }
+      if(j.id==='inpaint')assert.equal(py.stdout.trimEnd(),j.ctx.info,'Laplace info must match between app and Python');
+      if(j.id==='inpaint'&&j.reducedBudgetNote!==undefined){
+        const hasNote=j.ctx.info.includes('\u0e25\u0e14\u0e40\u0e2b\u0e25\u0e37\u0e2d');
+        assert.equal(hasNote,j.reducedBudgetNote,j.ctx.info);
+        assert.equal(py.stdout.trimEnd().includes('\u0e25\u0e14\u0e40\u0e2b\u0e25\u0e37\u0e2d'),j.reducedBudgetNote,py.stdout);
+      }
       if(j.id==='multissim')assert.ok(py.stdout.includes(vals(j.ctx).msssim.toFixed(4).slice(0,-1)),py.stdout);
     }
   }finally{
     for(const app of apps)app.delete();
-    rgb.delete();other.delete();gray.delete();rgba.delete();tinyH.delete();tinyW.delete();mask.delete();edgeMask.delete();large.delete();fs.rmSync(dir,{recursive:true,force:true});
+    rgb.delete();other.delete();gray.delete();rgba.delete();tinyH.delete();tinyW.delete();mask.delete();edgeMask.delete();large.delete();largeMask.delete();convergedMask.delete();borderMask.delete();fs.rmSync(dir,{recursive:true,force:true});
   }
 });
