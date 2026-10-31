@@ -40,7 +40,7 @@ function same(a, b) {
     assert.deepEqual(Buffer.from(a.data), Buffer.from(b.data));
 }
 function legacyParams(id) {
-    return OPS[id].params.filter(q => !(id === "hough_lines" && q.key === "view") && !(id === "find_contours" && q.key === "simplify"));
+    return OPS[id].params.filter(q => !(id === "hough_lines" && q.key === "view") && !(id === "find_contours" && q.key === "simplify") && !(id === "hough_circles" && q.key === "view"));
 }
 test("ip5d-G. 730 clean-tree cases freeze pixels, info, values and Python bytes", () => {
     const result = {};
@@ -57,7 +57,7 @@ test("ip5d-G. 730 clean-tree cases freeze pixels, info, values and Python bytes"
             for (const [fid, ids] of Object.entries(OLD_HOSTS))
                 for (const id of ids) {
                     const qs = legacyParams(id), defs = Object.fromEntries(qs.map(q => [q.key, q.default]));
-                    const variants = [{}, ...qs.filter(q => q.type === "select").flatMap(q => q.options.filter(o => o.value !== q.default && !(id === "delta_e" && o.value === "cie94") && !(id === "pass_fail" && ["mean", "std", "entropy", "corr2"].includes(o.value))).map(o => ({ [q.key]: o.value })))];
+                    const variants = [{}, ...qs.filter(q => q.type === "select").flatMap(q => q.options.filter(o => o.value !== q.default && !(id === "delta_e" && ["cie94","angle"].includes(o.value)) && !(id === "pass_fail" && ["mean", "std", "entropy", "corr2", "area"].includes(o.value))).map(o => ({ [q.key]: o.value })))];
                     for (const extra of variants) {
                         const local = { ...defs, ...extra }, params = { mode: id, ...Object.fromEntries(Object.entries(local).map(([k, v]) => [id + "__" + k, v])) }, st = { id: fid, params };
                         const key = JSON.stringify([kind, w, h, fid, id, extra]), ctx = { src2: c };
@@ -133,7 +133,7 @@ test("ip5d-S. defaults, ranges, placement, icons, labels and Pass/Fail", () => {
     }
     assert.equal(OPS.hough_lines.params.at(-1).key, "view");
     assert.equal(OPS.find_contours.params.at(-1).key, "simplify");
-    assert.equal(OPS.delta_e.params[0].options.at(-1).value, "cie94");
+    assert.equal(OPS.delta_e.params[0].options.at(-2).value, "cie94");
     for (const id of ["image_stats", "corr2"])
         assert.ok(PF_VALUE_OPS.has(id));
 });

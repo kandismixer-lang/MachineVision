@@ -39,7 +39,7 @@ function same(a, b) {
 const circle = (cx, cy, r) => (x, y) => (x - cx) ** 2 + (y - cy) ** 2 <= r * r ? 255 : 0;
 
 test("ip5c-S. defaults, ranges, host placement, unique icons and Pass/Fail source", () => {
-  for (const [id, host, after] of [["bf_score", "image_quality", "seg_score"], ["local_contrast", "enhance_tools", "lowlight_enhance"], ["mask_overlay", "image_arithmetic", "mask"], ["morph_ult_erode", "morph_tools", "morph_shrink"]]) {
+  for (const [id, host, after] of [["bf_score", "image_quality", "seg_score"], ["local_contrast", "enhance_tools", "lowlight_enhance"], ["mask_overlay", "image_arithmetic", "mask"], ["morph_ult_erode", "morph_tools", "morph_thicken"]]) {
     assert.ok(OPS[id], id);
     assert.equal(OP_TO_FILTER[id], host);
     const list = TOOL_SECTIONS.find((s) => s.ops.includes(id)).ops;
@@ -66,7 +66,7 @@ test("ip5c-S. defaults, ranges, host placement, unique icons and Pass/Fail sourc
   }
   assert.equal(defaults("shape_filter").keepN, 0);
   assert.equal(defaults("shape_filter").keepRank, "largest");
-  assert.equal(OPS.morphology.params[0].options.at(-1).value, "ult_erode");
+  assert.equal(OPS.morphology.params[0].options.at(-4).value, "ult_erode");
   assert.ok(PF_VALUE_OPS.has("bf_score"));
   assert.match(OP_PRIMARY.pass_fail({ metric: "bf", cond: "ge", lo: 0.9 }), /Boundary F1/);
   for (const id of IDS.slice(1)) assert.ok(!PF_VALUE_OPS.has(id));
@@ -444,7 +444,7 @@ for(const [kind,w,h] of [['rgb',37,29],['gray',37,29],['rgba',37,29],['rgb',1,1]
  try { for(const [fid,ops] of Object.entries(ids)) for(const id of ops) {
  const defs=Object.fromEntries(OPS[id].params.filter(q=>!['keepN','keepRank'].includes(q.key)).map(q=>[q.key,q.default]));
  const variants=[{}];
- for(const q of OPS[id].params.filter(q=>q.type==='select'&&q.key!=='keepRank'))for(const {value}of q.options.filter(o=>!["cie94"].includes(o.value)))if(value!==q.default)variants.push({[q.key]:value});
+ for(const q of OPS[id].params.filter(q=>q.type==='select'&&q.key!=='keepRank'))for(const {value}of q.options.filter(o=>!["cie94","angle"].includes(o.value)))if(value!==q.default)variants.push({[q.key]:value});
  if(id==='shape_filter')variants.push({keepN:0},{prop:'none',minArea:0},{view:'mask',minArea:0});
  for(const extra of variants){
  const local={...defs,...extra},params={mode:id,...Object.fromEntries(Object.entries(local).map(([k,v])=>[id+'__'+k,v]))},st={id:fid,params};

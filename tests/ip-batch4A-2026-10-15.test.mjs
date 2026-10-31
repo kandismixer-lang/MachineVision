@@ -1063,7 +1063,7 @@ test('ip4a-cs1. colorspace xyz / luv / yuv == cv.cvtColor(RGB2XYZ / RGB2Luv / RG
       }
       assert.equal(OP_PRIMARY.colorspace({ space }), `BGR → ${space.toUpperCase()}`);
     }
-    assert.deepEqual(OPS.colorspace.params[0].options.map((o) => o.value), ['hsv', 'hls', 'lab', 'ycrcb', 'xyz', 'luv', 'yuv']);
+    assert.deepEqual(OPS.colorspace.params[0].options.map((o) => o.value), ['hsv', 'hls', 'lab', 'ycrcb', 'xyz', 'luv', 'yuv', 'yiq']);
     assert.throws(() => runOp('colorspace', c, { space: 'constructor' }));
   } finally { c.delete(); g.delete(); }
 });
@@ -1602,7 +1602,7 @@ test('ip4a-S1. (static structure) the 5 new ops exist with the right needs and h
   assert.deepEqual(sec('FILTER & DENOISE').slice(7, 9), ['wiener_filter', 'guided_filter']); // batch 4B appends nlm_denoise / deconv_wiener / deconv_lucy after them
   assert.ok(sec('ANALYSIS & DETECTION').indexOf('focus_score') > sec('ANALYSIS & DETECTION').indexOf('local_entropy_filter')); // batch 4B puts gabor_filter / glcm between them
   assert.equal(sec('ANALYSIS & DETECTION').indexOf('regionprops'), sec('ANALYSIS & DETECTION').indexOf('focus_score') + 1);
-  assert.deepEqual(sec('IMAGE ARITHMETIC').slice(7, 9), ['hist_match', 'roi_apply']); // batch 4B appended ecc_register; 2026-10-24 it moved to IMAGE REGISTRATION
+  assert.deepEqual(sec('IMAGE ARITHMETIC').slice(8, 10), ['hist_match', 'roi_apply']); // batch 4B appended ecc_register; 2026-10-24 it moved to IMAGE REGISTRATION
   assert.deepEqual(sec('IMAGE QUALITY'), ['psnr', 'ssim', 'delta_e', 'seg_score', 'bf_score', 'corr2', 'piqe']);
   for (const id of NEW_OPS) assert.equal(TOOL_SECTIONS.filter((s) => s.ops.includes(id)).length, 1, `${id} in exactly one section`);
 });
@@ -1674,11 +1674,12 @@ test('ip4a-S3. (static read) every new numeric param is clamped to EXACTLY the U
   }
   // the UI declares the numeric params that exist (no stray ones)
   const numeric = (id) => OPS[id].params.filter((p) => p.type === 'number').map((p) => p.key);
-  assert.deepEqual(numeric('guided_filter'), ['radius', 'eps']); assert.deepEqual(numeric('focus_score'), ['roiPct']); assert.deepEqual(numeric('delta_e'), ['tol', 'scaleMax']); assert.deepEqual(numeric('roi_apply'), ['x', 'y', 'w', 'h', 'feather']);
+  // R2 adds angle-only descriptors for the same stored numeric keys.
+  assert.deepEqual(numeric('guided_filter'), ['radius', 'eps']); assert.deepEqual(numeric('focus_score'), ['roiPct']); assert.deepEqual(numeric('delta_e'), ['tol', 'tol', 'scaleMax', 'scaleMax']); assert.deepEqual(numeric('roi_apply'), ['x', 'y', 'w', 'h', 'feather']);
   for (const id of ['regionprops', 'feret', 'line_profile']) assert.equal(OPS[id].params.at(-1).key, 'mmPerPx', `${id}: mmPerPx is the last param`);
   assert.deepEqual(OPS.custom_kernel.params.map((p) => p.key), ['preset', 'amount', 'psfSize', 'psfAngle']);
   assert.deepEqual(OPS.gaussian_noise.params.map((p) => p.key), ['sigma', 'seed', 'kind']); assert.deepEqual(OPS.gamma.params.map((p) => p.key), ['g', 'curve']); assert.deepEqual(OPS.otsu_threshold.params.map((p) => p.key), ['invert', 'method']);
-  assert.deepEqual(OPS.fft_filter.params.map((p) => p.key), ['type', 'shape', 'cutoff', 'order']); assert.deepEqual(OPS.white_balance.params.map((p) => p.key), ['method', 'refX', 'refY', 'refSize']);
+  assert.deepEqual(OPS.fft_filter.params.map((p) => p.key), ['type', 'shape', 'cutoff', 'order']); assert.deepEqual(OPS.white_balance.params.map((p) => p.key), ['method', 'refX', 'refY', 'refSize', 'pcaPercent']);
   assert.deepEqual(OPS.custom_kernel.params[0].options.map((o) => o.value), ['identity', 'sharpen', 'edge', 'emboss', 'outline', 'box3', 'box5', 'motion', 'disk']);
   assert.deepEqual(OPS.fft_filter.params[1].options.map((o) => o.value), ['gaussian', 'ideal', 'butterworth']);
 });
@@ -1687,10 +1688,10 @@ test('ip4a-S4. (static) Thai text: no "ที่สุด" in any new name / des
   const texts = [];
   const walk = (o) => { if (typeof o === 'string') texts.push(o); else if (Array.isArray(o)) o.forEach(walk); else if (o && typeof o === 'object') Object.values(o).forEach(walk); };
   for (const id of NEW_OPS) walk({ name: OPS[id].name, desc: OPS[id].desc, params: OPS[id].params });
-  const NEWPARAMS = { custom_kernel: ['psfSize', 'psfAngle'], gaussian_noise: ['kind'], gamma: ['curve'], otsu_threshold: ['method'], fft_filter: ['order'], white_balance: ['method', 'refX', 'refY', 'refSize'], regionprops: ['mmPerPx'], feret: ['mmPerPx'], line_profile: ['mmPerPx'] };
+  const NEWPARAMS = { custom_kernel: ['psfSize', 'psfAngle'], gaussian_noise: ['kind'], gamma: ['curve'], otsu_threshold: ['method'], fft_filter: ['order'], white_balance: ['method', 'refX', 'refY', 'refSize', 'pcaPercent'], regionprops: ['mmPerPx'], feret: ['mmPerPx'], line_profile: ['mmPerPx'] };
   for (const [id, keys] of Object.entries(NEWPARAMS)) for (const k of keys) walk(OPS[id].params.find((p) => p.key === k));
   for (const id of ['custom_kernel']) walk(OPS[id].params[0].options.slice(-2));
-  walk(OPS.fft_filter.params[1].options.at(-1)); walk(OPS.colorspace.params[0].options.slice(-3));
+  walk(OPS.fft_filter.params[1].options.at(-1)); walk(OPS.colorspace.params[0].options.slice(-4));
   // the appended desc sentences of the old ops
   for (const [id, marker] of [['custom_kernel', 'Motion/Disk คือ PSF'], ['gaussian_noise', 'แบบ Speckle'], ['gamma', 'Log: ใหม่'], ['otsu_threshold', 'Triangle (Zack'], ['fft_filter', 'Butterworth: H'], ['white_balance', 'มี 3 สมมติฐาน'], ['colorspace', 'XYZ/Luv/YUV'], ['regionprops', 'แปลงเป็นหน่วยจริง'], ['feret', 'แปลงเป็นหน่วยจริง'], ['line_profile', 'แปลงเป็นหน่วยจริง']]) {
     const i = OPS[id].desc.indexOf(marker); assert.ok(i >= 0, `${id} desc tail "${marker}"`); texts.push(OPS[id].desc.slice(i));

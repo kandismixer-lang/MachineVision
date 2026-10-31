@@ -1,3 +1,4 @@
+import { color5EPy, jacobi5EPy } from "./codegen-batch5e.js";
 // สร้างโค้ด Python (OpenCV) ตามลำดับ Box ที่ภาพวิ่งผ่านจริง ๆ ในกล่องผลลัพธ์หนึ่งกล่อง
 // (คนละอย่างกับปุ่ม Export ที่เป็นโค้ดเทรน YOLO)
 //
@@ -573,7 +574,106 @@ if amount != 0 and min(img.shape[:2]) >= 16:
     img = np.floor(np.clip(out, 0, 255) + 0.5).astype(np.uint8)
 print(f'Local Contrast: amount {amount}, edge sigma {sigma}, {nlev} levels' + (' (image smaller than 16 px)' if min(img.shape[:2]) < 16 else ''))`.split("\n"));
 }
-function binaryMorph5APy(p) {
+function morphology5EPy(p){
+  if(p.op==="thicken")return guarded5A([
+    "def thin_padded5e(img):",
+    ...binaryMorph5APy({op:"thin",iterations:Math.floor(clampNum(p.iterations,0,0,100)+.5)},2).slice(3).filter(s=>!s.trimStart().startsWith("print(")),
+    "    return img,rounds",
+    `simple5e = ${JSON.stringify(Array.from(MORPH_5A_LUT.simple))}`,
+    ...`ring5e = [(1,0),(1,-1),(0,-1),(-1,-1),(-1,0),(-1,1),(0,1),(1,1)]
+h0_5e,w0_5e = img.shape[:2]
+binary5e = np.where(img > 127,255,0).astype(np.uint8)
+_,owner5e = cv2.connectedComponents(binary5e,connectivity=8)
+owner5e = owner5e.ravel().copy()
+limit5e = ${Math.floor(clampNum(p.iterations,0,0,100)+.5)?"1":"w0_5e*h0_5e"}
+total_rounds5e = 0
+for round5e in range(limit5e):
+    prev5e = owner5e.copy()
+    pad5e = np.pad(np.where(owner5e.reshape(h0_5e,w0_5e),0,255).astype(np.uint8),2,constant_values=255)
+    pad5e,rounds5e = thin_padded5e(pad5e)
+    total_rounds5e += rounds5e
+    candidate5e = (255-pad5e[2:h0_5e+2,2:w0_5e+2]).ravel()
+    blocked5e = bytearray(len(owner5e))
+    queue5e = list(np.flatnonzero(owner5e))
+    head5e = 0
+    while head5e < len(queue5e):
+        at5e = int(queue5e[head5e])
+        head5e += 1
+        x5e,y5e = at5e%w0_5e,at5e//w0_5e
+        for dy in range(-1,2):
+            for dx in range(-1,2):
+                xx,yy = x5e+dx,y5e+dy
+                i = yy*w0_5e+xx
+                if xx < 0 or yy < 0 or xx >= w0_5e or yy >= h0_5e or owner5e[i] or blocked5e[i] or not candidate5e[i]:
+                    continue
+                label,conflict = 0,False
+                for oy in range(-1,2):
+                    for ox in range(-1,2):
+                        nx,ny = xx+ox,yy+oy
+                        if nx < 0 or ny < 0 or nx >= w0_5e or ny >= h0_5e:
+                            continue
+                        other = int(owner5e[ny*w0_5e+nx])
+                        if other:
+                            if label and other != label:
+                                conflict = True
+                            label = other
+                if conflict:
+                    blocked5e[i] = 1
+                elif label:
+                    mask5e = 0
+                    for bit5e,(ox,oy) in enumerate(ring5e):
+                        nx,ny = xx+ox,yy+oy
+                        if 0 <= nx < w0_5e and 0 <= ny < h0_5e and owner5e[ny*w0_5e+nx]:
+                            mask5e |= 1 << bit5e
+                    if simple5e[mask5e]:
+                        owner5e[i] = label
+                        queue5e.append(i)
+    if np.array_equal(prev5e,owner5e):
+        break
+img = np.where(owner5e.reshape(h0_5e,w0_5e),255,0).astype(np.uint8)
+print(f'Thicken: {total_rounds5e} rounds; preserves 8-connected separation')`.split("\n"),
+  ]);
+  if(p.op==="perimeter")return guarded5A([
+    "fg5e = img > 127","h5e,w5e = fg5e.shape","pad5e = np.pad(fg5e,1,constant_values=False)","inner5e = fg5e.copy()",
+    `for dx,dy in ${p.perimConn==="8"||p.perimConn===8?"[(1,0),(-1,0),(0,1),(0,-1),(1,1),(1,-1),(-1,1),(-1,-1)]":"[(1,0),(-1,0),(0,1),(0,-1)]"}:`,
+    "    inner5e &= pad5e[1+dy:1+dy+h5e,1+dx:1+dx+w5e]","img = np.where(fg5e & ~inner5e,255,0).astype(np.uint8)","print(f'Perimeter: {int(np.count_nonzero(img))} px')",
+  ]);
+  return guarded5A([
+    "binary5e = (img > 127).astype(np.uint8)","n5e,labels5e = cv2.connectedComponents(binary5e,connectivity=8)","touch5e = np.zeros(n5e,bool)","touch5e[np.concatenate((labels5e[0],labels5e[-1],labels5e[:,0],labels5e[:,-1]))] = True","touch5e[0] = False","img = np.where(touch5e[labels5e],255,0).astype(np.uint8)","print(f'Keep Border: {int(np.count_nonzero(touch5e))} objects')",
+  ]);
+}
+function circlesMask5EPy(p){
+  return guarded5A([
+    "h5e,w5e = img.shape[:2]","scale5e = min(1,640/max(w5e,h5e))","analysis5e = img",
+    "if scale5e < 1:","    analysis5e = cv2.resize(img,(max(1,int(np.floor(w5e*scale5e+.5))),max(1,int(np.floor(h5e*scale5e+.5)))),interpolation=cv2.INTER_AREA)",
+    "blur5e = cv2.medianBlur(analysis5e,5)","edges5e = cv2.Canny(blur5e,100,200)","contours5e,_ = cv2.findContours(edges5e,cv2.RETR_LIST,cv2.CHAIN_APPROX_SIMPLE)",
+    "img = np.zeros((h5e,w5e),np.uint8)","if np.count_nonzero(edges5e)/max(1,edges5e.size) > .18 or len(contours5e) > 180:","    print('too many noise edges: add blur before Hough Circles')","else:",
+    `    min5e = int(np.floor(${num(p.minR)}*scale5e+.5))`,`    max5e = int(np.floor(${num(p.maxR)}*scale5e+.5))`,"    if 0 < max5e < min5e:","        max5e = 0",
+    `    circles5e = cv2.HoughCircles(blur5e,cv2.HOUGH_GRADIENT,${num(p.dp)},max(1,${num(p.minDist)}*scale5e),param1=100,param2=${num(p.param2)},minRadius=min5e,maxRadius=max5e)`,
+    "    if circles5e is not None:","        for x,y,r in circles5e.reshape(-1,3):", "            cv2.circle(img,(int(float(x)*(1/scale5e)),int(float(y)*(1/scale5e))),int(float(r)*(1/scale5e)),255,-1,cv2.LINE_8)",
+  ]);
+}
+function angle5EPy(p,ctx){
+  const mirrored=isMirrored(ctx),mean=p.compare==="mean_b";
+  return [
+    ...pyAlignBColor(ctx),
+    `a5e = cv2.cvtColor(img,cv2.COLOR_GRAY2RGB) if img.ndim == 2 else np.ascontiguousarray(img[:, :, :3]${mirrored?"[:, :, ::-1]":""})`,
+    `b5e = cv2.cvtColor(img_b,cv2.COLOR_GRAY2RGB) if img_b.ndim == 2 else np.ascontiguousarray(img_b[:, :, :3]${mirrored?"[:, :, ::-1]":""})`,
+    ...(!mean?["if a5e.shape[:2] != b5e.shape[:2]:","    b5e = cv2.resize(b5e,(a5e.shape[1],a5e.shape[0]),interpolation=cv2.INTER_LINEAR)"]:[]),
+    "a5e,b5e = a5e.astype(np.float64),b5e.astype(np.float64)",
+    ...(mean?["ref5e = [int(b5e[:, :, c].sum(dtype=np.int64))/(b5e.shape[0]*b5e.shape[1]) for c in range(3)]"]:["ref5e = [b5e[:, :, c] for c in range(3)]"]),
+    "r5e,g5e,bv5e = a5e[:, :, 0],a5e[:, :, 1],a5e[:, :, 2]",
+    "dot5e = r5e*ref5e[0]+g5e*ref5e[1]+bv5e*ref5e[2]",
+    "norm5e = np.sqrt(r5e*r5e+g5e*g5e+bv5e*bv5e)*np.sqrt(ref5e[0]*ref5e[0]+ref5e[1]*ref5e[1]+ref5e[2]*ref5e[2])",
+    "ratio5e = np.divide(dot5e,norm5e,out=np.zeros_like(dot5e),where=norm5e != 0)",
+    "de = np.where(norm5e == 0,0,np.arccos(np.clip(ratio5e,-1,1))*180/np.pi)",
+    `tol = ${clampNum(p.tol,2.3,0,50)}`,"de_mean = np.cumsum(de.ravel())[-1]/de.size","over_pct = np.count_nonzero(de > tol)*100/de.size",
+    p.view==="over"?"img = np.where(de > tol,255,0).astype(np.uint8)":`img = np.clip(np.floor(de*255/${clampNum(p.scaleMax,20,1,100)}+.5),0,255).astype(np.uint8)`,
+    "print(f'color angle (degrees): mean {np.floor(de_mean*1000+.5)/1000:.3f} max {np.floor(de.max()*1000+.5)/1000:.3f}')",
+  ];
+}
+
+function binaryMorph5APy(p, fixedBorder = 0) {
   const op = p.op, it = Math.floor(clampNum(p.iterations, 1, op === "majority" ? 1 : 0, op === "majority" ? 5 : 100) + 0.5);
   const shrink = op === "shrink", thin = op === "thin";
   return guarded5A([
@@ -614,6 +714,7 @@ function binaryMorph5APy(p) {
       "            mask |= r << k",
       "        center = a[1:-1, 1:-1]",
       op === "majority" ? "        change = center != (counts[mask] + center >= 5)" : `        change = (center != 0) & (${thin ? "thin_lut[step, mask] != 0" : `counts[mask] == ${op === "clean" ? 0 : 1}`})`,
+      ...(fixedBorder ? [`        change[:${fixedBorder}, :] = False`, `        change[-${fixedBorder}:, :] = False`, `        change[:, :${fixedBorder}] = False`, `        change[:, -${fixedBorder}:] = False`] : []),
       "        removed += int(np.count_nonzero(center[change]))",
       ...(op === "majority" ? ["        added += int(np.count_nonzero(change & (center == 0)))"] : []),
       op === "majority" ? "        center[change] = 1 - center[change]" : "        center[change] = 0",
@@ -830,7 +931,30 @@ for c, components in enumerate(((z,z,t,value,value,q), (t,value,value,q,z,z), (v
   grayscale: { needs: "any", out: "gray", gen: (p, ctx) =>
     ctx.gray ? ["# ภาพเป็นขาวดำอยู่แล้ว"] : [`img = cv2.cvtColor(img, ${pyGrayCode(ctx)})`] },
 
+  reconstruct:{needs:"any",out:"gray",grayMayPass5E:()=>true,gen:(p,ctx)=>guarded5A([
+    "if img_b is None or img_b.size == 0:","    print('missing or empty B: passthrough')","else:",
+    ...[
+      `a5e = img if img.ndim == 2 else cv2.cvtColor(img,${pyGrayCode(ctx)})`,
+      `b5e = img_b if img_b.ndim == 2 else cv2.cvtColor(img_b,${pyBGrayCode(ctx)})`,
+      "if a5e.shape != b5e.shape:","    b5e = cv2.resize(b5e,(a5e.shape[1],a5e.shape[0]),interpolation=cv2.INTER_NEAREST)",
+      ...regional5APy(),"clipped5e = bool(np.any(a5e > b5e))","img = recon5a(np.minimum(a5e,b5e),b5e).astype(np.uint8)","print('Reconstruction: conn 8' + (' (marker clipped to mask)' if clipped5e else ''))",
+    ].map(s=>"    "+s),
+  ])},
+  select_object:{needs:"gray",outOf:p=>p.view==="overlay"?"color":"gray",bgrChannelOrder:true,gen:(p)=>guarded5A([
+    "binary5e = (img > 127).astype(np.uint8)",`_, labels5e = cv2.connectedComponents(binary5e,connectivity=${p.conn==="4"||p.conn===4?4:8})`,
+    "h5e,w5e = img.shape[:2]",`px5e = min(w5e-1,int(np.floor(${clampNum(p.x,50,0,100)}/100*w5e)))`,`py5e = min(h5e-1,int(np.floor(${clampNum(p.y,50,0,100)}/100*h5e)))`,
+    "label5e = labels5e[py5e,px5e]","selected5e = (labels5e == label5e) & (label5e != 0)","area5e = int(np.count_nonzero(selected5e))",
+    ...(p.view==="overlay"?[
+      "view5e = np.where(selected5e,255,np.where(binary5e,90,0)).astype(np.uint8)","img = cv2.cvtColor(view5e,cv2.COLOR_GRAY2BGR)","cv2.line(img,(px5e-3,py5e),(px5e+3,py5e),(0,0,255),1,cv2.LINE_8)","cv2.line(img,(px5e,py5e-3),(px5e,py5e+3),(0,0,255),1,cv2.LINE_8)",
+    ]:["img = np.where(selected5e,255,0).astype(np.uint8)"]),
+    "print(f'selected object: area {area5e} px' if area5e else 'selected point is not on an object')",
+  ],["area5e = None"])},
+  srgb_linear:{needs:"any",out:"same",gen:p=>guarded5A(color5EPy("srgb_linear",p,true))},
+  color_matrix:{needs:"any",out:"color",bgrChannelOrder:true,gen:(p,ctx)=>guarded5A(color5EPy("color_matrix",p,isMirrored(ctx)))},
+  decorrstretch:{needs:"any",out:"same",bgrChannelOrder:true,gen:(p,ctx)=>guarded5A(color5EPy("decorrstretch",p,isMirrored(ctx)))},
+
   colorspace: { needs: "any", out: "color", appChannelOrder: true, gen: (p, ctx) => {
+    if (p.space === "yiq") return guarded5A(color5EPy("yiq",p,isMirrored(ctx)));
     const order = isMirrored(ctx) ? "BGR" : "RGB";
     const space = { hsv: "HSV", hls: "HLS", lab: "Lab", ycrcb: "YCrCb", xyz: "XYZ", luv: "Luv", yuv: "YUV" }[p.space] || "HSV";
     const code = `COLOR_${order}2${space}`;
@@ -1112,6 +1236,7 @@ for c, components in enumerate(((z,z,t,value,value,q), (t,value,value,q,z,z), (v
   // outOf แทน out คงที่ เพราะ endpoints_branchpoints (ใหม่ 2026-10-01) คืนภาพสี (BGR) เสมอ ส่วน op อื่น
   // ทั้งหมดในกลุ่มนี้คืนภาพขาวดำ — ตามแนวเดียวกับ region_growing ที่ out ขึ้นกับ view
   morphology: { needs: "gray", outOf: (p) => (p.op === "endpoints_branchpoints" ? "color" : "gray"), gen: (p) => {
+    if (["perimeter","thicken","keep_border"].includes(p.op)) return morphology5EPy(p);
     if (p.op === "ult_erode") return ultimate5CPy();
     if (["clean", "majority", "spur", "thin", "shrink"].includes(p.op)) return binaryMorph5APy(p);
     if (p.op === "h_minima" || p.op === "extended_min") {
@@ -2071,7 +2196,8 @@ for c, components in enumerate(((z,z,t,value,value,q), (t,value,value,q,z,z), (v
     "    cv2.rectangle(img, (x, y), (x + w, y + h), (0, 255, 0), 2)",
   ] },
 
-  hough_circles: { needs: "gray", out: "color", gen: (p) => {
+  hough_circles: { needs: "gray", outOf: p => p.view === "mask" ? "gray" : "color", gen: (p) => {
+    if (p.view === "mask") return circlesMask5EPy(p);
     let maxR = int(p.maxR), minR = int(p.minR);
     if (maxR > 0 && maxR < minR) maxR = 0;
     return [
@@ -2158,6 +2284,7 @@ for c, components in enumerate(((z,z,t,value,value,q), (t,value,value,q,z,z), (v
   } },
 
   white_balance: { needs: "any", out: "color", gen: (p, ctx) => {
+    if (p.method === "pca") return guarded5A(color5EPy("pca",p,isMirrored(ctx)));
     const lines = [];
     // IP batch 4A — White Patch / จุดอ้างอิง (ลำดับช่อง: แอป R,G,B ↔ cv2 B,G,R เมื่อ isMirrored) · Gray World / ค่าแปลก = บรรทัดเดิมทุกตัวอักษร
     if (p.method === "white_patch" || p.method === "ref_point") {
@@ -3179,7 +3306,8 @@ for c, components in enumerate(((z,z,t,value,value,q), (t,value,value,q,z,z), (v
   } },
 
   // delta_e: 2 ภาพ (img_b มาจากสาย B) · เช็ค .ndim ตอนรัน · Lab float32 ผ่าน astype(float32) / 255 (ตรงกับ convertTo(1/255) ของแอป) · ผลรวมด้วย cumsum (ลำดับเดียวกับแอป)
-  delta_e: { needs: "any", out: "gray", gen: (p, ctx) => {
+  delta_e: { needs: "any", out: "gray", grayMayPass5E: p => p.formula === "angle", gen: (p, ctx) => {
+    if (p.formula === "angle") return guarded5A(["if img_b is None or img_b.size == 0:", "    print('missing or empty B: passthrough')", "else:", ...angle5EPy(p,ctx).map(s=>"    "+s)]);
     const ciede = p.formula === "ciede2000";
     const cie94 = p.formula === "cie94";
     const meanB = p.compare === "mean_b";
@@ -3732,6 +3860,7 @@ else:
   } },
 
   colorspace_inverse: { needs: "any", out: "color", bgrChannelOrder: true, gen: (p, ctx) => {
+    if (p.space === "yiq") return guarded5A(color5EPy("yiq_inverse",p,isMirrored(ctx)));
     const code = pickOwn({ hsv: "HSV", hls: "HLS", lab: "Lab", ycrcb: "YCrCb", xyz: "XYZ", luv: "Luv", yuv: "YUV" }, p.space, "hsv");
     return guarded5A([
       "if img.ndim == 2:",
@@ -4109,14 +4238,15 @@ function appOnlyHeader(appOnly) {
 // PF_PY_SOURCES = ตัวที่ gen โค้ด snapshot ให้ได้ (ที่เหลือ: metric ตรงกับ op นั้นแต่ Python ยังไม่รองรับ = คำเตือน)
 // ข้อจำกัดที่รู้ (ยอมรับ): template_matching (ไม่มี template / ใหญ่เกินภาพ) และ psnr/ssim (ไม่ได้ต่อ B) แอปคืนภาพโดยไม่มี values แต่ที่นี่ยังนับเป็น
 // "กล่องวัดล่าสุด" เสมอ — ผลคือ Python ตัดสิน NG (กล่องผิดชนิด) ในกรณีที่แอปจะใช้ค่าของกล่องวัดก่อนหน้า · เอนเอียงไปทาง NG (fail-safe)
-export const PF_VALUE_OPS = new Set(["image_stats", "corr2", "regionprops", "template_matching", "psnr", "ssim", "mog2", "farneback_optical_flow", "pyrlk_optical_flow", "feret",
+export const PF_VALUE_OPS = new Set(["select_object", "image_stats", "corr2", "regionprops", "template_matching", "psnr", "ssim", "mog2", "farneback_optical_flow", "pyrlk_optical_flow", "feret",
   "line_profile", "shape_filter", "roi_polygon", "slic", "focus_score", "delta_e", "roi_apply", "ecc_register", "gabor_filter", "glcm", "dehaze", "dct_jpeg", "watershed_marker", "seg_score", "bf_score", "euler_number", "image_pyramid", "frangi_vesselness", "piqe"]);
-const PF_PY_SOURCES = { image_stats: true, corr2: true, regionprops: true, roi_polygon: true, focus_score: true, seg_score: true, bf_score: true, piqe: true };
+const PF_PY_SOURCES = { select_object: true, image_stats: true, corr2: true, regionprops: true, roi_polygon: true, focus_score: true, seg_score: true, bf_score: true, piqe: true };
 // บรรทัดท้ายขั้นวัด: เก็บค่าที่ pass_fail ต้องใช้ลง `pf_up` ทันที (ตัวแปรของขั้นวัดอาจถูกทับโดยขั้นถัดไป) · เรียกเมื่อ pipeline มี pass_fail เท่านั้น
 function pfSnapshotLines(opId, local, ctx) {
   if (!PF_VALUE_OPS.has(opId)) return [];
   ctx.pfSource = opId;
   if (opId === "image_stats") return ["pf_up = {'mean': stats_mean, 'std': stats_std, 'entropy': stats_entropy}  # ค่าให้ขั้น Pass / Fail"];
+  if (opId === "select_object") return ["pf_up = {'value': area5e}  # selected object area"];
   if (opId === "corr2") return ["pf_up = {'value': corr2_value}  # ค่าให้ขั้น Pass / Fail"];
   if (opId === "regionprops") {
     // พื้นที่ = area_mm2 เมื่อ มม./px > 0 (สูตรเดียวกับ mmValue: area_px × (f×f)) ไม่งั้น area_px · แถวที่ถูกจำกัดด้วย maxObjects เท่านั้น
@@ -4179,18 +4309,18 @@ export function buildPythonCode(pipeline, opts = {}) {
     stepNo++;
     // แปลงเป็นขาวดำอัตโนมัติถ้า op ต้องการ (เหมือนที่แอปทำให้เบื้องหลัง)
     if (g.needs === "gray" && !ctx.gray) {
-      body.push(`img = cv2.cvtColor(img, ${pyGrayCode(ctx)})  # (แปลงขาวดำอัตโนมัติ)`);
+      if (ctx.grayUnknown5E) body.push("if img.ndim == 3:", `    img = cv2.cvtColor(img, ${pyGrayCode(ctx)})`);
+      else body.push(`img = cv2.cvtColor(img, ${pyGrayCode(ctx)})  # (แปลงขาวดำอัตโนมัติ)`);
       ctx.gray = true;
+      ctx.grayUnknown5E = false;
       ctx.mirrored = true;
     }
     body.push(`# ── ขั้นที่ ${stepNo}: ${thaiName(opId)} (${opId}) ──`);
     if (TEACH[opId]) body.push(`# ${TEACH[opId]}`);
-    for (const line of g.gen(local, ctx)) body.push(line);
+    for (const line of generate5E(g, local, ctx)) body.push(line);
     if (hasPf) body.push(...pfSnapshotLines(opId, local, ctx));
     // อัปเดตสถานะภาพ (ขาวดำ/สี)
-    const out = g.outOf ? g.outOf(local) : g.out;
-    if (out === "gray") ctx.gray = true;
-    else if (out === "color") ctx.gray = false;
+    trackGray5E(g, local, ctx);
     // อัปเดตลำดับช่องสี (ดูคอมเมนต์ ctx.mirrored เหนือ GEN): Color Space → เรียงเหมือนแอป · ได้ภาพขาวดำ → BGR อีกครั้ง
     if (g.appChannelOrder) ctx.mirrored = false;
     else if (g.bgrChannelOrder) ctx.mirrored = true;
@@ -4216,7 +4346,7 @@ if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
 
-def process(path):
+${jacobiHelper5E(body)}def process(path):
     img = cv2.imread(path)  # อ่านภาพ (BGR)
     if img is None:
         raise FileNotFoundError(path)
@@ -4251,6 +4381,33 @@ if __name__ == "__main__":
 const bImageVar = (depth) => (depth <= 1 ? "img_b" : `img_b${depth}`);
 // PIQE lives in a two-input category but measures A alone, even when B is connected.
 const usesSecondImage = (step) => FILTERS[step.id]?.inputs === 2 && OPS[resolveOp(step).opId]?.usesSrc2 !== false;
+// Reconstruction/angle may pass through a color A when connected B is empty.
+// Keep the actual dimensionality until a consumer needs it; promoting all gray
+// results here would change gray-aware operations such as YIQ inverse/decorrstretch.
+function generate5E(g, p, ctx) {
+  if (!ctx.grayUnknown5E) return g.gen(p, ctx);
+  const gray = g.gen(p, { ...ctx, gray: true, grayUnknown5E: false });
+  const color = g.gen(p, { ...ctx, gray: false, grayUnknown5E: false });
+  // Runtime-aware kernels already handle both shapes. Emit their common body once.
+  if (gray.length === color.length && gray.every((line, i) => line === color[i])) return gray;
+  const branch = lines => [...lines, "pass"].map(s => s ? "    " + s : "");
+  return ["if img.ndim == 2:", ...branch(gray), "else:", ...branch(color)];
+}
+function jacobiHelper5E(body) {
+  return body.some(line => line.includes("jacobi5e(")) ? jacobi5EPy().join("\n") + "\n\n\n" : "";
+}
+function trackGray5E(g, p, ctx) {
+  if (g.grayMayPass5E?.(p)) {
+    ctx.gray = false;
+    ctx.grayUnknown5E = true;
+    return;
+  }
+  const out = g.outOf ? g.outOf(p) : g.out;
+  if (out === "gray" || out === "color") {
+    ctx.gray = out === "gray";
+    ctx.grayUnknown5E = false;
+  }
+}
 function trackOrder5B(g, p, ctx) {
   if (g.appChannelOrder) ctx.mirrored5B = false;
   else if (g.bgrChannelOrder || ctx.gray || (g.grayOutOf && g.grayOutOf(p))) ctx.mirrored5B = true;
@@ -4287,14 +4444,14 @@ function emitBChain(step, depth, body, appOnly) {
       ctxB.src2Mirrored = emitBChain(s2, depth + 1, body, appOnly);
     }
     if (g2.needs === "gray" && !ctxB.gray) {
-      body.push(`${w} = cv2.cvtColor(${w}, ${pyGrayCode(ctxB)})`);
+      if (ctxB.grayUnknown5E) body.push(`if ${w}.ndim == 3:`, `    ${w} = cv2.cvtColor(${w}, ${pyGrayCode(ctxB)})`);
+      else body.push(`${w} = cv2.cvtColor(${w}, ${pyGrayCode(ctxB)})`);
       ctxB.gray = true;
+      ctxB.grayUnknown5E = false;
       ctxB.mirrored5B = true;
     }
-    for (const line of g2.gen(r2.local, ctxB)) body.push(line.replace(/\bimg_b\b|\bimg\b/g, (t) => (t === "img" ? w : second)));
-    const out2 = g2.outOf ? g2.outOf(r2.local) : g2.out;
-    if (out2 === "gray") ctxB.gray = true;
-    else if (out2 === "color") ctxB.gray = false;
+    for (const line of generate5E(g2, r2.local, ctxB)) body.push(line.replace(/\bimg_b\b|\bimg\b/g, (t) => (t === "img" ? w : second)));
+    trackGray5E(g2, r2.local, ctxB);
     trackOrder5B(g2, r2.local, ctxB);
   }
   return ctxB.mirrored5B !== false;
@@ -4337,17 +4494,17 @@ function buildPythonCode2Image(pipeline, opts = {}) {
       ctxA.src2Mirrored = emitBChain(step, 0, bodyA, appOnly);
     }
     if (g.needs === "gray" && !ctxA.gray) {
-      bodyA.push(`img = cv2.cvtColor(img, ${pyGrayCode(ctxA)})  # (แปลงขาวดำอัตโนมัติ)`);
+      if (ctxA.grayUnknown5E) bodyA.push("if img.ndim == 3:", `    img = cv2.cvtColor(img, ${pyGrayCode(ctxA)})`);
+      else bodyA.push(`img = cv2.cvtColor(img, ${pyGrayCode(ctxA)})  # (แปลงขาวดำอัตโนมัติ)`);
       ctxA.gray = true;
+      ctxA.grayUnknown5E = false;
       ctxA.mirrored5B = true;
     }
     bodyA.push(`# ── ขั้นที่ ${stepNo}: ${thaiName(opId)} (${opId}) ──`);
     if (TEACH[opId]) bodyA.push(`# ${TEACH[opId]}`);
-    for (const line of g.gen(local, ctxA)) bodyA.push(line);
+    for (const line of generate5E(g, local, ctxA)) bodyA.push(line);
     if (hasPf) bodyA.push(...pfSnapshotLines(opId, local, ctxA));
-    const out = g.outOf ? g.outOf(local) : g.out;
-    if (out === "gray") ctxA.gray = true;
-    else if (out === "color") ctxA.gray = false;
+    trackGray5E(g, local, ctxA);
     trackOrder5B(g, local, ctxA);
     bodyA.push("");
   }
@@ -4368,7 +4525,7 @@ if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
 
-def process(path_a, path_b):
+${jacobiHelper5E(bodyA)}def process(path_a, path_b):
     img = cv2.imread(path_a)    # ภาพหลัก (Src A)
     img_b = cv2.imread(path_b)  # ภาพที่สอง (Src B)
     if img is None or img_b is None:

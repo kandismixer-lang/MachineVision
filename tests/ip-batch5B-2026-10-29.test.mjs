@@ -95,7 +95,7 @@ function texture(w = 128, h = 128) {
 }
 
 test("ip5b-S. five registered tools, exact defaults/ranges, placement, visibility, Thai metadata and values sources", () => {
-  const placements = [["image_pyramid", "geometry", "resize"], ["frangi_vesselness", "segment_edge", "log_edge"], ["anisotropic_diffusion", "filter_denoise", "guided_filter"], ["debayer", "color_tools", "colorspace_inverse"], ["bf_score", "image_quality", "seg_score"], ["corr2", "image_quality", "bf_score"], ["piqe", "image_quality", "corr2"]];
+  const placements = [["image_pyramid", "geometry", "resize"], ["frangi_vesselness", "segment_edge", "log_edge"], ["anisotropic_diffusion", "filter_denoise", "guided_filter"], ["debayer", "color_tools", "srgb_linear"], ["bf_score", "image_quality", "seg_score"], ["corr2", "image_quality", "bf_score"], ["piqe", "image_quality", "corr2"]];
   for (const [id, host, after] of placements) {
     assert.ok(OPS[id], id + " must be registered");
     assert.equal(OP_TO_FILTER[id], host);
@@ -649,7 +649,7 @@ test("ip5b-G. 550 pre-edit cases retain pixels, info, values and Python except a
         if (!OPS[id] || !oldIds.includes(id)) continue;
         const defs = Object.fromEntries(OPS[id].params.map(q => [q.key, q.default]));
         const variants = [{}];
-        for (const q of OPS[id].params.filter(q => q.type === 'select')) for (const {value} of q.options.filter(o => !['cie94'].includes(o.value))) if (value !== q.default) variants.push({[q.key]: value});
+        for (const q of OPS[id].params.filter(q => q.type === 'select')) for (const {value} of q.options.filter(o => !['cie94','angle','yiq','pca'].includes(o.value))) if (value !== q.default) variants.push({[q.key]: value});
         for (const extra of variants) {
           const local = {...defs, ...extra};
           const params = {mode: id, ...Object.fromEntries(Object.entries(local).map(([k,v]) => [id + '__' + k,v]))};

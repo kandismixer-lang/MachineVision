@@ -116,8 +116,9 @@ const RULES = {
   morphology: { controllers: ['op', 'shape'], conditional: {
     shape: (l) => BASIC.includes(l.op),
     ksize: (l) => [...BASIC, 'reconstruct_open'].includes(l.op),
-    iterations: (l) => [...BASIC, 'reconstruct_open', 'majority', 'spur', 'thin', 'shrink'].includes(l.op),
+    iterations: (l) => [...BASIC, 'reconstruct_open', 'majority', 'spur', 'thin', 'shrink', 'thicken'].includes(l.op),
     lineAngle: (l) => BASIC.includes(l.op) && l.shape === 'line',
+    perimConn: (l) => l.op === 'perimeter',
     minArea: (l) => l.op === 'remove_small',
     hmPattern: (l) => l.op === 'hit_or_miss',
     hmRotate: (l) => l.op === 'hit_or_miss',
@@ -132,7 +133,7 @@ const RULES = {
     psfSize: (l) => l.preset === 'motion' || l.preset === 'disk',
     psfAngle: (l) => l.preset === 'motion',
   } },
-  white_balance: { controllers: ['method'], conditional: { refX: (l) => l.method === 'ref_point', refY: (l) => l.method === 'ref_point', refSize: (l) => l.method === 'ref_point' } },
+  white_balance: { controllers: ['method'], conditional: { pcaPercent: (l) => l.method === 'pca', refX: (l) => l.method === 'ref_point', refY: (l) => l.method === 'ref_point', refSize: (l) => l.method === 'ref_point' } },
   fft_filter: { controllers: ['shape'], conditional: { order: (l) => l.shape === 'butterworth' } },
   bandpass_notch: { controllers: ['kind'], conditional: {
     rIn: (l) => l.kind !== 'notch', rOut: (l) => l.kind !== 'notch', nx: (l) => l.kind === 'notch', ny: (l) => l.kind === 'notch', nr: (l) => l.kind === 'notch',
@@ -220,12 +221,14 @@ test('pv-03 R1 โครงสร้าง: visibleWhen ทุกตัวอ้
 test('pv-04 R1 defaultParams ของทุก filter (key ลำดับ + ค่า) เท่ากับก่อนแก้ทุกตัว (hash จาก HEAD 4c4f354)', () => {
   const snap = {};
   // P-8 เพิ่ม op pass_fail (key pass_fail__*) ใน analysis_detect — ตัดออกก่อน hash เพื่อให้ hash เดิมยังล็อกทุก param เดิมเหมือนเดิม
-  const added5A = ['watershed_marker__', 'lowlight_enhance__', 'colorspace_inverse__', 'euler_number__', 'image_pyramid__', 'frangi_vesselness__', 'anisotropic_diffusion__', 'debayer__', 'bf_score__', 'local_contrast__', 'mask_overlay__', 'shape_filter__keepN', 'shape_filter__keepRank', 'rank_filter__', 'custom_lut__', 'image_stats__', 'corr2__', 'gradient_dir__', 'hough_lines__view', 'find_contours__simplify'];
+  const added5A = ['watershed_marker__', 'lowlight_enhance__', 'colorspace_inverse__', 'euler_number__', 'image_pyramid__', 'frangi_vesselness__', 'anisotropic_diffusion__', 'debayer__', 'bf_score__', 'local_contrast__', 'mask_overlay__', 'shape_filter__keepN', 'shape_filter__keepRank', 'rank_filter__', 'custom_lut__', 'image_stats__', 'corr2__', 'gradient_dir__', 'hough_lines__view', 'find_contours__simplify', 'srgb_linear__', 'color_matrix__', 'decorrstretch__', 'reconstruct__', 'select_object__', 'perimConn', 'white_balance__pcaPercent', 'hough_circles__view'];
   const old = (k) => !k.startsWith('pass_fail__') && !added5A.some((prefix) => k.startsWith(prefix));
   for (const id of Object.keys(FILTERS)) {
     if (id === 'morph_tools' || id === 'image_registration') continue; // image_registration (2026-10-24) ล็อกใน tests/category-merge.test.mjs // 2026-10-18: กลุ่มใหม่ (Morphology แยกเครื่องมือ) — hash นี้ล็อกเฉพาะ filter เดิมทั้ง 33 ตัว · morph_tools ล็อกใน tests/morph-split.test.mjs
     const d = defaultParams(id);
-    snap[id] = { keys: FILTERS[id].params.map((p) => p.key).filter(old), defaults: Object.fromEntries(Object.entries(d).filter(([k]) => old(k))) };
+    // R2 adds alternate angle-only wording for the same stored tol/scaleMax keys.
+    const legacyParams = FILTERS[id].params.filter(p => !p.visibleWhen?.some(c => c.key === 'delta_e__formula' && c.in?.includes('angle')));
+    snap[id] = { keys: legacyParams.map((p) => p.key).filter(old), defaults: Object.fromEntries(Object.entries(d).filter(([k]) => old(k))) };
   }
   const h = crypto.createHash('sha256').update(JSON.stringify(snap)).digest('hex');
   assert.equal(Object.keys(snap).length, 33);

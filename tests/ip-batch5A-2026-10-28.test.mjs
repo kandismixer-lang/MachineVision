@@ -141,7 +141,7 @@ test("ip5a-S1. registration, placement, shared inverse options, params, groups, 
   after("SEGMENTATION & EDGE", "watershed", "watershed_marker");
   after("ANALYSIS & DETECTION", "regionprops", "euler_number");
   for (const [a, b] of [["remove_small", "clean"], ["clean", "majority"], ["skeleton", "spur"], ["spur", "thin"], ["thin", "shrink"], ["h_maxima", "h_minima"], ["extended_max", "extended_min"]]) after("MORPHOLOGY", "morph_" + a, "morph_" + b);
-  assert.deepEqual(OPS.morphology.params[0].options.map((o) => o.value), [...OLD_MORPH, ...MORPH, "ult_erode"]);
+  assert.deepEqual(OPS.morphology.params[0].options.map((o) => o.value), [...OLD_MORPH, ...MORPH, "ult_erode", "perimeter", "thicken", "keep_border"]);
   assert.equal(FILTERS.image_quality.inputs, 2);
   for (const id of ["watershed_marker", "seg_score", "euler_number"]) assert.ok(PF_VALUE_OPS.has(id));
   assert.ok(!PF_VALUE_OPS.has("lowlight_enhance"));
@@ -315,7 +315,7 @@ test("ip5a-inverse. every forward/inverse color pair, measured full-range and in
       let max = 0;
       for (let i = 0; i < x.data.length; i++) max = Math.max(max, Math.abs(x.data[i] - out.data[i]));
       (measured[x === src ? "full" : "interior"] ||= {})[space] = max;
-      assert.ok(max <= { hsv: 5, hls: 5, lab: 24, ycrcb: 2, xyz: 24, luv: 30, yuv: 40 }[space], space + " max " + max);
+      assert.ok(max <= { hsv: 5, hls: 5, lab: 24, ycrcb: 2, xyz: 24, luv: 30, yuv: 40, yiq: 2 }[space], space + " max " + max);
       enc.delete();
       out.delete();
     }
@@ -698,7 +698,7 @@ test("ip5a-G. 99 pre-edit goldens: dehaze, all 19 old morphology operations, all
     }), g = new cv.Mat();
     cv.cvtColor(c, g, cv.COLOR_RGB2GRAY);
     const jobs = OLD_MORPH.map((op) => ["morphology", { op }]);
-    for (const { value: space } of OPS.colorspace.params[0].options) jobs.push(["colorspace", { space }]);
+    for (const { value: space } of OPS.colorspace.params[0].options.filter(o=>o.value!=="yiq")) jobs.push(["colorspace", { space }]);
     for (const refine of [true, false]) for (const view of ["result", "dark", "transmission"]) jobs.push(["dehaze", { refine, view }]);
     jobs.push(["watershed", {}]);
     for (const [id, extra] of jobs) {
