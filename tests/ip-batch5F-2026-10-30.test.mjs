@@ -30,6 +30,24 @@ function same(a, b) {
   assert.deepEqual([a.cols, a.rows, a.channels()], [b.cols, b.rows, b.channels()]);
   assert.deepEqual(Buffer.from(a.data), Buffer.from(b.data));
 }
+function exactLaplaceRect(data,w,h,ch,x0,x1,y0,y1) {
+  const values=Float64Array.from(data),mask=new Uint8Array(w*h),border=new Uint8Array(w*h);
+  for(let y=y0;y<y1;y++)for(let x=x0;x<x1;x++)mask[y*w+x]=1;
+  for(let y=y0;y<y1;y++)for(let x=x0;x<x1;x++)for(const [xx,yy] of [[x,y-1],[x,y+1],[x-1,y],[x+1,y]])if(!mask[yy*w+xx])border[yy*w+xx]=1;
+  const sums=new Float64Array(ch);let count=0;
+  for(let i=0;i<border.length;i++)if(border[i]){count++;for(let c=0;c<ch;c++)sums[c]+=data[i*ch+c];}
+  for(let i=0;i<mask.length;i++)if(mask[i])for(let c=0;c<ch;c++)values[i*ch+c]=sums[c]/count;
+  const omega=2/(1+Math.sin(Math.PI/(Math.max(x1-x0,y1-y0)+1)));
+  for(let sweep=0;sweep<20000;sweep++){
+    let change=0;
+    for(let parity=0;parity<2;parity++)for(let y=y0;y<y1;y++)for(let x=x0;x<x1;x++)if(((x+y)&1)===parity)for(let c=0;c<ch;c++){
+      const i=(y*w+x)*ch+c;let sum=values[i-w*ch];sum+=values[i+w*ch];sum+=values[i-ch];sum+=values[i+ch];
+      const old=values[i],next=old+omega*(sum/4-old);change=Math.max(change,Math.abs(next-old));values[i]=next;
+    }
+    if(change<1e-8)break;
+  }
+  return values;
+}
 const LEGACY = {"filter_denoise":["salt_pepper_noise","gaussian_noise","median_blur","rank_filter","gaussian_blur","box_blur","bilateral","wiener_filter","guided_filter","anisotropic_diffusion","nlm_denoise","deconv_wiener","deconv_lucy"],"segment_edge":["binary_threshold","otsu_threshold","adaptive_threshold","multi_otsu_threshold","canny","sobel","gradient_dir","laplacian_edge","scharr_edge","prewitt_edge","roberts_edge","log_edge","frangi_vesselness","watershed","watershed_marker","grabcut","region_growing"],"enhance_tools":["brightness_contrast","gamma","custom_lut","hist_equalize","clahe","contrast_stretch","flatfield_correction","quantize","unsharp","laplacian_sharpen","custom_kernel","dehaze","lowlight_enhance","local_contrast"],"image_quality":["psnr","ssim","delta_e","seg_score","bf_score","corr2","piqe"],"image_arithmetic":["imabsdiff","imfuse","mask","mask_overlay","reconstruct","imarith","logical_ops","inpaint","hist_match","roi_apply"]};
 const LEGACY_PARAMS = {"salt_pepper_noise":[{"key":"amount","type":"number","default":5}],"gaussian_noise":[{"key":"sigma","type":"number","default":20},{"key":"seed","type":"number","default":1},{"key":"kind","type":"select","default":"additive","options":[{"value":"additive"},{"value":"speckle"}]}],"median_blur":[{"key":"ksize","type":"number","default":3}],"rank_filter":[{"key":"mode","type":"select","default":"percentile","options":[{"value":"percentile"},{"value":"min"},{"value":"max"},{"value":"range"},{"value":"mode"}]},{"key":"percentile","type":"number","default":50},{"key":"size","type":"number","default":3}],"gaussian_blur":[{"key":"ksize","type":"number","default":5}],"box_blur":[{"key":"ksize","type":"number","default":5}],"bilateral":[{"key":"d","type":"number","default":7},{"key":"sigmaColor","type":"number","default":75},{"key":"sigmaSpace","type":"number","default":75}],"wiener_filter":[{"key":"ksize","type":"number","default":5},{"key":"noiseVar","type":"number","default":0}],"guided_filter":[{"key":"radius","type":"number","default":2},{"key":"eps","type":"number","default":0.01}],"anisotropic_diffusion":[{"key":"iterations","type":"number","default":10},{"key":"kappa","type":"number","default":20},{"key":"conduction","type":"select","default":"exponential","options":[{"value":"exponential"},{"value":"quadratic"}]}],"nlm_denoise":[{"key":"h","type":"number","default":10},{"key":"patch","type":"select","default":"5","options":[{"value":"3"},{"value":"5"},{"value":"7"}]},{"key":"search","type":"select","default":"11","options":[{"value":"7"},{"value":"11"},{"value":"15"}]}],"deconv_wiener":[{"key":"psf","type":"select","default":"motion","options":[{"value":"motion"},{"value":"disk"}]},{"key":"psfSize","type":"number","default":9},{"key":"psfAngle","type":"number","default":0},{"key":"nsr","type":"number","default":0.01}],"deconv_lucy":[{"key":"psf","type":"select","default":"motion","options":[{"value":"motion"},{"value":"disk"}]},{"key":"psfSize","type":"number","default":9},{"key":"psfAngle","type":"number","default":0},{"key":"iterations","type":"number","default":10}],"binary_threshold":[{"key":"thresh","type":"number","default":127},{"key":"invert","type":"boolean","default":false}],"otsu_threshold":[{"key":"invert","type":"boolean","default":false},{"key":"method","type":"select","default":"otsu","options":[{"value":"otsu"},{"value":"triangle"}]}],"adaptive_threshold":[{"key":"blockSize","type":"number","default":11},{"key":"C","type":"number","default":2}],"multi_otsu_threshold":[],"canny":[{"key":"t1","type":"number","default":50},{"key":"t2","type":"number","default":150}],"sobel":[{"key":"dir","type":"select","default":"both","options":[{"value":"x"},{"value":"y"},{"value":"both"}]},{"key":"ksize","type":"number","default":3}],"gradient_dir":[{"key":"method","type":"select","default":"sobel","options":[{"value":"sobel"},{"value":"prewitt"},{"value":"central"},{"value":"intermediate"},{"value":"roberts"}]},{"key":"view","type":"select","default":"magnitude","options":[{"value":"magnitude"},{"value":"direction"},{"value":"direction_gray"}]}],"laplacian_edge":[{"key":"ksize","type":"number","default":3}],"scharr_edge":[{"key":"dir","type":"select","default":"both","options":[{"value":"x"},{"value":"y"},{"value":"both"}]}],"prewitt_edge":[{"key":"dir","type":"select","default":"both","options":[{"value":"x"},{"value":"y"},{"value":"both"}]}],"roberts_edge":[{"key":"dir","type":"select","default":"both","options":[{"value":"d1"},{"value":"d2"},{"value":"both"}]}],"log_edge":[{"key":"sigma","type":"number","default":2},{"key":"zeroThresh","type":"number","default":8},{"key":"view","type":"select","default":"zerocross","options":[{"value":"zerocross"},{"value":"response"}]}],"frangi_vesselness":[{"key":"polarity","type":"select","default":"bright","options":[{"value":"bright"},{"value":"dark"}]},{"key":"sigmaMin","type":"number","default":1},{"key":"sigmaMax","type":"number","default":3},{"key":"beta","type":"number","default":0.5}],"watershed":[{"key":"ratio","type":"number","default":0.5}],"watershed_marker":[{"key":"polarity","type":"select","default":"dark","options":[{"value":"dark"},{"value":"bright"}]},{"key":"hHeight","type":"number","default":2},{"key":"view","type":"select","default":"boundaries","options":[{"value":"boundaries"},{"value":"labels"}]}],"grabcut":[{"key":"margin","type":"number","default":12},{"key":"iter","type":"number","default":2},{"key":"output","type":"select","default":"extract","options":[{"value":"extract"},{"value":"mask"}]}],"region_growing":[{"key":"seedX","type":"number","default":50},{"key":"seedY","type":"number","default":50},{"key":"tolerance","type":"number","default":12},{"key":"rangeMode","type":"select","default":"fixed","options":[{"value":"fixed"},{"value":"floating"}]},{"key":"view","type":"select","default":"mask","options":[{"value":"mask"},{"value":"overlay"}]}],"brightness_contrast":[{"key":"alpha","type":"number","default":1.2},{"key":"beta","type":"number","default":0}],"gamma":[{"key":"g","type":"number","default":1.5},{"key":"curve","type":"select","default":"power","options":[{"value":"power"},{"value":"log"}]}],"custom_lut":[{"key":"out0","type":"number","default":0},{"key":"in1","type":"number","default":64},{"key":"out1","type":"number","default":64},{"key":"in2","type":"number","default":128},{"key":"out2","type":"number","default":128},{"key":"in3","type":"number","default":192},{"key":"out3","type":"number","default":192},{"key":"out255","type":"number","default":255},{"key":"view","type":"select","default":"result","options":[{"value":"result"},{"value":"curve"}]}],"hist_equalize":[],"clahe":[{"key":"clip","type":"number","default":2},{"key":"tile","type":"number","default":8}],"contrast_stretch":[{"key":"lowPct","type":"number","default":1},{"key":"highPct","type":"number","default":1}],"flatfield_correction":[{"key":"blurSize","type":"number","default":121}],"quantize":[{"key":"levels","type":"number","default":4}],"unsharp":[{"key":"amount","type":"number","default":1},{"key":"radius","type":"number","default":5}],"laplacian_sharpen":[{"key":"strength","type":"number","default":1}],"custom_kernel":[{"key":"preset","type":"select","default":"sharpen","options":[{"value":"identity"},{"value":"sharpen"},{"value":"edge"},{"value":"emboss"},{"value":"outline"},{"value":"box3"},{"value":"box5"},{"value":"motion"},{"value":"disk"}]},{"key":"amount","type":"number","default":1},{"key":"psfSize","type":"number","default":9},{"key":"psfAngle","type":"number","default":0}],"dehaze":[{"key":"amount","type":"number","default":0.95},{"key":"patch","type":"number","default":15},{"key":"refine","type":"boolean","default":true},{"key":"view","type":"select","default":"result","options":[{"value":"result"},{"value":"transmission"},{"value":"dark"}]}],"lowlight_enhance":[{"key":"amount","type":"number","default":1},{"key":"patch","type":"number","default":15},{"key":"refine","type":"boolean","default":true},{"key":"alphaBlend","type":"boolean","default":false}],"local_contrast":[{"key":"edgeThreshold","type":"number","default":0.3},{"key":"amount","type":"number","default":0.5}],"psnr":[],"ssim":[{"key":"speed","type":"select","default":"full","options":[{"value":"full"},{"value":"fast"}]}],"delta_e":[{"key":"formula","type":"select","default":"cie76","options":[{"value":"cie76"},{"value":"ciede2000"},{"value":"cie94"},{"value":"angle"}]},{"key":"compare","type":"select","default":"pixel","options":[{"value":"pixel"},{"value":"mean_b"}]},{"key":"tol","type":"number","default":2.3},{"key":"tol","type":"number","default":2.3},{"key":"scaleMax","type":"number","default":20},{"key":"scaleMax","type":"number","default":20},{"key":"view","type":"select","default":"heatmap","options":[{"value":"heatmap"},{"value":"over"}]}],"seg_score":[],"bf_score":[{"key":"tolPct","type":"number","default":0.75}],"corr2":[],"piqe":[],"imabsdiff":[],"imfuse":[{"key":"mode","type":"select","default":"blend","options":[{"value":"blend"},{"value":"checkerboard"}]},{"key":"alpha","type":"number","default":50},{"key":"tileSize","type":"number","default":32}],"mask":[{"key":"invert","type":"boolean","default":false}],"mask_overlay":[{"key":"style","type":"select","default":"fill","options":[{"value":"fill"},{"value":"labels"},{"value":"outline"}]},{"key":"color","type":"select","default":"red","options":[{"value":"red"},{"value":"green"},{"value":"blue"},{"value":"yellow"},{"value":"cyan"},{"value":"magenta"}]},{"key":"opacity","type":"number","default":50},{"key":"thickness","type":"number","default":2}],"reconstruct":[],"imarith":[{"key":"operation","type":"select","default":"add","options":[{"value":"add"},{"value":"subtract"},{"value":"multiply"},{"value":"divide"}]}],"logical_ops":[{"key":"operation","type":"select","default":"and","options":[{"value":"and"},{"value":"or"},{"value":"xor"},{"value":"a_and_not_b"}]}],"inpaint":[{"key":"method","type":"select","default":"telea","options":[{"value":"telea"},{"value":"ns"}]},{"key":"radius","type":"number","default":3}],"hist_match":[],"roi_apply":[{"key":"shape","type":"select","default":"rect","options":[{"value":"rect"},{"value":"ellipse"}]},{"key":"x","type":"number","default":25},{"key":"y","type":"number","default":25},{"key":"w","type":"number","default":50},{"key":"h","type":"number","default":50},{"key":"invert","type":"boolean","default":false},{"key":"feather","type":"number","default":0},{"key":"view","type":"select","default":"result","options":[{"value":"result"},{"value":"outline"}]}]};
 test('ip5f-G: 650 clean-tree host cases preserve pixels, info, values and Python bytes', () => {
@@ -118,10 +136,33 @@ test('ip5f-laplace: 80x80 and budgeted 240x180 holes converge with the coarse so
     const src=image(w,h,x=>x,1),mask=image(w,h,(x,y)=>x>=x0&&x<x1&&y>=y0&&y<y1?255:0,1),ctx={src2:mask};
     try{const out=run('inpaint',src,{method:'laplace'},ctx);try{
       assert.match(ctx.info,/หยุดเมื่อนิ่ง/);
-      if(w===240)assert.match(ctx.info,/ภาพใหญ่ จึงลดเหลือ/);
+      if(w===240)assert.doesNotMatch(ctx.info,/ภาพใหญ่ จึงลดเหลือ/);
       for(let y=y0;y<y1;y++)for(let x=x0;x<x1;x++)assert.ok(Math.abs(out.data[y*w+x]-x)<=1,`${w}x${h} harmonic pixel ${x},${y}`);
     }finally{out.delete();}}finally{src.delete();mask.delete();}
   }
+});
+test('ip5f-laplace: coarse-to-fine stays within two levels of the exact large-hole solve',()=>{
+  const w=640,h=480,x0=200,x1=440,y0=150,y1=330,hole=(x1-x0)*(y1-y0);
+  for(const ch of [1,3]){
+    const data=new Uint8Array(w*h*ch),mask=new Uint8Array(w*h);
+    for(let y=0;y<h;y++)for(let x=0;x<w;x++){
+      const v=((x*37+y*19+x*y*3)^(x*17+y*23))&255,i=(y*w+x)*ch;
+      for(let c=0;c<ch;c++)data[i+c]=(v+c*71+x*c*3+y*c*5)&255;
+      if(x>=x0&&x<x1&&y>=y0&&y<y1)mask[y*w+x]=1;
+    }
+    const budget=Math.min(5000,Math.max(1,Math.floor(w*h*3*20/(hole*ch))));
+    const got=laplace5F(data,w,h,ch,mask,budget).data,exact=exactLaplaceRect(data,w,h,ch,x0,x1,y0,y1);
+    let max=0;
+    for(let i=0;i<mask.length;i++)if(mask[i])for(let c=0;c<ch;c++)max=Math.max(max,Math.abs(got[i*ch+c]-Math.floor(exact[i*ch+c]+.5)));
+    assert.ok(max<=2,`${ch===1?'gray':'RGB'} large-hole maximum error ${max}`);
+  }
+});
+test('ip5f-laplace: Python caches parity coordinates and neighbour counts outside sweeps',()=>{
+  const st=step('inpaint',{method:'laplace'});st.src2={pipeline:[]};
+  const code=buildPythonCode([st]),solve=code.slice(code.indexOf('def solve5f'),code.indexOf('hierarchy5f ='));
+  assert.match(code,/red5f/);assert.match(code,/black5f/);assert.match(code,/redn5f/);assert.match(code,/blackn5f/);
+  assert.match(code,/values\[mask\]\s*=\s*mean/);
+  assert.doesNotMatch(solve,/np\.nonzero/);
 });
 test('ip5f-local-laplacian: identity short circuit and beta changes large contrast',()=>{
   const src=image(35,29,(x,y)=>x<17?[20,30,40]:[220,200,180]);try{
@@ -140,6 +181,7 @@ test('ip5f-multissim: identical, flat luminance difference, adaptive scales and 
 test('ip5f-fusion: identical exposures, zero weights give their mean, B is optional',()=>{
   const a=image(33,27,(x,y)=>[x*6,y*8,80]),b=image(33,27,(x,y)=>[x*6+20,y*8+20,120]);try{
     const out=run('exposure_fusion',a,{}, {src2:a});try{same(out,a);}finally{out.delete();}
+    const defaultOut=run('exposure_fusion',a,{}, {src2:b});try{assert.equal(hash(defaultOut.data),'8380298882b65181cf16ee40f21804c5eca322aed04cbc7f621076e1bb11e215');}finally{defaultOut.delete();}
     const avg=run('exposure_fusion',a,{wContrast:0,wSaturation:0,wExposure:0},{src2:b});try{for(let i=0;i<a.data.length;i++)assert.ok(Math.abs(avg.data[i]-Math.floor((a.data[i]+b.data[i])/2+.5))<=1);}finally{avg.delete();}
     const no=run('exposure_fusion',a);try{same(no,a);}finally{no.delete();}
   }finally{a.delete();b.delete();}
@@ -219,6 +261,7 @@ test('ip5f-parity: every 5F path uses distinct files, bytes-safe stdin and docum
   const gray=new cv.Mat(),rgba=new cv.Mat();cv.cvtColor(rgb,gray,cv.COLOR_RGB2GRAY);cv.cvtColor(rgb,rgba,cv.COLOR_RGB2RGBA);
   const tinyH=image(1,9,(x,y)=>[y*23,y*11,255-y*19]),tinyW=image(9,1,(x,y)=>[x*23,255-x*17,x*11]);
   const mask=image(45,37,(x,y)=>{const v=x>=17&&x<=22&&y>=13&&y<=18?255:0;return[v,v,v];});
+  const edgeMask=image(45,37,(x,y)=>x===0||y===0?255:0,1);
   const large=image(640,480,(x,y)=>[(x*13+y*3)%256,(x*3+y*17)%256,(x*7+y*11)%256]);
   const cases=[
     {id:'active_contour',src:gray,p:{init:'otsu',view:'mask',smooth:2,bias:.2}},
@@ -230,6 +273,8 @@ test('ip5f-parity: every 5F path uses distinct files, bytes-safe stdin and docum
     {id:'exposure_fusion',src:rgb,b:other,p:{}},
     {id:'exposure_fusion',src:rgb,b:other,p:{wContrast:0,wSaturation:0,wExposure:0}},
     {id:'inpaint',src:rgba,b:mask,p:{method:'laplace'}},
+    {id:'inpaint',src:rgb,b:edgeMask,p:{method:'laplace'}},
+    {id:'deconv_wiener',src:large,p:{taper:true}},
     {id:'deconv_wiener',src:tinyH,p:{taper:true}},
     {id:'deconv_lucy',src:tinyW,p:{iterations:2,taper:true}},
     {id:'active_contour',src:large,p:{init:'otsu',view:'mask',smooth:1,iterations:1000}},
@@ -263,10 +308,10 @@ test('ip5f-parity: every 5F path uses distinct files, bytes-safe stdin and docum
       if(py.shape.length===3)for(let k=0;k<data.length;k+=3)[data[k],data[k+2]]=[data[k+2],data[k]];
       const actual=Array.from(j.app.data),diff=actual.map((v,k)=>Math.abs(v-data[k]));
       assert.deepEqual(py.shape,[j.app.rows,j.app.cols,...(j.app.channels()>1?[j.app.channels()]:[])],j.id+' shape');
-      const max=j.id==='active_contour'?0:j.id==='deconv_wiener'?2:1;
+      const max=j.id==='active_contour'||j.id==='inpaint'||j.id==='exposure_fusion'?0:j.id==='deconv_wiener'?2:1;
       const maxDiff=diff.reduce((m,v)=>Math.max(m,v),0);
       assert.ok(maxDiff<=max,`${j.id} max difference ${maxDiff}`);
-      const diffLimit=j.id==='active_contour'?0:.005;
+      const diffLimit=j.id==='active_contour'||j.id==='inpaint'||j.id==='exposure_fusion'?0:.005;
       assert.ok(diff.filter(Boolean).length/diff.length<=diffLimit,`${j.id} differing pixel fraction`);
       if(j.id==='multissim'||j.id==='exposure_fusion'){
         const suffix=' (ปรับขนาด B ให้เท่า A ก่อนคำนวณ เพราะสองภาพขนาดไม่ตรงกัน)';
@@ -277,6 +322,6 @@ test('ip5f-parity: every 5F path uses distinct files, bytes-safe stdin and docum
     }
   }finally{
     for(const app of apps)app.delete();
-    rgb.delete();other.delete();gray.delete();rgba.delete();tinyH.delete();tinyW.delete();mask.delete();large.delete();fs.rmSync(dir,{recursive:true,force:true});
+    rgb.delete();other.delete();gray.delete();rgba.delete();tinyH.delete();tinyW.delete();mask.delete();edgeMask.delete();large.delete();fs.rmSync(dir,{recursive:true,force:true});
   }
 });
