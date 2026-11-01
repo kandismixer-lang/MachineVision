@@ -2,6 +2,7 @@
 import { FILTERS, defaultParams, isParamVisible, orderParamsControllersFirst, opIdOfStep } from "../filters/registry.js";
 import { valuesToCsv } from "./values-csv.js";
 import { optionGroupsFor } from "../filters/ui-meta.js";
+import { normalizeStrokes, summarizeStrokes } from "../filters/stroke-mask.js";
 
 // ---------- helper แสดงผลล้วน (Phase 2.2) — ไม่ยุ่งกับ state ของบล็อกค่า ----------
 
@@ -26,6 +27,10 @@ export function selectStyle(param) {
   if (param && param.key === "mode") return "select";
   if (opts.length === 0 || opts.length > SEG_MAX_OPTIONS) return "select";
   return opts.every((o) => String(o.label).length <= SEG_MAX_LABEL) ? "seg" : "select";
+}
+
+export function formatParamValue(param, value) {
+  return param?.type === "strokes" ? summarizeStrokes(value, param).text : String(value);
 }
 
 // ค่าต่างจาก default หรือไม่ (ใช้โชว์ปุ่ม ↺) — ทน float (step 0.1) และ default ที่ไม่มี
@@ -614,7 +619,7 @@ export function createDetailPanel(container, cb) {
           const chip = document.createElement("span");
           chip.className = "step-param";
           const k = p.key.includes("__") ? p.key.split("__").pop() : p.key;
-          chip.textContent = `${p.label || k}=${s.params[p.key]}`;
+          chip.textContent = `${p.label || k}=${formatParamValue(p, s.params[p.key])}`;
           chip.title = k; // key ดิบ (โยงกับโค้ด)
           row.appendChild(chip);
         }
@@ -675,6 +680,8 @@ export function createDetailPanel(container, cb) {
   function buildParam(param, value, defVal, filterId) {
     const wrap = document.createElement("div");
     wrap.className = "param";
+
+    if (param.type === "strokes") return buildStrokesParam(param, value);
 
     if (param.type === "boolean") {
       // Toggle ON/OFF อ่านง่าย (Design §22) — คลิกทั้งแถวได้ ค่ายังส่ง boolean เท่าเดิม
@@ -874,6 +881,104 @@ export function createDetailPanel(container, cb) {
     range.append(rmin, rmax);
     syncReset();
     wrap.append(lab, box, reset, input, range);
+    return wrap;
+  }
+
+  function buildStrokesParam(param, value) {
+    const wrap = document.createElement("div");
+    wrap.className = "param param-strokes";
+
+    const label = document.createElement("div");
+    label.className = "param-label";
+    label.textContent = param.label;
+    wrap.appendChild(label);
+
+    const summary = document.createElement("div");
+    summary.className = "stroke-summary";
+    const allowed = new Set((Array.isArray(param.labels) ? param.labels : [])
+      .map((item) => item?.value).filter((n) => Number.isInteger(n) && n >= 1 && n <= 7));
+    if (param.eraser === true) allowed.add(0);
+    const norm = normalizeStrokes(value, allowed);
+    const counts = new Map();
+    for (const line of norm?.s || []) counts.set(line[0], (counts.get(line[0]) || 0) + 1);
+    const parts = [];
+    for (const item of Array.isArray(param.labels) ? param.labels : []) {
+      const count = counts.get(item.value) || 0;
+      if (!count) continue;
+      parts.push({ text: `${item.name || `ป้าย ${item.value}`} ${count} เส้น`, color: item.color });
+    }
+    const erasures = counts.get(0) || 0;
+    if (erasures) parts.push({ text: `ยางลบ ${erasures} ครั้ง`, color: null });
+    if (!parts.length) summary.textContent = "ยังไม่มีเส้น";
+    else {
+      parts.forEach((part, i) => {
+        if (i) {
+          const sep = document.createElement("span");
+          sep.className = "stroke-sep";
+          sep.textContent = " · ";
+          summary.appendChild(sep);
+        }
+        if (part.color && Array.isArray(part.color)) {
+          const dot = document.createElement("span");
+          dot.className = "stroke-dot";
+          dot.style.backgroundColor = `rgb(${part.color[0]}, ${part.color[1]}, ${part.color[2]})`;
+          summary.appendChild(dot);
+        }
+        const text = document.createElement("span");
+        text.className = "stroke-count";
+        text.textContent = part.text;
+        summary.appendChild(text);
+      });
+    }
+    wrap.appendChild(summary);
+
+    const editing = typeof cb.isEditingStrokes === "function" && cb.isEditingStrokes(param.key);
+    const reason = typeof cb.onEditStrokes !== "function"
+      ? "ยังใช้ไม่ได้ในหน้าจอนี้"
+      : (typeof cb.strokeEditBlocked === "function" ? cb.strokeEditBlocked() : null);
+    const edit = document.createElement("button");
+    edit.type = "button";
+    edit.className = "btn btn-primary stroke-edit";
+    edit.style.width = "100%";
+    edit.style.marginTop = "8px";
+    edit.textContent = editing ? "✓ วาดเสร็จแล้ว" : "✏️ วาดเส้นบนภาพ";
+    edit.disabled = !!reason;
+    edit.title = reason || "เปิดภาพเพื่อวาดเส้นขีด";
+    tagParam(edit, param.key, "main");
+    edit.addEventListener("click", () => {
+      if (edit.disabled || typeof cb.onEditStrokes !== "function") return;
+      cb.onEditStrokes(param.key, param);
+      edit.textContent = cb.isEditingStrokes?.(param.key) ? "✓ วาดเสร็จแล้ว" : "✏️ วาดเส้นบนภาพ";
+    });
+    wrap.appendChild(edit);
+
+    const clear = document.createElement("button");
+    clear.type = "button";
+    clear.className = "btn stroke-clear";
+    clear.style.width = "100%";
+    clear.style.marginTop = "6px";
+    clear.textContent = "🗑 ล้างเส้นทั้งหมด";
+    clear.disabled = !norm;
+    clear.addEventListener("click", () => {
+      if (clear.disabled) return;
+      notifyParam(param.key, null);
+      if (curStep) { curStep.params[param.key] = null; rerenderAfterParamChange(); }
+      cb.setStatus?.("ล้างเส้นแล้ว — กด Ctrl+Z เพื่อเอาคืน");
+    });
+    wrap.appendChild(clear);
+
+    if (reason) {
+      const blocked = document.createElement("div");
+      blocked.className = "param-hint stroke-blocked";
+      blocked.textContent = reason;
+      wrap.appendChild(blocked);
+    }
+    if (param.desc) {
+      const hint = document.createElement("div");
+      hint.className = "param-hint";
+      hint.textContent = param.desc;
+      wrap.appendChild(hint);
+    }
     return wrap;
   }
 

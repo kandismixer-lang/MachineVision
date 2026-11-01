@@ -580,7 +580,7 @@ test('p3-g3 parseNavKey: F / 1–9 / 0 เมื่อไม่มี modifier �
   assert.equal(parseNavKey(null), null);
 });
 
-test('p3-g4 คีย์ใหม่ไม่ชนคีย์เดิมใน app.js (Space/M/C/E/ลูกศร) — และ app.js เรียกหลังคีย์ที่ผู้ใช้ผูกเอง + ข้ามเมื่อโหมดตีกรอบ', () => {
+test('p3-g4 คีย์ใหม่ไม่ชนคีย์เดิมใน app.js (Space/M/C/E/ลูกศร) — และ app.js เรียกหลังคีย์ที่ผู้ใช้ผูกเอง + ข้ามโหมด Label/วาดเส้น', () => {
   const src = fs.readFileSync(new URL('../src/renderer/app.js', import.meta.url), 'utf8');
   const m = /const DEFAULT_KEYMAP = \{([^}]*)\}/.exec(src);
   assert.ok(m);
@@ -588,7 +588,7 @@ test('p3-g4 คีย์ใหม่ไม่ชนคีย์เดิมใ�
   for (const key of ['f', '0', '1', '2', '3', '4', '5', '6', '7', '8', '9']) assert.ok(!bound.includes(key), `${key} ชนคีย์เดิม`);
   const iLoop = src.indexOf('for (const a of KEY_ACTIONS)');
   const iNav = src.indexOf('parseNavKey(e)');
-  const iAnn = src.indexOf('if (annotateCanvas.isActive()) return;', iLoop);
+  const iAnn = src.indexOf('if (annotateCanvas.isActive() || strokeCanvas?.isActive()) return;', iLoop);
   assert.ok(iLoop > 0 && iAnn > iLoop && iNav > iAnn, 'ลำดับ: keymap ผู้ใช้ → ข้ามโหมดตีกรอบ → คีย์นำทาง');
   // ช่องพิมพ์ถูกตัดก่อนถึงที่นี่ (ด่านเดียวกับ keymap เดิม)
   const iTyping = src.indexOf('t.tagName === "INPUT" || t.tagName === "SELECT"');

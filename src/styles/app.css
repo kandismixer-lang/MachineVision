@@ -3856,6 +3856,23 @@ body.stage-fullscreen-open { overflow: hidden; }
   bottom: var(--space-3);
 }
 
+/* พู่กันเส้นขีดใช้โครง toolbar/canvas เดียวกับโหมด Label */
+.stroke-canvas { touch-action: none; cursor: crosshair; }
+.stroke-toolbar { gap: 6px; font-size: 14px; }
+.stroke-toolbar .annotate-btn { font-size: 14px; }
+.stroke-title { white-space: nowrap; }
+.stroke-label-dot { width: 10px; height: 10px; border: 1px solid var(--border); border-radius: 50%; flex: none; }
+.stroke-size { display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; }
+.stroke-size input { width: 96px; accent-color: var(--accent); }
+.stroke-radius { color: var(--muted); font-size: 14px; }
+.stroke-hint { max-width: 260px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.stroke-warn { padding: 3px 8px; border: 1px solid var(--warning); border-radius: 999px; color: var(--warning); background: var(--panel-2); }
+.param-strokes { display: block; }
+.stroke-summary { display: flex; flex-wrap: wrap; align-items: center; gap: 3px; min-height: 22px; color: var(--text); }
+.stroke-dot { width: 10px; height: 10px; border: 1px solid var(--border); border-radius: 50%; flex: none; }
+.stroke-count { white-space: nowrap; }
+.stroke-blocked { color: var(--warning); }
+
 @media (max-width: 900px), (max-height: 620px) {
   .stage.stage-fullscreen .stage-body:has(> .annotate-toolbar:not(.hidden)) > .annotate-toolbar {
     min-height: 42px;

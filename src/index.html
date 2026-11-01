@@ -88,6 +88,8 @@
             <!-- โหมด Annotate: ตีกรอบ bounding box ทับภาพนิ่งปัจจุบัน (ดู ui/annotate-canvas.js) -->
             <canvas id="ann-canvas" class="pose-canvas ann-canvas hidden"></canvas>
             <div id="ann-toolbar" class="annotate-toolbar hidden"></div>
+            <canvas id="stroke-canvas" class="pose-canvas ann-canvas stroke-canvas hidden" aria-label="วาดเส้นขีดบนภาพ" tabindex="0"></canvas>
+            <div id="stroke-toolbar" class="annotate-toolbar stroke-toolbar hidden"></div>
             <div id="ann-empty-classes" class="annotate-empty hidden"></div>
             <div id="camera-error" class="camera-error hidden"></div>
             <!-- โหมดวิดีโอ: ต่อกล่องผลลัพธ์แล้ว → จอใหญ่โชว์ผล + แถบล่างนี้ (ภาพต้นฉบับย่อ + ปุ่มเล่น/เลื่อนเวลา) · ยังไม่ต่อ → เล่นวิดีโอเต็มจอแบบเดิม -->

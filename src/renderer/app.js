@@ -3,10 +3,11 @@
 import { createGraphEditor } from "./graph/editor.js";
 import { createPalettePanel } from "./ui/palette-panel.js";
 import { initUpdatePopup } from "./ui/update-popup.js";
-import { createDetailPanel, stepAndNotesOf, infoTextsOf } from "./ui/detail-panel.js";
+import { createDetailPanel, formatParamValue, stepAndNotesOf, infoTextsOf } from "./ui/detail-panel.js";
 import { createClassPanel } from "./ui/class-panel.js";
 import { createSplitPanel } from "./ui/split-panel.js";
 import { createAnnotateCanvas } from "./ui/annotate-canvas.js";
+import { createStrokeCanvas } from "./ui/stroke-canvas.js";
 import { createSourceBar } from "./ui/source-bar.js";
 import { bindThemeToggle, histColors, onThemeChange } from "./ui/theme.js";
 import { createBatchCsv, finishBatchCsv } from "./ui/batch-csv.js";
@@ -114,6 +115,9 @@ const selectedPreviewName = document.getElementById("selected-preview-name");
 const selectedPreviewTabs = [...document.querySelectorAll("[data-preview-view]")];
 const inspectorTabs = [...document.querySelectorAll("[data-inspector-tab]")];
 let inspectorTab = "inspect";
+let strokeCanvas = null;
+let strokeTarget = null;
+let strokePreviousInspectorTab = null;
 
 function setInspectorTab(next) {
   if (!isUiV2 || !["inspect", "preview", "dataset"].includes(next)) return;
@@ -430,6 +434,18 @@ const editor = createGraphEditor(graphCanvasEl, {
   onPipelineChange: (pipelines) => {
     state.pipelines = pipelines;
     editor.clearNodeErrors(); // กราฟเปลี่ยน → เลิกแสดงสถานะ error เดิม (ถ้ายังพังอยู่ เฟรมถัดไปจะตั้งใหม่)
+    if (strokeCanvas?.isActive()) {
+      if (!state.selectedNode || state.selectedNode.id !== strokeCanvas.activeNodeId() ||
+          !state.selectedNode.getPreviewPipeline?.()?.connected) {
+        strokeCanvas.exit();
+      } else {
+        const step = stepAndNotesOf(state.selectedNode, []).step;
+        const filter = FILTERS[step.id];
+        const param = filter?.params.find((item) => item.key === strokeTarget?.paramKey);
+        if (!param || !isParamVisible(param, step.params, filter.params)) strokeCanvas.exit();
+        else strokeCanvas.onExternalValue(step.params[param.key]);
+      }
+    }
     // เก็บกวาด canvas ของกล่องผลลัพธ์ที่ถูกลบไปแล้ว
     const alive = new Set(pipelines.map((d) => d.displayId));
     for (const id of displayCanvases.keys()) {
@@ -443,6 +459,7 @@ const editor = createGraphEditor(graphCanvasEl, {
     requestProcess();
   },
   onSelect: (sel) => {
+    if (strokeCanvas?.isActive() && sel?.id !== strokeCanvas.activeNodeId()) strokeCanvas.exit();
     selectedPreviewGeneration++;
     selectedPreviewLatestImage = null;
     selectedPreviewAnalysisAt = 0;
@@ -502,7 +519,7 @@ function wantsInputHistogram() {
 
 // pipeline "ขาเข้า" ของกล่องที่เลือก = สายเดียวกับ preview ตัดขั้นสุดท้ายออก (ขั้นแรก → ภาพต้นฉบับ)
 function selectedInputPipeline() {
-  if (!wantsInputHistogram()) return null;
+  if (!wantsInputHistogram() && !strokeCanvas?.isActive()) return null;
   const preview = selectedPreviewPipeline();
   if (!preview) return null;
   return buildInputPipeline(preview, `${SELECTED_INPUT_PREFIX}:${state.selectedNode.id}:${selectedPreviewGeneration}`);
@@ -788,6 +805,24 @@ const detailPanel = createDetailPanel(document.getElementById("detail-panel"), {
       }
     }
   },
+  onEditStrokes: (key, param) => {
+    const node = state.selectedNode;
+    if (!node || !strokeCanvas) return false;
+    if (annotateCanvas?.isActive()) annotateCanvas.exit();
+    const step = stepAndNotesOf(node, []).step;
+    const filter = FILTERS[step.id];
+    const opName = filter && typeof filter.subtitle === "function" ? filter.subtitle(step.params) : filter?.name;
+    return strokeCanvas.enter({ nodeId: node.id, paramKey: key, param, opName });
+  },
+  strokeEditBlocked: () => {
+    const node = state.selectedNode;
+    if (!node?.getPreviewPipeline?.()?.connected) return "ต่อสายกล่องนี้กับแหล่งภาพก่อน ถึงจะวาดเส้นได้";
+    if (state.source !== "image") return "วาดเส้นได้ในโหมดภาพนิ่ง — แคปภาพจากกล้อง (📸) แล้วสลับเป็นภาพนิ่ง · เส้นที่วาดแล้วใช้กับกล้องสดได้";
+    if (state.images.length === 0) return "นำเข้าภาพก่อน แล้วค่อยวาดเส้น";
+    return null;
+  },
+  isEditingStrokes: (key) => strokeCanvas?.isActive() && strokeTarget?.nodeId === state.selectedNode?.id && strokeTarget.paramKey === key,
+  setStatus: (message) => { statusEl.textContent = message; },
 });
 
 // โหมดตีกรอบ (Annotate) ประกาศ (แบบ let) ไว้ก่อน — createClassPanel ด้านล่าง render() ทันทีตอนสร้าง
@@ -855,7 +890,10 @@ annotateCanvas = createAnnotateCanvas({
     }
   },
   // ann-canvas แทนที่ stage-grid ชั่วคราวขณะอยู่ในโหมด (เหมือน pose/det canvas) — คืนค่าเสมอไม่ว่าจะออกทางไหน
-  onEnter: () => gridEl.classList.add("hidden"),
+  onEnter: () => {
+    if (strokeCanvas?.isActive()) strokeCanvas.exit();
+    gridEl.classList.add("hidden");
+  },
   onExit: () => gridEl.classList.remove("hidden"),
   setStatus: (msg) => { statusEl.textContent = msg; },
   getImagePosition: () =>
@@ -864,6 +902,56 @@ annotateCanvas = createAnnotateCanvas({
       : null,
   onNavImage: (dir) => { if (state.images.length > 1) setImageIndex(state.imageIndex + dir); },
 });
+
+strokeCanvas = createStrokeCanvas({
+  canvas: document.getElementById("stroke-canvas"),
+  toolbar: document.getElementById("stroke-toolbar"),
+  getValue: (key) => state.selectedNode?.getParams?.()?.[key],
+  commit: (key, value) => applyStrokeParam(key, value),
+  setStatus: (message) => { statusEl.textContent = message; },
+  onRequestInput: () => {
+    selectedInputReady = false;
+    requestProcess();
+  },
+  onEnter: ({ nodeId, paramKey }) => {
+    strokeTarget = { nodeId, paramKey };
+    gridEl.classList.add("hidden");
+    if (isUiV2 && !document.querySelector(".props-collapsed")) {
+      strokePreviousInspectorTab = inspectorTab;
+      setInspectorTab("preview");
+      setSelectedPreviewView("output", false);
+    }
+    if (annotateBtn) {
+      annotateBtn.disabled = true;
+      annotateBtn.title = "ปิดโหมดวาดเส้นก่อน";
+    }
+  },
+  onExit: () => {
+    strokeTarget = null;
+    const showEmpty = state.source === "image" && state.images.length === 0;
+    gridEl.classList.toggle("hidden", showEmpty || annotateCanvas?.isActive());
+    if (strokePreviousInspectorTab) {
+      setInspectorTab(strokePreviousInspectorTab);
+      strokePreviousInspectorTab = null;
+    }
+    if (annotateBtn) {
+      const noImages = state.images.length === 0;
+      annotateBtn.disabled = noImages;
+      annotateBtn.title = noImages ? "นำเข้าภาพก่อนถึงจะตีกรอบได้" : "ตีกรอบ (bounding box) สำหรับ dataset";
+    }
+    renderDetail();
+  },
+});
+
+function applyStrokeParam(key, value) {
+  const nodeId = strokeCanvas?.activeNodeId();
+  const node = nodeId == null ? null : editor.graph.getNodeById(nodeId);
+  if (!node) return;
+  const stillSelected = state.selectedNode?.id === nodeId;
+  if (stillSelected) invalidateSelectedPreview();
+  node.setParam(key, value);
+  if (stillSelected) renderDetail();
+}
 
 // ปุ่มสลับธีมสว่าง/มืดที่มุมขวาบน (สถานะ/การเก็บค่าอยู่ใน ui/theme.js)
 bindThemeToggle(document.getElementById("theme-toggle"));
@@ -1654,6 +1742,7 @@ if (navigator.mediaDevices) {
 
 // ---------- source switching ----------
 async function setSource(s) {
+  if (s !== "image" && strokeCanvas?.isActive()) strokeCanvas.exit();
   if (s !== "image" && annotateCanvas.isActive()) annotateCanvas.exit(); // ออกจากภาพนิ่ง → ออกจากโหมดตีกรอบด้วย
   if (s !== "video" && videoURL) closeVideoSource(); // ออกจากโหมดวิดีโอ
   state.source = s;
@@ -1802,7 +1891,7 @@ document.addEventListener("keydown", (e) => {
   }
   // UI เฟส 3.7: F = Fit · 1–9 = เลือกกล่องที่ N ตามเลขบนการ์ด · 0 = จอผลลัพธ์ที่ชี้อยู่กลับพอดีจอ
   // อยู่หลังคีย์ที่ผู้ใช้ผูกเอง (ถ้าผูก f/ตัวเลขไว้ ใช้ตามที่ผูก) · โหมดตีกรอบใช้เลข 1–9 เลือกคลาสอยู่แล้ว จึงข้าม
-  if (annotateCanvas.isActive()) return;
+  if (annotateCanvas.isActive() || strokeCanvas?.isActive()) return;
   const nav = parseNavKey(e);
   if (!nav) return;
   if (nav.type === "fit") {
@@ -1831,11 +1920,12 @@ function openSettingsDialog() {
 // empty state ของโหมดภาพนิ่ง: โชว์เมื่อ source=image และยังไม่มีภาพ (ไม่เด้ง dialog บังคับ)
 function updateImageEmpty() {
   const show = state.source === "image" && state.images.length === 0;
+  if (show && strokeCanvas?.isActive()) strokeCanvas.exit();
   if (show && annotateCanvas.isActive()) annotateCanvas.exit(); // ภาพหมด (เช่นลบภาพสุดท้ายออก) — ออกจากโหมดตีกรอบ
   imageEmptyEl.classList.toggle("hidden", !show);
   // อยู่ในโหมด annotate ต้องคง grid ซ่อนไว้เสมอ — ไม่งั้น caption "Display N" ของจอผลลัพธ์
   // จะโผล่ทับ toolbar (ann-canvas letterbox ไม่ครอบมุมบนซ้าย) เวลา updateImageEmpty ถูกเรียกซ้ำ
-  gridEl.classList.toggle("hidden", show || annotateCanvas.isActive());
+  gridEl.classList.toggle("hidden", show || annotateCanvas.isActive() || strokeCanvas?.isActive());
 }
 document.getElementById("ie-single").addEventListener("click", () => fileInput.click());
 document.getElementById("ie-folder").addEventListener("click", () => folderInput.click());
@@ -1848,6 +1938,7 @@ document.getElementById("lv-pose").addEventListener("click", () => setCameraMode
 const annotateBtn = document.getElementById("lv-annotate");
 annotateBtn.addEventListener("click", () => {
   if (annotateBtn.disabled) return;
+  if (strokeCanvas?.isActive()) strokeCanvas.exit();
   if (annotateCanvas.isActive()) annotateCanvas.exit();
   else annotateCanvas.enter();
 });
@@ -1916,8 +2007,9 @@ setInterval(() => {
   const isStillImage = state.source === "image";
   annotateBtn.style.display = isStillImage ? "" : "none";
   const noImages = state.images.length === 0;
-  annotateBtn.disabled = noImages;
-  annotateBtn.title = noImages ? "นำเข้าภาพก่อนถึงจะตีกรอบได้" : "ตีกรอบ (bounding box) สำหรับ dataset";
+  const strokeActive = strokeCanvas?.isActive();
+  annotateBtn.disabled = noImages || strokeActive;
+  annotateBtn.title = strokeActive ? "ปิดโหมดวาดเส้นก่อน" : noImages ? "นำเข้าภาพก่อนถึงจะตีกรอบได้" : "ตีกรอบ (bounding box) สำหรับ dataset";
   annotateBtn.classList.toggle("active", annotateCanvas.isActive());
   updatePerf(fps);
 
@@ -2768,7 +2860,7 @@ function stepRawParams(s) {
     if (!isParamVisible(p, s.params, f.params)) continue;
     if (p.key === "mode") continue;
     const k = p.key.includes("__") ? p.key.split("__").pop() : p.key;
-    out.push({ k, v: s.params[p.key], label: p.label || k });
+    out.push({ k, v: formatParamValue(p, s.params[p.key]), label: p.label || k });
   }
   return out;
 }
@@ -2930,12 +3022,14 @@ function drawResults(results) {
     const kind = classifyResultId(displayId, selectedInputPipeline()?.displayId, selectedPreviewPipeline()?.displayId);
     if (kind === "stale") continue; // ผลของรุ่นเก่า/กล่องที่เลิกเลือกแล้ว — ห้ามย้อนมาทับ
     if (kind === "input") {
+      strokeCanvas?.onInputImage(img);
       selectedInputSamples = accumulateInputHistogram(img.data, width * height);
       selectedInputReady = true;
       selectedInputAt = performance.now();
       continue;
     }
     if (kind === "preview") {
+      strokeCanvas?.onResultImage(img);
       if (selectedPreviewCanvas.width !== width) selectedPreviewCanvas.width = width;
       if (selectedPreviewCanvas.height !== height) selectedPreviewCanvas.height = height;
       selectedPreviewCanvas.getContext("2d").putImageData(img, 0, 0);
