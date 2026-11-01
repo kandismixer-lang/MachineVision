@@ -1,5 +1,6 @@
 // UI metadata — เพิ่มความสวย/สื่อความ โดยไม่แตะ backend algorithm
 import { OPS, MORPH_OP_IDS, passFailParams, pfNum, boolOr, fixed2, signedText, quantizeBits, SHAPE_FILTER_PROP_TH, HITMISS_PATTERNS } from "./registry.js";
+import { normalizeStrokes } from "./stroke-mask.js";
 
 // ไอคอนประจำการ์ดเครื่องมือ (Design §7.1 — ภาพ mockup มี icon chip หน้าแต่ละเครื่องมือ)
 export const GROUP_ICON = {
@@ -52,6 +53,7 @@ export const OP_ICON = {
   rank_filter: "⧖", custom_lut: "⩒", image_stats: "⨏", corr2: "⥈", gradient_dir: "⤧",
   grayscale: "◐", colorspace: "🎨", channel_split: "◉", rgb_adjust: "🎚", color_inrange: "🌈", invert: "◑",
   kmeans_segment: "⬡", white_balance: "⚖",
+  phase_register: "⊛", scribble_segment: "⌇", isodata_segment: "⬢", fir_design: "⎍",
   brightness_contrast: "☀", gamma: "γ", hist_equalize: "▥", clahe: "▦", unsharp: "✦", laplacian_sharpen: "◇",
   custom_kernel: "◫",
   // ใหม่ (2026-10-01, IP batch ENHANCE/MORPHOLOGY) — เช็คแล้วไม่ชนกับ glyph ใดในไฟล์นี้หรือ GROUP_ICON
@@ -175,6 +177,16 @@ function mmTail(opId, p) {
 
 PASS_FAIL_SHORT.qt_blocks = "จำนวนบล็อก";
 export const OP_PRIMARY = {
+  phase_register: () => "จัดภาพด้วย phase correlation",
+  isodata_segment: (p) => `ISODATA k=${p.k ?? 4}`,
+  fir_design: () => "ออกแบบตัวกรอง FIR",
+  scribble_segment: (p) => {
+    const norm = normalizeStrokes(p.strokes, new Set([0, 1, 2]));
+    if (!norm) return "ยังไม่ขีดเส้น";
+    const n1 = norm.s.filter((stroke) => stroke[0] === 1).length;
+    const n2 = norm.s.filter((stroke) => stroke[0] === 2).length;
+    return n1 + n2 === 0 ? "ยังไม่ขีดเส้น" : `แดง ${n1} · น้ำเงิน ${n2}`;
+  },
   active_contour:()=>"แบ่งวัตถุด้วย Chan-Vese",
   deconv_blind:()=>"ประมาณ PSF และแก้เบลอ",
   deconv_reg:()=>"แก้เบลอพร้อมควบคุมความเรียบ",
@@ -496,7 +508,7 @@ export const OPTION_GROUPS = {
   "segment_edge.mode": [
     ["แยกขาว-ดำ (Threshold)", ["binary_threshold", "otsu_threshold", "adaptive_threshold", "multi_otsu_threshold"]],
     ["หาขอบ (Edge)", ["canny", "sobel", "gradient_dir", "scharr_edge", "prewitt_edge", "roberts_edge", "laplacian_edge", "log_edge", "frangi_vesselness"]],
-    ["แยกวัตถุเป็นชิ้น", ["watershed", "watershed_marker", "grabcut", "region_growing", "active_contour", "geodesic_distance"]],
+    ["แยกวัตถุเป็นชิ้น", ["watershed", "watershed_marker", "grabcut", "region_growing", "active_contour", "geodesic_distance", "scribble_segment"]],
   ],
   "enhance_tools.mode": [
     ["ความสว่าง / คอนทราสต์", ["brightness_contrast", "gamma", "custom_lut", "contrast_stretch", "hist_equalize", "clahe", "flatfield_correction"]],
@@ -511,7 +523,7 @@ export const OPTION_GROUPS = {
   "color_tools.mode": [
     ["แปลง / ดูช่องสี", ["grayscale", "invert", "colorspace", "colorspace_inverse", "srgb_linear", "debayer", "channel_split", "pseudocolor"]],
     ["ปรับสี", ["rgb_adjust", "color_matrix", "white_balance", "decorrstretch"]],
-    ["เลือก / แบ่งตามสี", ["color_inrange", "kmeans_segment", "slic"]],
+    ["เลือก / แบ่งตามสี", ["color_inrange", "kmeans_segment", "isodata_segment", "slic"]],
   ],
   "image_arithmetic.mode": [
     ["เทียบ / รวมสองภาพ", ["imabsdiff", "imfuse", "exposure_fusion", "imarith", "logical_ops"]],

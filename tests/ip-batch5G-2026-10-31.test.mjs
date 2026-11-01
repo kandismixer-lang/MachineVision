@@ -80,7 +80,7 @@ function runPythonExport(code, inputs) {
 
 test('ip5g-G: 527 clean-tree host variants preserve pixels, info, values and Python bytes', () => {
   const legacyHosts = ['geometry', 'frequency', 'segment_edge', 'analysis_detect', 'image_registration', 'morph_tools'];
-  const addedOps = new Set(['test_pattern', 'similarity_transform', 'quadtree', 'contour_lines', 'mtb_register', 'geodesic_distance', 'radon']);
+  const addedOps = new Set(['test_pattern', 'similarity_transform', 'quadtree', 'contour_lines', 'mtb_register', 'geodesic_distance', 'radon', 'phase_register', 'scribble_segment', 'fir_design']);
   const splitMorphOps = new Set(['morph_erode', 'morph_dilate', 'morph_open', 'morph_close', 'morph_gradient', 'morph_tophat', 'morph_blackhat']);
   const result = {};
   let operationVariants = 0;
@@ -888,7 +888,7 @@ test('ip5g-6-mtb: overlap-normalized mismatch ratio chooses the lower-error shif
 test('ip5g-6-mtb: A/B views, no-B passthrough, Python source, and registered input wiring', () => {
   assert.equal(typeof kernels5G.mtbRegister5G, 'function');
   assert.equal(OPS.mtb_register.needs, 'any');
-  assert.deepEqual(FILTERS.image_registration.params[0].options.map((item) => item.value), ['template_matching', 'ecc_register', 'mtb_register']);
+  assert.deepEqual(FILTERS.image_registration.params[0].options.map((item) => item.value), ['template_matching', 'ecc_register', 'mtb_register', 'phase_register']);
   const color = image(9, 7, (x, y) => [x * 20, y * 30, (x + y) * 12, 255], 4);
   const ref = image(9, 7, (x, y) => (x * 20 + y * 30) & 255);
   try {
@@ -914,7 +914,7 @@ test('ip5g-6-mtb: A/B views, no-B passthrough, Python source, and registered inp
   assert.doesNotMatch(code, /mtb_register:[\s\S]{0,180}bgrChannelOrder: true/);
   execFileSync('python', ['-c', 'import ast,sys; ast.parse(sys.stdin.buffer.read().decode("utf-8"))'], { input: Buffer.from(code, 'utf8'), env: { ...process.env, PYTHONIOENCODING: 'utf8' } });
   const item = TOOL_SECTIONS.find((entry) => entry.title === 'IMAGE REGISTRATION');
-  assert.equal(item.ops.at(-1), 'mtb_register');
+  assert.deepEqual(item.ops.slice(-2), ['mtb_register', 'phase_register']);
   assert.equal(OP_TO_FILTER.mtb_register, 'image_registration');
   assert.ok(OP_ICON.mtb_register);
   assert.equal(Object.values(OP_ICON).filter((icon) => icon === OP_ICON.mtb_register).length, 1);
@@ -1073,8 +1073,8 @@ test('ip5g-7-geodesic-python: Y seed and maze sweep count match the app', { skip
 
 test('ip5g-7-geodesic: registered UI, Python sweeps compile, RGB heap growth and wrapper balance', () => {
   const segment = TOOL_SECTIONS.find((entry) => entry.title === 'SEGMENTATION & EDGE');
-  assert.equal(segment.ops.at(-1), 'geodesic_distance');
-  assert.deepEqual(FILTERS.segment_edge.params[0].options.map((item) => item.value).at(-1), 'geodesic_distance');
+  assert.deepEqual(segment.ops.slice(-2), ['geodesic_distance', 'scribble_segment']);
+  assert.deepEqual(FILTERS.segment_edge.params[0].options.map((item) => item.value).slice(-2), ['geodesic_distance', 'scribble_segment']);
   assert.equal(OPTION_GROUPS['geodesic_distance.method'], undefined);
   assert.deepEqual(OPS.geodesic_distance.params[0].options.map((item) => item.value), ['similar', 'binary', 'gray']);
   assert.ok(OP_ICON.geodesic_distance);
@@ -1173,8 +1173,8 @@ test('ip5g-8-radon-python: side 512 stays full size and side 1024 uses factor 2'
 
 test('ip5g-8-radon: registered UI, generated Python compiles and 2000x1500 RGB heap growth balances wrappers', () => {
   const frequency = TOOL_SECTIONS.find((entry) => entry.title === 'FREQUENCY DOMAIN');
-  assert.equal(frequency.ops.at(-1), 'radon');
-  assert.equal(FILTERS.frequency.params[0].options.at(-1).value, 'radon');
+  assert.deepEqual(frequency.ops.slice(-2), ['radon', 'fir_design']);
+  assert.deepEqual(FILTERS.frequency.params[0].options.slice(-2).map((item) => item.value), ['radon', 'fir_design']);
   assert.ok(OP_ICON.radon);
   assert.match(OP_PRIMARY.radon(defaults('radon')), /[\u0e01-\u0e2e]/);
   for (const view of ['sinogram', 'peak']) {

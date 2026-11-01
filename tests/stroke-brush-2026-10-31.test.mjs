@@ -49,6 +49,14 @@ function referenceRasterize(w, h, input) {
   }
   return out;
 }
+
+test("sb-off-image-q: extreme stroke coordinates clip disks at both image edges", () => {
+  const w = 13, h = 9;
+  const labels = rasterizeStrokes(w, h, value([stroke(1, 12, -100000, -100000, 100000, 100000)], w, h), ALLOWED).labels;
+  assert.equal(labels[0], 1);
+  assert.equal(labels[w * h - 1], 1);
+});
+
 function makeRandomStrokes(seed, count, w, h, radius = 12, compact = false, pointCount = 30) {
   let state = seed >>> 0;
   const rand = () => { state = (1664525 * state + 1013904223) >>> 0; return state; };
@@ -252,8 +260,8 @@ test("sb-py-literal: sanitizes invalid Python variable names", () => {
   assert.deepEqual(strokesPyLiteral(null, "class", LABEL_PARAM), ["strokes5g = []"]);
 });
 
-const PY_READY = process.env.STROKE_NO_PY !== "1" && spawnSync("python", ["-c", "import numpy"], { encoding: "utf8" }).status === 0;
-test("sb-parity: Python and JavaScript label maps match byte for byte", { skip: PY_READY ? false : "Python/numpy unavailable or STROKE_NO_PY=1" }, () => {
+const PY_READY = process.env.STROKE_NO_PY !== "1" && spawnSync("python", ["-c", "import cv2, numpy"], { encoding: "utf8" }).status === 0;
+test("sb-parity: Python and JavaScript label maps match byte for byte", { skip: PY_READY ? false : "Python/cv2/numpy unavailable or STROKE_NO_PY=1" }, () => {
   const dims = [[45, 37], [37, 45], [1, 9], [9, 1], [1, 1], [640, 480], [1919, 1079]];
   const cases = [];
   let seed = 0x5a17;
@@ -266,6 +274,7 @@ test("sb-parity: Python and JavaScript label maps match byte for byte", { skip: 
       [stroke(1, 1, cx, cy)],
       [stroke(2, 100, cx, cy)],
       [stroke(1, 12, 0, 0, qx1, qy1)],
+      [stroke(1, 12, -100000, -100000, 100000, 100000)],
       [stroke(1, 12, 0, 0, STROKE_Q, 0), stroke(2, 12, 0, STROKE_Q, STROKE_Q, STROKE_Q), stroke(1, 12, 0, 0, 0, STROKE_Q), stroke(2, 12, STROKE_Q, 0, STROKE_Q, STROKE_Q)],
       [stroke(1, 20, cx, cy), stroke(2, 20, cx, cy), stroke(0, 20, cx, cy)],
       makeRandomStrokes(seed++ * 101, 30, w, h, 12),
@@ -279,7 +288,7 @@ test("sb-parity: Python and JavaScript label maps match byte for byte", { skip: 
     const rows = cases.map((c, i) => `    (${c.w}, ${c.h}, strokes${c.name}, ${i}),`).join("\n");
     const script = [
       "import os, sys",
-      "import numpy as np",
+      "import cv2, numpy as np",
       ...strokeRasterPyLines(),
       literals,
       "cases = [",
@@ -297,6 +306,66 @@ test("sb-parity: Python and JavaScript label maps match byte for byte", { skip: 
       const py = fs.readFileSync(path.join(dir, `${i}.bin`));
       assert.deepEqual(py, Buffer.from(js), `${c.w}x${c.h} ${c.name}`);
     });
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("sb-py-distance-transform-rasterizer: Python uses precise Euclidean coverage and bounds off-image centres", () => {
+  const source = strokeRasterPyLines().join("\n");
+  assert.match(source, /cv2\.distanceTransform\(src, cv2\.DIST_L2, cv2\.DIST_MASK_PRECISE\)/);
+  assert.match(source, /cov = \(d \* d\) <= \(r \* r \+ r \+ 0\.5\)/);
+  assert.match(source, /keep = \(cx >= -r - 1\) & \(cx <= w \+ r\) & \(cy >= -r - 1\) & \(cy <= h \+ r\)/);
+  assert.doesNotMatch(source, /np\.add\.at|np\.bincount|for dy in range\(-r, r \+ 1\)/);
+});
+
+test("sb-py-worst-parity: vector Python rasterizer stays exact and fast on dense strokes", { skip: PY_READY ? false : "Python/cv2/numpy unavailable or STROKE_NO_PY=1" }, () => {
+  const tiny = [];
+  for (const [w, h] of [[1, 9], [9, 1]]) {
+    const points = w === 1
+      ? [qAtPixel(0, 0, w, h), qAtPixel(0, h - 1, w, h)]
+      : [qAtPixel(0, 0, w, h), qAtPixel(w - 1, 0, w, h), qAtPixel(w - 1, h - 1, w, h)];
+    tiny.push({ name: `border-${w}x${h}`, w, h, v: value([stroke(1, 1, ...points.flat())], w, h) });
+  }
+  const cases = [
+    ...tiny,
+    { name: "worst", w: 1920, h: 1080, v: value(makeRandomStrokes(0x5eed, 100, 1920, 1080, 100, false, 100), 1920, 1080) },
+    { name: "realistic", w: 1920, h: 1080, v: value(makeRandomStrokes(0x51a7, 8, 1920, 1080, 12, true, 30), 1920, 1080) },
+    { name: "rr12-full", w: 1920, h: 1080, v: value(makeRandomStrokes(0x12a5, 100, 1920, 1080, 12, false, 100), 1920, 1080) },
+  ];
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "stroke-py-fast-"));
+  try {
+    const literals = cases.map((c, i) => strokesPyLiteral(c.v, `strokes_${i}`, LABEL_PARAM).join("\n")).join("\n");
+    const rows = cases.map((c, i) => `    (${c.w}, ${c.h}, strokes_${i}, ${i}, ${JSON.stringify(c.name)}),`).join("\n");
+    const script = [
+      "import os, sys, time",
+      "import cv2, numpy as np",
+      ...strokeRasterPyLines(),
+      literals,
+      "cases = [", rows, "]",
+      "for w, h, strokes, i, name in cases:",
+      "    start = time.perf_counter()",
+      "    labels = stroke_labels(w, h, strokes)",
+      "    elapsed = time.perf_counter() - start",
+      "    labels.tofile(os.path.join(sys.argv[1], str(i) + '.bin'))",
+      "    print('TIMING', name, format(elapsed, '.6f'))",
+    ].join("\n");
+    const pyPath = path.join(dir, "fast.py");
+    fs.writeFileSync(pyPath, script, "utf8");
+    const run = spawnSync("python", [pyPath, dir], { encoding: "utf8", env: { ...process.env, PYTHONIOENCODING: "utf8" }, maxBuffer: 2 * 1024 * 1024, timeout: 180000 });
+    assert.equal(run.status, 0, run.stderr || run.stdout);
+    for (const [i, c] of cases.entries()) {
+      const expected = rasterizeStrokes(c.w, c.h, c.v, ALLOWED).labels;
+      assert.deepEqual(fs.readFileSync(path.join(dir, `${i}.bin`)), Buffer.from(expected), c.name);
+    }
+    const timings = Object.fromEntries(run.stdout.trim().split(/\r?\n/).map((line) => {
+      const [, name, seconds] = line.split(/\s+/);
+      return [name, Number(seconds)];
+    }));
+    console.log(`sb-py-timing ${JSON.stringify(timings)}`);
+    // เป้าตอนรันเดี่ยว ≤ 10 s (วัดได้ ~4.4 s) · ตอนรันทั้งชุดไฟล์เทสต์วิ่งขนานกัน Python ถูกแย่ง CPU (~15 s) จึงเผื่อเป็น 30 s
+    assert.ok(timings.worst <= 30, `worst case took ${timings.worst}s`);
+    assert.ok(timings.realistic <= 0.3, `realistic case took ${timings.realistic}s`);
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }
@@ -585,7 +654,7 @@ test("sb-detail-legacy: blur, segment_edge and image_arithmetic DOM snapshots st
     globalThis.document = { activeElement: null, createElement: (tag) => new El(tag) };
     const expected = {
       blur: "d3121237a4b0f37ddfd36dc1fae9a4b95debf0f33c71137e3a10ca65323469e1",
-      segment_edge: "79a84ffcea51103cd660c53f79cfb54c335de3ec7e107a66bbe1ef8ded41f36b",
+      segment_edge: "d68fef298846b2eba2c6821e00d699671a1faee8af3ec5df1bb8a91e1fd8c6c8",
       image_arithmetic: "9c5dff5a6dab32215950fc1f13d2ad19182cef05cbda9ff134d79228be110589",
     };
     for (const [id, hash] of Object.entries(expected)) {
@@ -710,6 +779,10 @@ test("sb-aspect-warning: an exact one-percent ratio change is not over the bound
   const v = value([stroke(1, 12, 0, 0)], 100, 100);
   assert.equal(strokeAspectChanged(v, 100, 101), false);
   assert.equal(strokeAspectChanged(v, 100, 102), true);
+  assert.equal(strokeAspectChanged(v, 101, 100), false);
+  assert.equal(strokeAspectChanged(v, 99, 100), false);
+  assert.equal(strokeAspectChanged(v, 102, 100), true);
+  assert.equal(strokeAspectChanged(v, 98, 100), true);
 });
 
 test("sb-performance: rasterizes 100 full-range seeded strokes with 100 points under three seconds", () => {

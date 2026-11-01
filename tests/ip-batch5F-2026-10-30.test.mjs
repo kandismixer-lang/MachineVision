@@ -85,7 +85,8 @@ test('ip5f-schema: six operations are reachable in order and MS-SSIM feeds Pass/
     if(OPTION_GROUPS[host+'.mode'])assert.ok(OPTION_GROUPS[host+'.mode'].some(g=>g[1].includes(id)));
   }
   for(const id of ['deconv_wiener','deconv_lucy','deconv_blind','deconv_reg'])assert.equal(OPS[id].params.at(-1).key,'taper');
-  assert.equal(OPS.inpaint.params[0].options.at(-1).value,'laplace');
+  assert.equal(OPS.inpaint.params[0].options.at(-2).value,'laplace');
+  assert.equal(OPS.inpaint.params[0].options.at(-1).value,'exemplar');
   assert.equal(isParamVisible(OPS.inpaint.params.find(q=>q.key==='radius'),{method:'laplace'},OPS.inpaint.params),false);
   assert.ok(PF_VALUE_OPS.has('multissim'));assert.ok(PF_VALUE_OPS.has('active_contour'));
 });

@@ -1,6 +1,8 @@
 import { color5EPy, jacobi5EPy } from "./codegen-batch5e.js";
 import { withTaper5FPy, regularized5FPy, active5FPy, laplace5FPy, blind5FPy, localLaplacian5FPy, multissim5FPy, fusion5FPy } from "./codegen-batch5f.js";
-import { testPattern5GPy, similarityTransform5GPy, ballMorph5GPy, quadtree5GPy, contourLines5GPy, mtbRegister5GPy, geodesicDistance5GPy, radon5GPy } from "./codegen-batch5g.js";
+import { testPattern5GPy, similarityTransform5GPy, ballMorph5GPy, quadtree5GPy, contourLines5GPy, mtbRegister5GPy, geodesicDistance5GPy, radon5GPy, phaseRegister5GPy, scribbleSegment5GPy, isodataSegment5GPy, firDesign5GPy, exemplar5GPy } from "./codegen-batch5g.js";
+import { ISODATA_PALETTE_5G } from "./filters/batch5g.js";
+import { strokeRasterPyLines, strokesPyLiteral } from "./codegen-strokes.js";
 // สร้างโค้ด Python (OpenCV) ตามลำดับ Box ที่ภาพวิ่งผ่านจริง ๆ ในกล่องผลลัพธ์หนึ่งกล่อง
 // (คนละอย่างกับปุ่ม Export ที่เป็นโค้ดเทรน YOLO)
 //
@@ -19,6 +21,10 @@ const TEACH = {
   quadtree: "แบ่งภาพเป็นบล็อกตามความต่างของความสว่าง",
   contour_lines: "วาดเส้นชั้นความสว่างบนภาพ",
   mtb_register: "จัดภาพ A ด้วย bitmap มัธยฐานของภาพ B",
+  phase_register: "หาและแก้ระยะเลื่อนของภาพ A",
+  scribble_segment: "ใช้เส้นแดงและน้ำเงินแบ่งวัตถุ",
+  isodata_segment: "แยกและรวมกลุ่มสีตามการกระจาย",
+  fir_design: "ออกแบบตัวกรองและดูผลความถี่",
   grayscale: "รวม 3 ช่องสีเป็นความสว่างเดียว — พื้นฐานก่อน threshold/edge",
   gaussian_blur: "เฉลี่ยเพื่อนบ้านแบบถ่วงน้ำหนักระฆังคว่ำ — ลด noise แบบสุ่ม",
   median_blur: "ใช้ค่ากลางของเพื่อนบ้าน จึงลบ noise เกลือ-พริกไทยดีกว่า Gaussian",
@@ -3056,6 +3062,11 @@ for c, components in enumerate(((z,z,t,value,value,q), (t,value,value,q,z,z), (v
   // radius clamp ช่วงเดียวกับ registry (intIn(p.radius, 3, 1, 7))
   inpaint: { needs: "any", out: "same", gen: (p, ctx) => {
     if(p.method==="laplace")return guarded5A(laplace5FPy(bBinaryLines(ctx)));
+    if(p.method==="exemplar") {
+      const patch = Number(pickOwn({ "5": "5", "7": "7", "9": "9" }, String(p.patch), "9"));
+      const search = Math.round(clampNum(p.search, 60, 10, 200));
+      return guarded5A(exemplar5GPy(patch, search, LUCY_WORK_BUDGET, bBinaryLines(ctx), laplace5FPy([])));
+    }
     const radius = Math.round(clampNum(p.radius, 3, 1, 7));
     const ns = p.method === "ns";
     const flag = ns ? "cv2.INPAINT_NS" : "cv2.INPAINT_TELEA";
@@ -3636,6 +3647,32 @@ for c, components in enumerate(((z,z,t,value,value,q), (t,value,value,q,z,z), (v
     const thetaStep = Number(pickOwn({ 1: "1", 2: "2", 5: "5" }, String(p.thetaStep), "1"));
     const view = pickOwn({ sinogram: "sinogram", peak: "peak" }, p.view, "sinogram");
     return radon5GPy(thetaStep, view, LUCY_WORK_BUDGET);
+  } },
+  phase_register: { needs: "any", outOf: (p) => p.view === "overlay" ? "color" : p.view === "aligned" ? "same" : "gray", gen: (p, ctx) => {
+    const view = pickOwn({ aligned: "aligned", overlay: "overlay", diff: "diff", surface: "surface" }, p.view, "aligned");
+    return phaseRegister5GPy(boolOr(p.window, true), boolOr(p.subpixel, true), view, pyGrayCode(ctx), pyBGrayCode(ctx));
+  } },
+  scribble_segment: { needs: "any", outOf: (p) => p.view === "mask" ? "gray" : "color", gen: (p, ctx) => {
+    const metric = pickOwn({ chessboard: "chessboard", quasi: "quasi" }, p.metric, "chessboard");
+    const view = pickOwn({ overlay: "overlay", mask: "mask", distance: "distance" }, p.view, "overlay");
+    const edge = clampNum(p.edge, 1, 0, 5);
+    const strokeLines = strokesPyLiteral(p.strokes, "strokes5g", OPS.scribble_segment.params[0]);
+    return guarded5A(scribbleSegment5GPy(edge, metric, view, LUCY_WORK_BUDGET, pyGrayCode(ctx), strokeLines,
+      pyColor(ctx, [230, 30, 30]), pyColor(ctx, [30, 80, 240]), pyColor(ctx, [0, 255, 0]), pyColor(ctx, [0, 0, 96])));
+  } },
+  isodata_segment: { needs: "any", outOf: (p) => p.view === "labels" ? "color" : "same", gen: (p, ctx) => {
+    const k = Math.round(clampNum(p.k, 4, 2, 12)), iterations = Math.round(clampNum(p.iterations, 20, 1, 50));
+    const minSizePct = clampNum(p.minSizePct, 1, 0, 20), splitStd = clampNum(p.splitStd, 30, 4, 128), mergeDist = clampNum(p.mergeDist, 30, 0, 255);
+    const view = pickOwn({ mean: "mean", labels: "labels" }, p.view, "mean");
+    return guarded5A(isodataSegment5GPy(k, iterations, minSizePct, splitStd, mergeDist, view, isMirrored(ctx), ISODATA_PALETTE_5G, LUCY_WORK_BUDGET));
+  } },
+  fir_design: { needs: "any", outOf: (p) => p.view === "result" ? "same" : "gray", gen: (p) => {
+    const method = pickOwn({ window: "window", sampling: "sampling", mcclellan: "mcclellan" }, p.method, "window");
+    const response = pickOwn({ lowpass: "lowpass", highpass: "highpass", bandpass: "bandpass", bandstop: "bandstop" }, p.response, "lowpass");
+    const c1 = clampNum(p.cutoff, 0.3, 0.05, 0.95), c2 = clampNum(p.cutoff2, 0.6, 0.05, 0.95);
+    let size = Math.round(clampNum(p.size, 11, 3, 21)); if ((size & 1) === 0) size = Math.min(21, size + 1);
+    const win = pickOwn({ hamming: "hamming", hann: "hann", rect: "rect" }, p.window, "hamming"), view = pickOwn({ result: "result", response: "response", kernel: "kernel" }, p.view, "result");
+    return guarded5A(firDesign5GPy(size, method, response, c1, c2, win, view, boolOr(p.add128, false), LUCY_WORK_BUDGET));
   } },
   gabor_filter: { needs: "gray", out: "gray", gen: (p) => {
     const lambd = Math.round(clampNum(p.wavelength, 8, 2, 64)), theta = Math.round(clampNum(p.orientation, 0, 0, 179));
@@ -4310,7 +4347,7 @@ function appOnlyHeader(appOnly) {
 // ข้อจำกัดที่รู้ (ยอมรับ): template_matching (ไม่มี template / ใหญ่เกินภาพ) และ psnr/ssim (ไม่ได้ต่อ B) แอปคืนภาพโดยไม่มี values แต่ที่นี่ยังนับเป็น
 // "กล่องวัดล่าสุด" เสมอ — ผลคือ Python ตัดสิน NG (กล่องผิดชนิด) ในกรณีที่แอปจะใช้ค่าของกล่องวัดก่อนหน้า · เอนเอียงไปทาง NG (fail-safe)
 export const PF_VALUE_OPS = new Set(["active_contour", "multissim", "select_object", "image_stats", "corr2", "regionprops", "template_matching", "psnr", "ssim", "mog2", "farneback_optical_flow", "pyrlk_optical_flow", "feret", "quadtree",
-  "line_profile", "shape_filter", "roi_polygon", "slic", "focus_score", "delta_e", "roi_apply", "ecc_register", "gabor_filter", "glcm", "dehaze", "dct_jpeg", "watershed_marker", "seg_score", "bf_score", "euler_number", "image_pyramid", "frangi_vesselness", "piqe", "mtb_register", "geodesic_distance", "radon"]);
+  "line_profile", "shape_filter", "roi_polygon", "slic", "focus_score", "delta_e", "roi_apply", "ecc_register", "gabor_filter", "glcm", "dehaze", "dct_jpeg", "watershed_marker", "seg_score", "bf_score", "euler_number", "image_pyramid", "frangi_vesselness", "piqe", "mtb_register", "geodesic_distance", "radon", "phase_register", "scribble_segment", "isodata_segment"]);
 const PF_PY_SOURCES = { active_contour: true, multissim: true, select_object: true, image_stats: true, corr2: true, regionprops: true, roi_polygon: true, focus_score: true, seg_score: true, bf_score: true, piqe: true, quadtree: true };
 // บรรทัดท้ายขั้นวัด: เก็บค่าที่ pass_fail ต้องใช้ลง `pf_up` ทันที (ตัวแปรของขั้นวัดอาจถูกทับโดยขั้นถัดไป) · เรียกเมื่อ pipeline มี pass_fail เท่านั้น
 function pfSnapshotLines(opId, local, ctx) {

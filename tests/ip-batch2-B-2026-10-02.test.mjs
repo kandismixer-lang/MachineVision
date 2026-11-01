@@ -705,7 +705,7 @@ test('ipB-7. (static structure) the 4 ops exist in OPS (the OPS total is NOT pin
   }
   assert.deepEqual(OPS.imarith.params.find((p) => p.key === 'operation').options.map((o) => o.value), IMARITH_MODES);
   assert.deepEqual(OPS.logical_ops.params.find((p) => p.key === 'operation').options.map((o) => o.value), LOGICAL_MODES);
-  assert.deepEqual(OPS.inpaint.params.find((p) => p.key === 'method').options.map((o) => o.value), [...INPAINT_METHODS, 'laplace']);
+  assert.deepEqual(OPS.inpaint.params.find((p) => p.key === 'method').options.map((o) => o.value), [...INPAINT_METHODS, 'laplace', 'exemplar']);
   assert.deepEqual(OPS.hist_match.params, []);
   const dp = defaultParams('image_arithmetic');
   assert.equal(dp.mode, 'imabsdiff');
@@ -737,9 +737,15 @@ test('ipB-8. (static read) inpaint radius is clamped in registry.js to EXACTLY t
   assert.ok(pct && Number(pct[1]) === 25, 'registry.js: INPAINT_MAX_MASK_PCT = 25');
   assert.match(gen, /elif nz \* 100 > 25 \* total:/, 'codegen.js mirrors the same integer comparison');
   assert.match(spec.hint, /640×480 ≈ [\d.]+–[\d.]+ วินาที/, 'hint carries the measured numbers');
+  const search = OPS.inpaint.params.find((p) => p.key === 'search');
+  const searchReg = reg.match(/intIn\(p\.search, (-?[\d.]+), (-?[\d.]+), (-?[\d.]+)\)/);
+  const searchGen = gen.match(/Math\.round\(clampNum\(p\.search, (-?[\d.]+), (-?[\d.]+), (-?[\d.]+)\)\)/);
+  assert.ok(searchReg && searchGen, 'exemplar search radius is clamped in registry and Python codegen');
+  assert.deepEqual([Number(searchReg[1]), Number(searchReg[2]), Number(searchReg[3])], [search.default, search.min, search.max]);
+  assert.deepEqual([Number(searchGen[1]), Number(searchGen[2]), Number(searchGen[3])], [search.default, search.min, search.max]);
   for (const id of NEW_OPS) for (const p of OPS[id].params) {
     if (p.type !== 'number') continue;
-    assert.ok(id === 'inpaint' && p.key === 'radius', `${id}.${p.key}: a numeric param with no clamp test`);
+    assert.ok(id === 'inpaint' && ['radius', 'search'].includes(p.key), `${id}.${p.key}: a numeric param with no clamp test`);
   }
 });
 

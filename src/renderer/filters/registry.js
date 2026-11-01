@@ -1,6 +1,7 @@
 import { byte5E, yiq5E, srgbLut5E, decorr5E, pca5E, angle5E, guardThicken5E } from "./batch5e.js";
 import { byte5F, edgeTaper5F, activeContour5F, laplace5F, lucyStep5F, blind5F, multissim5F, fusion5F } from "./batch5f.js";
-import { testPattern5G, similarityTransform5G, ballMorph5G, ballKernelSize5G, quadtree5G, contourLines5G, mtbRegister5G, geodesicDistance5G, radon5G } from "./batch5g.js";
+import { rasterizeStrokes } from "./stroke-mask.js";
+import { testPattern5G, similarityTransform5G, ballMorph5G, ballKernelSize5G, quadtree5G, contourLines5G, mtbRegister5G, geodesicDistance5G, radon5G, phasePad5G, phaseCrossPower5G, phasePeak5G, phaseViews5G, phaseSurface5G, phaseFailure5G, scribbleSegment5G, ISODATA_PALETTE_5G, isodata5G, firDesign5G, firFilter5G, firResponse5G, firResponseImage5G, firKernelImage5G, firKernelSize5G, exemplar5G } from "./batch5g.js";
 // Registry ของ filter — แหล่งข้อมูลเดียว (single source of truth)
 // จัดกลุ่มตามหัวข้อการสอน Image Processing:
 //   1. Color Space      2. Enhancement
@@ -6008,8 +6009,11 @@ export const OPS = {
         { value: "telea", label: "Telea (Fast Marching)", hint: "เติมจากขอบเข้าด้านใน ถ่วงน้ำหนักตามระยะ" },
         { value: "ns", label: "Navier-Stokes", hint: "ต่อแนวเส้น/ขอบของภาพเข้าไปในบริเวณที่ซ่อม" },
         { value: "laplace", label: "Laplace (regionfill)", hint: "เติมค่า harmonic ด้วย red-black SOR จากค่าเริ่มต้นแบบ coarse-to-fine" },
+        { value: "exemplar", label: "Exemplar (inpaintExemplar)", hint: "คัดลอกแผ่นภาพที่คล้ายกันจากรอบ ๆ มาเติม เหมาะกับลายซ้ำ · " + SLOW_MODE_HINT },
       ], default: "telea" },
       { key: "radius", type: "number", label: "รัศมีอ้างอิง (px)", min: 1, max: 7, step: 1, default: 3, visibleWhen: [{ key: "method", in: ["telea", "ns"] }], hint: "ระยะรอบจุดที่ใช้เดาสี — ใหญ่ = ช้าลงมาก · วัดจริงที่ r=7 mask ครอบ 25% ภาพสี (Node, OpenCV.js 4.10): 640×480 ≈ 0.12–0.29 วินาที · 1280×720 ≈ 0.37–0.86 วินาทีต่อเฟรม ขึ้นกับรูปทรงของ mask (จุดกระจายช้ากว่าก้อนเดียว)", desc: "รัศมีของบริเวณรอบ ๆ ที่ใช้คำนวณสีที่จะเติม — รอยเล็กใช้ 3 ก็พอ" },
+      { key: "patch", type: "select", label: "ขนาดแผ่นภาพ (px)", options: [{ value: "5", label: "5×5" }, { value: "7", label: "7×7" }, { value: "9", label: "9×9" }], default: "9", visibleWhen: [{ key: "method", in: ["exemplar"] }], hint: "แผ่นภาพใหญ่ต่อลายได้ไกลขึ้นแต่ช้าลง (ค่าเริ่มต้นของ MATLAB PatchSize คือ 9)" },
+      { key: "search", type: "number", label: "รัศมีค้นหาแผ่นภาพ (px)", min: 10, max: 200, step: 5, default: 60, visibleWhen: [{ key: "method", in: ["exemplar"] }], hint: "ค้นหาแผ่นภาพต้นแบบเฉพาะรอบ ๆ บริเวณที่ซ่อม ไม่ค้นทั้งภาพ เพื่อให้เร็ว" },
     ],
     apply(cv, src, p, ctx) {
       const pass = passthroughNoSrc2(src, ctx);
@@ -6046,6 +6050,21 @@ export const OPS = {
           const x=rgb||src,budget=lucyBudgetIters(nz,1,1,5000),q=laplace5F(x.data,x.cols,x.rows,x.channels(),maskBin.data,budget);
           dst=cv.matFromArray(x.rows,x.cols,x.type(),q.data);
           ctx.info=`Laplace (regionfill) · ${nz} px · ${q.used} รอบ`+(q.stable?" · หยุดเมื่อนิ่ง":" · ครบ")+(budget<5000&&q.fineExhausted?` · ภาพใหญ่ จึงลดเหลือ ${budget} รอบ (ขอ 5000 รอบ)`:"")+suffix;
+          return dst;
+        }
+        if (p.method === "exemplar") {
+          const x = rgb || src;
+          const patch = Number(ownKey({ 5: true, 7: true, 9: true }, String(p.patch), "9")), search = intIn(p.search, 60, 10, 200);
+          const q = exemplar5G(Uint8Array.from(x.data), x.cols, x.rows, x.channels(), Uint8Array.from(maskBin.data), patch, search, 40 * LUCY_WORK_BUDGET);
+          if (q.status === "fallback") {
+            const budget = lucyBudgetIters(nz, 1, 1, 5000), lap = laplace5F(x.data, x.cols, x.rows, x.channels(), maskBin.data, budget);
+            dst = cv.matFromArray(x.rows, x.cols, x.type(), lap.data);
+            ctx.info = `Laplace (regionfill) · ${nz} px · ${lap.used} รอบ` + (lap.stable ? " · หยุดเมื่อนิ่ง" : " · ครบ") + (budget < 5000 && lap.fineExhausted ? ` · ภาพใหญ่ จึงลดเหลือ ${budget} รอบ (ขอ 5000 รอบ)` : "") + " · ไม่มีแผ่นต้นแบบที่ไม่ทับ mask จึงใช้ Laplace" + suffix;
+            return dst;
+          }
+          if (q.status === "refuse") { ctx.info = "บริเวณใหญ่เกินไปสำหรับ Exemplar — ลด mask หรือใช้ Laplace / Telea" + suffix; return x.clone(); }
+          dst = cv.matFromArray(x.rows, x.cols, x.type(), q.data);
+          ctx.info = `Exemplar · ${q.nz} px · แผ่น ${patch}×${patch} · ${q.iterations} รอบ · ค้นหา ±${q.search} px` + (q.reduced ? ` · ภาพ/บริเวณใหญ่ จึงลดรัศมีค้นหาเป็น ${q.search} px (ขอ ${search})` : "") + suffix;
           return dst;
         }
         dst = new cv.Mat();
@@ -10006,6 +10025,206 @@ OPS.radon = {
   },
 };
 
+OPS.inpaint.desc += " · Exemplar (Criminisi): เติมจากขอบเข้าใน เลือกจุดที่มั่นใจและอยู่บนแนวขอบในภาพก่อน แล้วคัดลอกแผ่นภาพที่ต่างน้อยที่สุด · MATLAB ค้นทั้งภาพและมีลำดับแบบ tensor แอปค้นเฉพาะรอบบริเวณเพื่อความเร็ว";
+
+OPS.phase_register = {
+  name: "Phase Correlation (จัดภาพด้วย phase — imregcorr)", needs: "any",
+  modeHint: "หาระยะเลื่อนของ A เทียบ B จากเฟสของ FFT — เร็ว ไม่ไวต่อความสว่าง ใช้กับการเลื่อนเท่านั้น",
+  desc: "หาการเลื่อนของ A เทียบ B จากเฟสของ FFT: ยอดของภาพ correlation อยู่ที่ระยะเลื่อน เร็วและไม่ไวต่อความสว่าง · ทำเฉพาะการเลื่อน (ละเอียดกว่าพิกเซลได้) · MATLAB imregcorr ค่าเริ่มต้นหาการหมุนและย่อขยายด้วย (similarity) ถ้าภาพหมุนให้ใช้ ECC · ผลที่บอกคือต้องเลื่อน A เท่าไรให้ทับ B (บวก = ไปทางขวา / ลง) · ภาพต้องมีลายพอและด้านสั้นอย่างน้อย 8 px",
+  params: [
+    { key: "window", type: "boolean", label: "ใช้ Hann window ลดผลจากขอบภาพ", default: true, hint: "FFT คิดว่าภาพต่อวนรอบ แต่ภาพจริงไม่ได้ต่อกัน จึงทำให้ขอบภาพค่อย ๆ จางก่อน ลดยอดปลอมจากขอบ" },
+    { key: "subpixel", type: "boolean", label: "หาละเอียดกว่าพิกเซล", default: true, hint: "ใช้พาราโบลาผ่าน 3 จุดรอบยอดเพื่อได้เศษทศนิยมของการเลื่อน" },
+    { key: "view", type: "select", label: "มุมมองผล", options: [
+      { value: "aligned", label: "A ที่จัดแล้ว" }, { value: "overlay", label: "ซ้อนสี (ม่วง = A, เขียว = B)" },
+      { value: "diff", label: "|A ที่จัดแล้ว − B|" }, { value: "surface", label: "พื้นผิว correlation (ยอด = ระยะเลื่อน)", hint: "ภาพนี้มีขนาด Wp×Hp (ขนาดที่ FFT ชอบ) ซึ่งอาจใหญ่กว่าภาพเข้าเล็กน้อย กึ่งกลางภาพ = ไม่เลื่อน" },
+    ], default: "aligned" },
+  ],
+  apply(cv, src, p, ctx) {
+    const fields = [["dx", "เลื่อน x (px)"], ["dy", "เลื่อน y (px)"], ["peak", "ยอด correlation"]];
+    const pass = passthroughNoSrc2(src, ctx);
+    if (pass) { ctx.values = scalarValues(fields, []); return pass; }
+    if (isEmptyMat(src)) { ctx.info = "ภาพว่าง"; ctx.values = scalarValues(fields, []); return src.clone(); }
+    const view = ownKey({ aligned: true, overlay: true, diff: true, surface: true }, p.view, "aligned");
+    const useWindow = boolOr(p.window, true), subpixel = boolOr(p.subpixel, true);
+    let raw = null, grayA = null, grayB = null, matched = null;
+    const mats = [];
+    try {
+      raw = dropAlpha(cv, src);
+      grayA = grayIfNeeded(cv, src) || src;
+      grayB = grayIfNeeded(cv, ctx.src2) || ctx.src2;
+      const match = matchSize(cv, grayA, grayB);
+      matched = match.mat;
+      const resized = match.resized;
+      const width = src.cols, height = src.rows, channels = (raw || src).channels();
+      const rawData = Uint8Array.from((raw || src).data), aData = Uint8Array.from(grayA.data), bData = Uint8Array.from(matched.data);
+      let amin = 255, amax = 0, bmin = 255, bmax = 0;
+      for (let i = 0; i < aData.length; i++) { if (aData[i] < amin) amin = aData[i]; if (aData[i] > amax) amax = aData[i]; if (bData[i] < bmin) bmin = bData[i]; if (bData[i] > bmax) bmax = bData[i]; }
+      const resizedNote = resized ? RESIZED_B_INFO : "";
+      if (Math.min(width, height) < 8 || amin === amax || bmin === bmax) {
+        const small = Math.min(width, height) < 8;
+        const q = phaseFailure5G(rawData, aData, width, height, channels, view);
+        const out = cv.matFromArray(height, width, q.channels === 1 ? cv.CV_8UC1 : cv.CV_8UC3, q.data);
+        ctx.info = (small ? "Phase correlation · ภาพเล็กเกินไป (ต้องอย่างน้อย 8×8)" : "Phase correlation · ภาพเรียบเกินไป") + resizedNote;
+        ctx.values = scalarValues(fields, [0, 0, 0]);
+        return out;
+      }
+      const wp = cv.getOptimalDFTSize(width), hp = cv.getOptimalDFTSize(height);
+      const padA = phasePad5G(aData, width, height, wp, hp, useWindow), padB = phasePad5G(bData, width, height, wp, hp, useWindow);
+      const matA = cv.matFromArray(hp, wp, cv.CV_64FC1, padA); mats.push(matA);
+      const matB = cv.matFromArray(hp, wp, cv.CV_64FC1, padB); mats.push(matB);
+      const specA = new cv.Mat(); mats.push(specA); cv.dft(matA, specA, cv.DFT_COMPLEX_OUTPUT);
+      const specB = new cv.Mat(); mats.push(specB); cv.dft(matB, specB, cv.DFT_COMPLEX_OUTPUT);
+      const cross = new cv.Mat(hp, wp, cv.CV_64FC2); mats.push(cross);
+      const inv = new cv.Mat(); mats.push(inv);
+      phaseCrossPower5G(specA.data64F, specB.data64F, cross.data64F);
+      cv.dft(cross, inv, cv.DFT_INVERSE + cv.DFT_SCALE + cv.DFT_COMPLEX_OUTPUT);
+      const inverse = Float64Array.from(inv.data64F);
+      for (const mat of mats) mat.delete();
+      mats.length = 0;
+      const peak = phasePeak5G(inverse, wp, hp, subpixel);
+      const q = view === "surface"
+        ? { data: phaseSurface5G(inverse, wp, hp, peak.peak), channels: 1 }
+        : phaseViews5G(rawData, aData, bData, width, height, channels, peak.cx, peak.cy, view);
+      const out = cv.matFromArray(view === "surface" ? hp : height, view === "surface" ? wp : width, q.channels === 1 ? cv.CV_8UC1 : cv.CV_8UC3, q.data);
+      ctx.info = `Phase correlation · เลื่อน A (${fixed2(peak.cx)}, ${fixed2(peak.cy)}) px · ยอด ${fixed3(peak.peak)}` + resizedNote;
+      ctx.values = scalarValues(fields, [Math.floor(peak.cx * 100 + 0.5) / 100, Math.floor(peak.cy * 100 + 0.5) / 100, Math.floor(peak.peak * 1000 + 0.5) / 1000]);
+      return out;
+    } finally {
+      for (const mat of mats) mat.delete();
+      if (raw) raw.delete();
+      if (grayA && grayA !== src) grayA.delete();
+      if (grayB && grayB !== ctx.src2) grayB.delete();
+      if (matched && matched !== grayB) matched.delete();
+    }
+  },
+};
+
+OPS.scribble_segment = {
+  name: "Scribble Segmentation (เส้นแดง = วัตถุ, น้ำเงิน = พื้นหลัง — imseggeodesic)", needs: "any",
+  modeHint: SLOW_MODE_HINT + " · ขีดเส้นแดงบนวัตถุและน้ำเงินบนพื้นหลังด้วยพู่กันในแอป แล้วแอปแบ่งวัตถุให้",
+  desc: "กด ✏️ วาดเส้นบนภาพ แล้วขีดเส้นแดงบนวัตถุ และเส้นน้ำเงินบนพื้นหลัง แอปวัดระยะเดินจากเส้นแต่ละสี (เดินข้ามขอบสีแพง) พิกเซลที่ใกล้เส้นแดงกว่าเป็นวัตถุ · เส้นผูกกับกล่องนี้เป็น % ของภาพ เปลี่ยนภาพแล้วเส้นยังอยู่ที่เดิม · MATLAB imseggeodesic รับ mask ของเส้นขีดโดยตรง ทำงานในสี Lab ถ่วงด้วยความน่าจะเป็นของสี และแบ่งได้ 3 ส่วน แอปแบ่ง 2 ส่วนแบบง่ายกว่า",
+  params: [
+    { key: "strokes", type: "strokes", label: "เส้นขีดบนภาพ", default: null, labels: [
+      { value: 1, name: "วัตถุ", color: [230, 30, 30], hint: "ลากเส้นทับตัววัตถุ ไม่ต้องระบายเต็ม แค่ขีดผ่านก็พอ" },
+      { value: 2, name: "พื้นหลัง", color: [30, 80, 240], hint: "ลากเส้นทับพื้นหลังรอบ ๆ วัตถุ — ขีดใกล้ขอบวัตถุจะได้ผลแม่นขึ้น" },
+    ], eraser: true, desc: "ขีดเส้นสีแดงบนวัตถุ และสีน้ำเงินบนพื้นหลัง โปรแกรมจะแบ่งส่วนที่เหลือให้เอง" },
+    { key: "edge", type: "number", label: "ความสำคัญของขอบสี", min: 0, max: 5, step: 0.1, default: 1, hint: "ยิ่งมาก การเดินข้ามขอบที่สีต่างกันยิ่งแพง วัตถุจะหยุดที่ขอบ" },
+    { key: "metric", type: "select", label: "ทิศทางที่เดินได้", options: [{ value: "chessboard", label: "8 ทิศ ก้าวละ 1" }, { value: "quasi", label: "8 ทิศ ทแยง √2" }], default: "chessboard" },
+    { key: "view", type: "select", label: "มุมมองผล", options: [{ value: "overlay", label: "ระบายวัตถุบนภาพ" }, { value: "mask", label: "Mask ขาว-ดำ" }, { value: "distance", label: "ระยะจากเส้นแดง" }], default: "overlay" },
+  ],
+  apply(cv, src, p, ctx) {
+    const fields = [["area", "พื้นที่วัตถุ (px)"]];
+    if (isEmptyMat(src)) { ctx.info = "ภาพว่าง"; ctx.values = scalarValues(fields, []); return src.clone(); }
+    let raw = null, gray = null;
+    try {
+      raw = dropAlpha(cv, src);
+      gray = grayIfNeeded(cv, src) || src;
+      const width = src.cols, height = src.rows, view = ownKey({ overlay: true, mask: true, distance: true }, p.view, "overlay");
+      const metric = ownKey({ chessboard: true, quasi: true }, p.metric, "chessboard"), edge = numIn(p.edge, 1, 0, 5);
+      const lm = rasterizeStrokes(width, height, p.strokes, new Set([0, 1, 2]));
+      const rawData = Uint8Array.from((raw || src).data), channels = (raw || src).channels(), grayData = Uint8Array.from(gray.data);
+      const red = lm?.counts[1] || 0, blue = lm?.counts[2] || 0;
+      if (!lm || (red === 0 && blue === 0) || red === 0 || blue === 0) {
+        ctx.info = !lm || (red === 0 && blue === 0)
+          ? "ยังไม่มีเส้นขีด — กด ✏️ วาดเส้นบนภาพ ในแผงปรับค่า แล้วขีดเส้นแดงบนวัตถุ และเส้นน้ำเงินบนพื้นหลัง"
+          : red === 0 ? "ยังไม่มีเส้นสีแดง (วัตถุ) — ขีดบนวัตถุอย่างน้อย 1 เส้น" : "ยังไม่มีเส้นสีน้ำเงิน (พื้นหลัง) — ขีดบนพื้นหลังอย่างน้อย 1 เส้น";
+        ctx.values = scalarValues(fields, []);
+        if (view === "mask") return cv.matFromArray(height, width, cv.CV_8UC1, grayData);
+        const out = new Uint8Array(width * height * 3);
+        for (let i = 0; i < width * height; i++) for (let c = 0; c < 3; c++) out[3 * i + c] = rawData[i * channels + (channels === 1 ? 0 : c)];
+        return cv.matFromArray(height, width, cv.CV_8UC3, out);
+      }
+      const maxSets = lucyBudgetIters(width, height, 16, 100);
+      const q = scribbleSegment5G(rawData, width, height, channels, lm.labels, edge, metric, view, maxSets);
+      let info = `Scribble · วัตถุ ${q.area} px (${fixed1(q.area * 100 / (width * height))}%) · เส้นแดง ${q.red} px · น้ำเงิน ${q.blue} px · ${q.sweeps} รอบกวาด`;
+      if ((!q.converged) && maxSets < 100) info += ` · ภาพใหญ่ จึงจำกัดรอบกวาด (สูงสุด ${maxSets} ชุดต่อสี)`;
+      if (lm.aspectChanged) info += " · ภาพเข้าคนละสัดส่วนกับตอนวาด เส้นจึงยืดตาม";
+      ctx.info = info; ctx.values = scalarValues(fields, [q.area]);
+      return cv.matFromArray(height, width, q.channels === 1 ? cv.CV_8UC1 : cv.CV_8UC3, q.data);
+    } finally { if (raw) raw.delete(); if (gray && gray !== src) gray.delete(); }
+  },
+};
+
+OPS.isodata_segment = {
+  name: "ISODATA Color Segmentation (แบ่งกลุ่มสี ปรับจำนวนกลุ่มเอง)", needs: "any",
+  modeHint: SLOW_MODE_HINT + " · คล้าย K-means แต่ปรับจำนวนกลุ่มเอง: แยก รวม และตัดกลุ่ม · ผลเหมือนเดิมทุกครั้ง",
+  desc: "คล้าย K-means แต่ปรับจำนวนกลุ่มเองระหว่างคำนวณ: แยกกลุ่มที่สีกระจายมาก รวมกลุ่มที่ศูนย์กลางใกล้กัน และตัดกลุ่มเล็ก · ผลเหมือนเดิมทุกครั้ง (ไม่สุ่ม) · ทำบนค่า RGB 8 bit · ยังไม่ได้เทียบกับเอกสาร imsegisodata ของ MATLAB R2026b ชื่อและค่าเริ่มต้นของ MATLAB อาจต่างจากแอป",
+  params: [
+    { key: "k", type: "number", label: "จำนวนกลุ่มเริ่มต้น", min: 2, max: 12, step: 1, default: 4, hint: "เริ่มจากกี่กลุ่ม แล้วโปรแกรมแยก/รวมเองได้ สูงสุดสองเท่าของค่านี้" },
+    { key: "iterations", type: "number", label: "จำนวนรอบสูงสุด", min: 1, max: 50, step: 1, default: 20, hint: "หยุดก่อนได้ถ้าผลนิ่ง" },
+    { key: "minSizePct", type: "number", label: "ตัดกลุ่มที่เล็กกว่า (% ของพิกเซล)", min: 0, max: 20, step: 0.5, default: 1, hint: "กลุ่มที่มีพิกเซลน้อยกว่านี้จะถูกตัดทิ้งแล้วแบ่งใหม่" },
+    { key: "splitStd", type: "number", label: "แยกกลุ่มเมื่อ std ของช่องใดเกิน", min: 4, max: 128, step: 1, default: 30, hint: "ค่าน้อย = แยกง่าย ได้กลุ่มมาก" },
+    { key: "mergeDist", type: "number", label: "รวมกลุ่มเมื่อศูนย์กลางห่างน้อยกว่า", min: 0, max: 255, step: 1, default: 30, hint: "ค่ามาก = รวมง่าย ได้กลุ่มน้อย" },
+    { key: "view", type: "select", label: "มุมมองผล", options: [{ value: "mean", label: "สีเฉลี่ยของกลุ่ม" }, { value: "labels", label: "สีประจำกลุ่ม", hint: "สีประจำกลุ่มมี 12 สี ถ้ากลุ่มเกิน 12 จะใช้สีซ้ำ" }], default: "mean" },
+  ],
+  apply(cv, src, p, ctx) {
+    const fields = [["clusters", "จำนวนกลุ่ม"]];
+    if (isEmptyMat(src)) { ctx.info = "ภาพว่าง"; ctx.values = scalarValues(fields, []); return src.clone(); }
+    let raw = null;
+    try {
+      raw = dropAlpha(cv, src);
+      const input = raw || src, width = input.cols, height = input.rows, ch = input.channels();
+      const k = intIn(p.k, 4, 2, 12), iterations = intIn(p.iterations, 20, 1, 50);
+      const minSizePct = numIn(p.minSizePct, 1, 0, 20), splitStd = numIn(p.splitStd, 30, 4, 128), mergeDist = numIn(p.mergeDist, 30, 0, 255);
+      const view = ownKey({ mean: true, labels: true }, p.view, "mean"), pix = Uint8Array.from(input.data);
+      const uniqueKeys = new Set();
+      for (let i = 0; i < width * height; i++) uniqueKeys.add(ch === 1 ? pix[i] : ((pix[3 * i] << 16) | (pix[3 * i + 1] << 8) | pix[3 * i + 2]));
+      const iterBudget = lucyBudgetIters(uniqueKeys.size, 1, 2 * k, iterations);
+      const q = isodata5G(pix, width, height, ch, k, iterations, minSizePct, splitStd, mergeDist, view, iterBudget);
+      ctx.info = `ISODATA · ${q.clusters} กลุ่ม (เริ่ม ${k}) · ${q.used} รอบ (${q.converged ? "นิ่ง" : "ครบ"}) · แยก ${q.splits} · รวม ${q.merges} · ตัด ${q.cuts}` + (iterBudget < iterations ? ` · ภาพใหญ่ จึงลดเหลือ ${iterBudget} รอบ (ขอ ${iterations} รอบ)` : "");
+      ctx.values = scalarValues(fields, [q.clusters]);
+      const type = q.channels === 1 ? cv.CV_8UC1 : cv.CV_8UC3;
+      return cv.matFromArray(height, width, type, q.data);
+    } finally { if (raw) raw.delete(); }
+  },
+};
+
+OPS.fir_design = {
+  name: "FIR Filter Design (ออกแบบตัวกรอง 2 มิติ + ผลตอบสนองความถี่)", needs: "any", modeHint: SLOW_MODE_HINT,
+  desc: "ออกแบบ kernel กรองความถี่ (low/high/band) ขนาด N×N จากผลตอบสนองที่ต้องการ แล้วดูได้ทั้งภาพที่กรอง ผลตอบสนองความถี่จริง (freqz2) และหน้าตา kernel · Window = fwind1, Sampling = fsamp2, McClellan = ftrans2 · MATLAB รับผลตอบสนองที่ต้องการแบบใดก็ได้และ imfilter เติม 0 ที่ขอบ แอปมี 4 รูปวงกลมและสะท้อนขอบ",
+  params: [
+    { key: "method", type: "select", label: "วิธีออกแบบ", options: [{ value: "window", label: "Window (fwind1)" }, { value: "sampling", label: "Frequency sampling (fsamp2)" }, { value: "mcclellan", label: "McClellan (ftrans2)" }], default: "window" },
+    { key: "response", type: "select", label: "ผลตอบสนองที่ต้องการ", options: [{ value: "lowpass", label: "ผ่านความถี่ต่ำ (blur)" }, { value: "highpass", label: "ผ่านความถี่สูง (ขอบ)" }, { value: "bandpass", label: "ผ่านแถบความถี่" }, { value: "bandstop", label: "ตัดแถบความถี่" }], default: "lowpass" },
+    { key: "cutoff", type: "number", label: "ความถี่ตัด (1 = Nyquist)", min: 0.05, max: 0.95, step: 0.01, default: 0.3, hint: "0.3 = ตัดที่ 30% ของความถี่สูงสุดที่ภาพมีได้" },
+    { key: "cutoff2", type: "number", label: "ความถี่ตัดที่ 2 (ใช้กับแถบความถี่)", min: 0.05, max: 0.95, step: 0.01, default: 0.6, visibleWhen: [{ key: "response", in: ["bandpass", "bandstop"] }] },
+    { key: "size", type: "number", label: "ขนาด kernel (N×N)", min: 3, max: 21, step: 2, default: 11 },
+    { key: "window", type: "select", label: "Window", options: [{ value: "hamming", label: "Hamming" }, { value: "hann", label: "Hann" }, { value: "rect", label: "สี่เหลี่ยม (ไม่มี window)" }], default: "hamming", visibleWhen: [{ key: "method", in: ["window", "mcclellan"] }] },
+    { key: "view", type: "select", label: "มุมมองผล", options: [{ value: "result", label: "ภาพที่กรองแล้ว" }, { value: "response", label: "ผลตอบสนองความถี่ (freqz2)" }, { value: "kernel", label: "หน้าตา kernel" }], default: "result", hint: "ผลตอบสนองและ kernel เป็นภาพขนาดคงที่ (256×256 และ N·q) ไม่เท่าภาพเข้า" },
+    { key: "add128", type: "boolean", label: "บวก 128 (เห็นค่าลบของ high-pass)", default: false, visibleWhen: [{ key: "view", in: ["result"] }] },
+  ],
+  apply(cv, src, p, ctx) {
+    if (isEmptyMat(src)) { ctx.info = "ภาพว่าง"; return src.clone(); }
+    let raw = null;
+    try {
+      raw = dropAlpha(cv, src);
+      const input = raw || src, width = input.cols, height = input.rows, ch = input.channels();
+      const method = ownKey({ window: true, sampling: true, mcclellan: true }, p.method, "window");
+      const response = ownKey({ lowpass: true, highpass: true, bandpass: true, bandstop: true }, p.response, "lowpass");
+      const c1 = numIn(p.cutoff, 0.3, 0.05, 0.95), c2 = numIn(p.cutoff2, 0.6, 0.05, 0.95);
+      let N = Math.floor(numIn(p.size, 11, 3, 21) + 0.5); if ((N & 1) === 0) N = Math.min(21, N + 1);
+      const win = ownKey({ hamming: true, hann: true, rect: true }, p.window, "hamming"), view = ownKey({ result: true, response: true, kernel: true }, p.view, "result"), add128 = boolOr(p.add128, false);
+      const pix = Uint8Array.from(input.data), requestedN = N;
+      if (view === "result") N = firKernelSize5G(width, height, ch, N, LUCY_WORK_BUDGET);
+      const design = firDesign5G(N, method, response, c1, c2, win);
+      let data, outWidth = width, outHeight = height, outChannels = ch;
+      if (view === "response") { data = firResponseImage5G(firResponse5G(design.h, N)); outWidth = outHeight = 256; outChannels = 1; }
+      else if (view === "kernel") { const q = firKernelImage5G(design.h, N); data = q.data; outWidth = outHeight = q.width; outChannels = 1; }
+      else {
+        data = new Uint8Array(width * height * ch);
+        const plane = new Uint8Array(width * height);
+        for (let c = 0; c < ch; c++) {
+          for (let i = 0; i < plane.length; i++) plane[i] = pix[i * ch + c];
+          const result = firFilter5G(plane, width, height, design.h, N, add128);
+          for (let i = 0; i < plane.length; i++) data[i * ch + c] = result[i];
+        }
+      }
+      const fc = response === "lowpass" || response === "highpass" ? fixed2(c1) : `${fixed2(Math.min(c1, c2))}–${fixed2(Math.max(c1, c2))}`;
+      ctx.info = `FIR ${N}×${N} · ${method} · ${response} · fc ${fc} · DC gain ${fixed3(design.sum)}` + (method !== "sampling" ? ` · window ${win}` : "") + (N < requestedN ? ` · ภาพใหญ่ จึงลด kernel เป็น ${N}×${N} (ขอ ${requestedN}×${requestedN})` : "");
+      return cv.matFromArray(outHeight, outWidth, outChannels === 1 ? cv.CV_8UC1 : cv.CV_8UC3, data);
+    } finally { if (raw) raw.delete(); }
+  },
+};
+
 const MORPH_SPLIT = [
   { op: "erode", name: "Erosion (กัดให้เล็กลง)",
     modeHint: "กัดขอบวัตถุขาวให้ผอมลง ลบจุดจิ๋วรบกวน",
@@ -10292,7 +10511,7 @@ export const FILTERS = {
     ["crop", "roi_polygon", "resize", "image_pyramid", "rotate", "flip", "perspective_warp", "undistort", "translate_shear", "similarity_transform", "test_pattern"], "resize"),
 
   frequency: mergeGroup("Frequency Domain", "Frequency Domain",
-    ["fft_magnitude", "fft_filter", "bandpass_notch", "dct_jpeg", "radon"], "fft_magnitude"),
+    ["fft_magnitude", "fft_filter", "bandpass_notch", "dct_jpeg", "radon", "fir_design"], "fft_magnitude"),
 
   // Image Arithmetic — กลุ่มใหม่ (Tier 2, 18a) ป้อนภาพ 2 ใบ (inputs:2 → FilterNode เพิ่มช่องอินพุต
   // "เข้า B" ให้อัตโนมัติ) กลุ่มนี้แยกจาก group อื่นเสมอเพราะ input contract ต่างกันจริง (ตามแนวเดียวกับ
@@ -10326,7 +10545,7 @@ export const FILTERS = {
   // tests/category-merge.test.mjs ล็อกให้ตรงกัน — เพิ่ม op ใหม่ในหมวดแล้วต้องมาเพิ่มที่นี่ด้วย ไม่งั้นเทสต์ล้ม
   // กลุ่มเก่าด้านบน (color_space, colour, image_adjust, ...) คงไว้เป็น legacy ให้เทมเพลต/โปรเจกต์เก่า แต่ palette ไม่ชี้มาแล้ว
   color_tools: mergeGroup("Color", "Color",
-    ["grayscale", "colorspace", "colorspace_inverse", "srgb_linear", "debayer", "channel_split", "rgb_adjust", "color_matrix", "color_inrange", "kmeans_segment", "slic", "white_balance", "decorrstretch", "invert", "pseudocolor"], "grayscale"),
+    ["grayscale", "colorspace", "colorspace_inverse", "srgb_linear", "debayer", "channel_split", "rgb_adjust", "color_matrix", "color_inrange", "kmeans_segment", "isodata_segment", "slic", "white_balance", "decorrstretch", "invert", "pseudocolor"], "grayscale"),
 
   enhance_tools: mergeGroup("Enhance", "Enhance",
     ["brightness_contrast", "gamma", "custom_lut", "hist_equalize", "clahe", "contrast_stretch", "flatfield_correction", "quantize", "unsharp", "laplacian_sharpen", "custom_kernel", "dehaze", "lowlight_enhance", "local_contrast", "local_laplacian"], "brightness_contrast"),
@@ -10335,7 +10554,7 @@ export const FILTERS = {
     ["salt_pepper_noise", "gaussian_noise", "median_blur", "rank_filter", "gaussian_blur", "box_blur", "bilateral", "wiener_filter", "guided_filter", "anisotropic_diffusion", "nlm_denoise", "deconv_wiener", "deconv_lucy", "deconv_blind", "deconv_reg"], "salt_pepper_noise"),
 
   segment_edge: mergeGroup("Segment & Edge", "Segmentation & Edge",
-    ["binary_threshold", "otsu_threshold", "adaptive_threshold", "multi_otsu_threshold", "canny", "sobel", "gradient_dir", "laplacian_edge", "scharr_edge", "prewitt_edge", "roberts_edge", "log_edge", "frangi_vesselness", "watershed", "watershed_marker", "grabcut", "region_growing", "active_contour", "geodesic_distance"], "binary_threshold"),
+    ["binary_threshold", "otsu_threshold", "adaptive_threshold", "multi_otsu_threshold", "canny", "sobel", "gradient_dir", "laplacian_edge", "scharr_edge", "prewitt_edge", "roberts_edge", "log_edge", "frangi_vesselness", "watershed", "watershed_marker", "grabcut", "region_growing", "active_contour", "geodesic_distance", "scribble_segment"], "binary_threshold"),
 
   analysis_detect: mergeGroup("Analyze / Detect", "Analysis & Detection",
     ["find_contours", "connected_components", "distance_transform", "local_std_filter", "local_entropy_filter", "gabor_filter", "glcm", "focus_score", "quadtree", "regionprops", "euler_number", "image_stats", "feret", "line_profile", "contour_lines", "shape_filter", "select_object", "bounding_boxes", "hough_circles", "hough_lines", "harris_corners", "shi_tomasi_corners", "orb_keypoints", "akaze_keypoints", "fast_keypoints", "pass_fail"], "find_contours"),
@@ -10353,7 +10572,7 @@ export const FILTERS = {
   // Image Registration (2026-10-24) — แทนหมวด TEMPLATE MATCHING ให้ตรง MATLAB ที่รวม normxcorr2 กับ imregister ไว้หมวดเดียว
   // template_matching (เดี่ยว) / image_arithmetic ที่ mode = ecc_register คงเป็น legacy · migrateLegacyStep ย้ายมาที่นี่
   image_registration: mergeGroup("Image Registration", "Image Registration",
-    ["template_matching", "ecc_register", "mtb_register"], "template_matching", [], { inputs: 2 }),
+    ["template_matching", "ecc_register", "mtb_register", "phase_register"], "template_matching", [], { inputs: 2 }),
 
   // Morphology (2026-10-18) — 1 operation = 1 เครื่องมือ · ลำดับ dropdown = ลำดับ TOOL_SECTIONS.MORPHOLOGY · default = Erosion (เหมือนค่าเริ่มต้นเดิม)
   // ไม่อยู่ใน CATEGORY_FILTER_IDS (ที่มี OLD_HOST ให้เทียบ) — ย้ายจาก morphology ด้วย migrateMorphologyStep ด้านล่างแทน

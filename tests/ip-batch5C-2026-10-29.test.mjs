@@ -442,9 +442,9 @@ for(const [kind,w,h] of [['rgb',37,29],['gray',37,29],['rgba',37,29],['rgb',1,1]
  const c=w?cv.matFromArray(h,w,cv.CV_8UC3,data):new cv.Mat(),src=new cv.Mat();
  if(kind==='gray')cv.cvtColor(c,src,cv.COLOR_RGB2GRAY); else if(kind==='rgba')cv.cvtColor(c,src,cv.COLOR_RGB2RGBA); else c.copyTo(src);
  try { for(const [fid,ops] of Object.entries(ids)) for(const id of ops) {
- const defs=Object.fromEntries(OPS[id].params.filter(q=>!['keepN','keepRank'].includes(q.key)).map(q=>[q.key,q.default]));
+ const defs=Object.fromEntries(OPS[id].params.filter(q=>!['keepN','keepRank'].includes(q.key)&&!(id==='inpaint'&&['patch','search'].includes(q.key))).map(q=>[q.key,q.default]));
  const variants=[{}];
- for(const q of OPS[id].params.filter(q=>q.type==='select'&&q.key!=='keepRank'))for(const {value}of q.options.filter(o=>!["cie94","angle"].includes(o.value)&&!(id==='inpaint'&&o.value==='laplace')&&!(id.startsWith('morph_')&&q.key==='shape'&&o.value==='ball')))if(value!==q.default)variants.push({[q.key]:value});
+ for(const q of OPS[id].params.filter(q=>q.type==='select'&&q.key!=='keepRank'&&!(id==='inpaint'&&q.key==='patch')))for(const {value}of q.options.filter(o=>!["cie94","angle"].includes(o.value)&&!(id==='inpaint'&&['laplace','exemplar'].includes(o.value))&&!(id.startsWith('morph_')&&q.key==='shape'&&o.value==='ball')))if(value!==q.default)variants.push({[q.key]:value});
  if(id==='shape_filter')variants.push({keepN:0},{prop:'none',minArea:0},{view:'mask',minArea:0});
  for(const extra of variants){
  const local={...defs,...extra},params={mode:id,...Object.fromEntries(Object.entries(local).map(([k,v])=>[id+'__'+k,v]))},st={id:fid,params};

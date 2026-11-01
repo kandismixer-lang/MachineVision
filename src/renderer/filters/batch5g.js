@@ -515,3 +515,487 @@ export function radon5G(gray, width, height, thetaStep, view, workBudget) {
   }
   return { data: output, width: view === "peak" ? originalWidth : thetaCount, height: view === "peak" ? originalHeight : binsCount, channels: view === "peak" ? 3 : 1, values: nonzero === 0 ? new Float64Array(0) : values, maxValue, peakTheta, peakRho, peakValue, first, last, degrees, thetaCount, nonzero, peakAt, factor, analysisWidth: width, analysisHeight: height };
 }
+
+// ปัด sin/cos ที่ 1e-12 เพื่อให้ค่าจากตารางตรงกันข้ามเครื่อง
+export function cos12Rad5G(a) { return Math.floor(Math.cos(a) * 1e12 + 0.5) / 1e12; }
+export function sin12Rad5G(a) { return Math.floor(Math.sin(a) * 1e12 + 0.5) / 1e12; }
+
+export function reflect101_5G(i, n) {
+  if (n === 1) return 0;
+  const p = 2 * n - 2;
+  i = ((i % p) + p) % p;
+  return i >= n ? p - i : i;
+}
+
+export function phaseWindow5G(n) {
+  const out = new Float64Array(n);
+  if (n === 1) { out[0] = 1; return out; }
+  for (let i = 0; i < n; i++) out[i] = 0.5 - 0.5 * cos12Rad5G(((2 * Math.PI) * i) / (n - 1));
+  return out;
+}
+
+export function phasePad5G(gray, width, height, wp, hp, useWindow) {
+  const out = new Float64Array(wp * hp), wx = phaseWindow5G(width), wy = phaseWindow5G(height);
+  for (let y = 0; y < height; y++) for (let x = 0; x < width; x++) {
+    const value = gray[y * width + x];
+    out[y * wp + x] = useWindow ? value * (wy[y] * wx[x]) : value;
+  }
+  return out;
+}
+
+export function phaseCrossPower5G(specA, specB, out) {
+  let maxMagnitude = 0;
+  for (let i = 0; i < specA.length; i += 2) {
+    const ar = specA[i], ai = specA[i + 1], br = specB[i], bi = specB[i + 1];
+    const re = ar * br + ai * bi, im = ai * br - ar * bi, magnitude = Math.sqrt(re * re + im * im);
+    if (magnitude > maxMagnitude) maxMagnitude = magnitude;
+  }
+  const minMagnitude = 1e-9 * maxMagnitude;
+  for (let i = 0; i < specA.length; i += 2) {
+    const ar = specA[i], ai = specA[i + 1], br = specB[i], bi = specB[i + 1];
+    const re = ar * br + ai * bi, im = ai * br - ar * bi, m = Math.sqrt(re * re + im * im);
+    if (m > minMagnitude) { out[i] = re / m; out[i + 1] = im / m; }
+    else { out[i] = 0; out[i + 1] = 0; }
+  }
+}
+
+export function phasePeak5G(inv, wp, hp, subpixel) {
+  let peak = -Infinity, at = 0;
+  for (let i = 0, n = wp * hp; i < n; i++) { const value = inv[2 * i]; if (value > peak) { peak = value; at = i; } }
+  const py = Math.floor(at / wp), px = at % wp;
+  let sx = 0, sy = 0;
+  if (subpixel) {
+    const left = inv[2 * (py * wp + ((px - 1 + wp) % wp))], right = inv[2 * (py * wp + ((px + 1) % wp))];
+    const denX = (left - 2 * peak) + right;
+    sx = Math.min(0.5, Math.max(-0.5, denX < 0 ? (left - right) / (2 * denX) : 0));
+    const top = inv[2 * (((py - 1 + hp) % hp) * wp + px)], bottom = inv[2 * (((py + 1) % hp) * wp + px)];
+    const denY = (top - 2 * peak) + bottom;
+    sy = Math.min(0.5, Math.max(-0.5, denY < 0 ? (top - bottom) / (2 * denY) : 0));
+  }
+  const dx = (px > wp / 2 ? px - wp : px) + sx, dy = (py > hp / 2 ? py - hp : py) + sy;
+  let cx = 0 - dx, cy = 0 - dy;
+  if (Math.abs(cx - Math.round(cx)) < 1e-9) cx = Math.round(cx);
+  if (Math.abs(cy - Math.round(cy)) < 1e-9) cy = Math.round(cy);
+  return { px, py, peak, dx, dy, cx, cy };
+}
+
+export function phaseViews5G(rawA, grayA, grayB, width, height, channels, cx, cy, view) {
+  const grayAligned = new Uint8Array(width * height);
+  for (let y = 0; y < height; y++) for (let x = 0; x < width; x++) {
+    grayAligned[y * width + x] = sampleImage5G(grayA, width, height, 1, x - cx, y - cy, "bilinear", 0);
+  }
+  if (view === "aligned") {
+    const out = new Uint8Array(width * height * channels);
+    for (let y = 0; y < height; y++) for (let x = 0; x < width; x++) for (let c = 0; c < channels; c++) {
+      out[(y * width + x) * channels + c] = sampleImage5G(rawA, width, height, channels, x - cx, y - cy, "bilinear", c);
+    }
+    return { data: out, channels };
+  }
+  if (view === "overlay") {
+    const out = new Uint8Array(width * height * 3);
+    for (let i = 0; i < width * height; i++) { out[3 * i] = grayAligned[i]; out[3 * i + 1] = grayB[i]; out[3 * i + 2] = grayAligned[i]; }
+    return { data: out, channels: 3 };
+  }
+  const out = new Uint8Array(width * height);
+  for (let i = 0; i < out.length; i++) out[i] = Math.abs(grayAligned[i] - grayB[i]);
+  return { data: out, channels: 1 };
+}
+
+export function phaseSurface5G(inv, wp, hp, peak) {
+  const out = new Uint8Array(wp * hp), sx = Math.floor(wp / 2), sy = Math.floor(hp / 2);
+  if (!(peak > 0)) return out;
+  for (let y = 0; y < hp; y++) for (let x = 0; x < wp; x++) {
+    const value = inv[2 * (y * wp + x)];
+    const target = ((y + sy) % hp) * wp + ((x + sx) % wp);
+    out[target] = Math.min(255, Math.floor((Math.max(value, 0) / peak) * 255 + 0.5));
+  }
+  return out;
+}
+
+export function phaseFailure5G(rawA, grayA, width, height, channels, view) {
+  if (view === "aligned") return { data: Uint8Array.from(rawA), channels };
+  if (view === "mask" || view === "diff" || view === "surface") return { data: Uint8Array.from(grayA), channels: 1 };
+  const out = new Uint8Array(width * height * 3);
+  for (let i = 0; i < width * height; i++) {
+    if (channels === 1) out[3 * i] = out[3 * i + 1] = out[3 * i + 2] = rawA[i];
+    else { out[3 * i] = rawA[i * channels]; out[3 * i + 1] = rawA[i * channels + 1]; out[3 * i + 2] = rawA[i * channels + 2]; }
+  }
+  return { data: out, channels: 3 };
+}
+
+export const ISODATA_PALETTE_5G = [[230,25,75],[60,180,75],[0,130,200],[255,225,25],[245,130,48],[145,30,180],[70,240,240],[240,50,230],[210,245,60],[250,190,212],[0,128,128],[170,110,40]];
+
+export function scribbleSegment5G(pix, width, height, ch, labels, edge, metric, view, maxSets) {
+  const n = width * height;
+  const cost = (from, to, diagonal) => {
+    let d = 0;
+    const a = from * ch, b = to * ch;
+    for (let c = 0; c < ch; c++) { const delta = Math.abs(pix[a + c] - pix[b + c]); if (delta > d) d = delta; }
+    return (1 + edge * d) * (diagonal && metric === "quasi" ? Math.SQRT2 : 1);
+  };
+  const red = [], blue = [];
+  for (let i = 0; i < n; i++) { if (labels[i] === 1) red.push(i); else if (labels[i] === 2) blue.push(i); }
+  const dr = geodesicSweep5G(width, height, cost, red, 8, maxSets), db = geodesicSweep5G(width, height, cost, blue, 8, maxSets);
+  const areaMask = new Uint8Array(n);
+  let area = 0, maxDistance = 0;
+  for (let i = 0; i < n; i++) if (dr.distance[i] < db.distance[i]) { areaMask[i] = 1; area++; }
+  for (const d of dr.distance) if (Number.isFinite(d) && d > maxDistance) maxDistance = d;
+  if (view === "mask") {
+    const data = new Uint8Array(n);
+    for (let i = 0; i < n; i++) if (areaMask[i]) data[i] = 255;
+    return { data, channels: 1, area, red: red.length, blue: blue.length, sweeps: dr.sweeps + db.sweeps, converged: dr.converged && db.converged };
+  }
+  const data = new Uint8Array(n * 3);
+  if (view === "distance") {
+    for (let i = 0; i < n; i++) {
+      const d = dr.distance[i], at = i * 3;
+      if (Number.isFinite(d)) { const v = maxDistance > 0 ? Math.floor(d / maxDistance * 255 + 0.5) : 0; data[at] = data[at + 1] = data[at + 2] = v; }
+      else data[at + 2] = 96;
+    }
+  } else {
+    for (let i = 0; i < n; i++) for (let c = 0; c < 3; c++) {
+      const value = pix[i * ch + (ch === 1 ? 0 : c)];
+      data[i * 3 + c] = areaMask[i] ? (value + (c === 1 ? 255 : 0) + 1) >> 1 : value;
+    }
+    for (let i = 0; i < n; i++) if (labels[i] === 1 || labels[i] === 2) {
+      const color = labels[i] === 1 ? [230, 30, 30] : [30, 80, 240];
+      data.set(color, i * 3);
+    }
+  }
+  return { data, channels: 3, area, red: red.length, blue: blue.length, sweeps: dr.sweeps + db.sweeps, converged: dr.converged && db.converged };
+}
+
+export function isodata5G(pix, width, height, ch, k, iterations, minSizePct, splitStd, mergeDist, view, iterBudget) {
+  const N = width * height, nf = ch === 1 ? 1 : 3;
+  const keys = new Uint32Array(N);
+  for (let i = 0; i < N; i++) keys[i] = nf === 1 ? pix[i] : ((pix[3 * i] << 16) | (pix[3 * i + 1] << 8) | pix[3 * i + 2]);
+  keys.sort();
+  let U = 0;
+  for (let i = 0; i < N; i++) if (i === 0 || keys[i] !== keys[i - 1]) U++;
+  const ukey = new Uint32Array(U), cnt = new Float64Array(U);
+  for (let i = 0, u = -1; i < N; i++) { if (i === 0 || keys[i] !== keys[i - 1]) { u++; ukey[u] = keys[i]; } cnt[u]++; }
+  const feats = nf === 1 ? [Float64Array.from(ukey)] : [Float64Array.from(ukey, (v) => v >>> 16), Float64Array.from(ukey, (v) => (v >>> 8) & 255), Float64Array.from(ukey, (v) => v & 255)];
+  const lum = new Float64Array(U);
+  for (let u = 0; u < U; u++) lum[u] = nf === 1 ? feats[0][u] : 299 * feats[0][u] + 587 * feats[1][u] + 114 * feats[2][u];
+  const order = Array.from({ length: U }, (_, u) => u).sort((a, b) => lum[a] - lum[b] || a - b), cum = new Float64Array(U);
+  for (let i = 0, run = 0; i < U; i++) { run += cnt[order[i]]; cum[i] = run; }
+  let centers = [];
+  for (let j = 0; j < k; j++) {
+    const rank = Math.floor(((2 * j + 1) * N) / (2 * k));
+    let lo = 0, hi = U - 1;
+    while (lo < hi) { const mid = (lo + hi) >> 1; if (cum[mid] > rank) hi = mid; else lo = mid + 1; }
+    centers.push(feats.map((f) => f[order[lo]]));
+  }
+  const assign = (cs) => {
+    const lab = new Int32Array(U), best = new Float64Array(U).fill(Infinity);
+    for (let j = 0; j < cs.length; j++) for (let u = 0; u < U; u++) {
+      const t0 = feats[0][u] - cs[j][0]; let d = t0 * t0;
+      if (nf === 3) { const t1 = feats[1][u] - cs[j][1]; d = d + t1 * t1; const t2 = feats[2][u] - cs[j][2]; d = d + t2 * t2; }
+      if (d < best[u]) { best[u] = d; lab[u] = j; }
+    }
+    return lab;
+  };
+  const stats = (lab, kk) => {
+    const n = new Float64Array(kk), s1 = feats.map(() => new Float64Array(kk)), s2 = feats.map(() => new Float64Array(kk));
+    for (let u = 0; u < U; u++) { const j = lab[u]; n[j] += cnt[u]; for (let c = 0; c < nf; c++) { s1[c][j] += cnt[u] * feats[c][u]; s2[c][j] += cnt[u] * feats[c][u] * feats[c][u]; } }
+    return { n, s1, s2 };
+  };
+  const dropEmpty = (lab, cs, st) => {
+    const keep = Array.from(st.n, (v) => v > 0);
+    if (keep.every(Boolean)) return [lab, cs, st, 0];
+    const remap = new Int32Array(keep.length); let next = 0;
+    keep.forEach((keepIt, j) => { remap[j] = keepIt ? next++ : -1; });
+    const nextLab = Int32Array.from(lab, (v) => remap[v]), nextCenters = cs.filter((_, j) => keep[j]);
+    return [nextLab, nextCenters, stats(nextLab, nextCenters.length), keep.length - nextCenters.length];
+  };
+  const minSize = Math.max(1, Math.floor((minSizePct * N) / 100)), maxK = 2 * k, floorK = Math.max(1, Math.floor(k / 2));
+  let splits = 0, merges = 0, cuts = 0, used = 0, converged = false, prev = null, prevK = -1;
+  for (let it = 1; it <= iterBudget; it++) {
+    used = it; let lab = assign(centers), st = stats(lab, centers.length), changed = false, didSplit = false;
+    const keep = Array.from(st.n, (v) => v >= minSize);
+    if (!keep.some(Boolean)) { let best = 0; for (let j = 1; j < st.n.length; j++) if (st.n[j] > st.n[best]) best = j; keep[best] = true; }
+    if (!keep.every(Boolean)) {
+      cuts += keep.filter((v) => !v).length; changed = true; centers = centers.filter((_, j) => keep[j]);
+      lab = assign(centers); st = stats(lab, centers.length);
+      let removed; [lab, centers, st, removed] = dropEmpty(lab, centers, st); cuts += removed;
+    }
+    const kk = centers.length, means = [], sigma = [];
+    for (let j = 0; j < kk; j++) {
+      const mean = [], sig = [];
+      for (let c = 0; c < nf; c++) { const m = st.s1[c][j] / st.n[j], v = st.s2[c][j] / st.n[j] - m * m; mean.push(m); sig.push(Math.sqrt(Math.max(0, v))); }
+      means.push(mean); sigma.push(sig);
+    }
+    centers = means.map((m) => m.slice());
+    if (centers.length < maxK) {
+      const k0 = centers.length;
+      for (let j = 0; j < k0 && centers.length < maxK; j++) {
+        let smax = sigma[j][0], cs = 0; for (let c = 1; c < nf; c++) if (sigma[j][c] > smax) { smax = sigma[j][c]; cs = c; }
+        if (smax > splitStd && st.n[j] >= 2 * minSize) {
+          const half = 0.5 * smax, high = means[j].slice(); high[cs] = means[j][cs] + half; centers[j][cs] = means[j][cs] - half; centers.push(high);
+          splits++; didSplit = true; changed = true;
+        }
+      }
+    }
+    if (!didSplit && centers.length > floorK) {
+      const pairs = [];
+      for (let i = 0; i < kk; i++) for (let j = i + 1; j < kk; j++) {
+        const t0 = means[i][0] - means[j][0]; let d = t0 * t0;
+        if (nf === 3) { const t1 = means[i][1] - means[j][1]; d = d + t1 * t1; const t2 = means[i][2] - means[j][2]; d = d + t2 * t2; }
+        const dist = Math.sqrt(d); if (dist < mergeDist) pairs.push([dist, i, j]);
+      }
+      pairs.sort((a, b) => a[0] - b[0] || a[1] - b[1] || a[2] - b[2]);
+      const taken = new Set(), gone = new Set(); let done = 0;
+      for (const [, i, j] of pairs) {
+        if (done >= 2 || centers.length - gone.size <= floorK) break;
+        if (taken.has(i) || taken.has(j)) continue;
+        const ni = st.n[i], nj = st.n[j]; centers[i] = means[i].map((v, c) => (ni * v + nj * means[j][c]) / (ni + nj));
+        gone.add(j); taken.add(i); taken.add(j); done++; merges++; changed = true;
+      }
+      centers = centers.filter((_, j) => !gone.has(j));
+    }
+    const same = prev !== null && prevK === kk && lab.every((v, u) => v === prev[u]);
+    if (!changed && same) { converged = true; break; }
+    prev = lab; prevK = kk;
+  }
+  let lab = assign(centers), st = stats(lab, centers.length), removed;
+  [lab, centers, st, removed] = dropEmpty(lab, centers, st); cuts += removed;
+  const means = centers.map((_, j) => feats.map((_, c) => st.s1[c][j] / st.n[j]));
+  const outCh = view === "labels" ? 3 : ch, data = new Uint8Array(N * outCh);
+  for (let i = 0; i < N; i++) {
+    const key = nf === 1 ? pix[i] : ((pix[3 * i] << 16) | (pix[3 * i + 1] << 8) | pix[3 * i + 2]);
+    let lo = 0, hi = U - 1;
+    while (lo < hi) { const mid = (lo + hi) >> 1; if (ukey[mid] < key) lo = mid + 1; else hi = mid; }
+    const j = lab[lo];
+    if (view === "labels") data.set(ISODATA_PALETTE_5G[j % 12], i * 3);
+    else for (let c = 0; c < nf; c++) data[i * outCh + c] = Math.floor(means[j][c] + 0.5);
+  }
+  return { data, channels: outCh, clusters: centers.length, used, splits, merges, cuts, converged, iterations: iterBudget };
+}
+
+export function mcclellanSynth5G(a, N) {
+  const M = (N - 1) / 2, t = [0.125,0.25,0.125,0.25,-0.5,0.25,0.125,0.25,0.125];
+  const total = new Float64Array(N * N), prev0 = new Float64Array(N * N);
+  let prev2 = null, prev = prev0;
+  prev[M * N + M] = 1;
+  for (let i = 0; i < total.length; i++) total[i] += a[0] * prev[i];
+  for (let n = 1; n <= M; n++) {
+    const cur = new Float64Array(N * N);
+    if (n === 1) {
+      for (let ty = 0; ty < 3; ty++) for (let tx = 0; tx < 3; tx++) cur[(M + ty - 1) * N + M + tx - 1] = t[ty * 3 + tx];
+    } else {
+      for (let y = 0; y < N; y++) for (let x = 0; x < N; x++) {
+        let acc = 0;
+        for (let ty = 0; ty < 3; ty++) for (let tx = 0; tx < 3; tx++) {
+          const sy = y - (ty - 1), sx = x - (tx - 1);
+          acc += t[ty * 3 + tx] * (sy >= 0 && sy < N && sx >= 0 && sx < N ? prev[sy * N + sx] : 0);
+        }
+        cur[y * N + x] = 2 * acc - prev2[y * N + x];
+      }
+    }
+    for (let i = 0; i < total.length; i++) total[i] += a[n] * cur[i];
+    prev2 = prev; prev = cur;
+  }
+  return total;
+}
+
+export function firDesign5G(N, method, response, c1, c2, win) {
+  const M = (N - 1) / 2, flo = Math.min(c1, c2), fhi = Math.max(c1, c2), Rw = M + 1;
+  const round = (v) => Math.floor(v * 1e12 + 0.5) / 1e12;
+  const winAt = (rho) => rho >= Rw ? 0 : win === "hamming" ? 0.54 + 0.46 * cos12Rad5G(Math.PI * rho / Rw) : win === "hann" ? 0.5 + 0.5 * cos12Rad5G(Math.PI * rho / Rw) : 1;
+  const h = new Float64Array(N * N);
+  if (method === "mcclellan") {
+    const sinc = (x) => x === 0 ? 1 : Math.sin(Math.PI * x) / (Math.PI * x);
+    const low = (fc, n) => round((fc * sinc(fc * n)) * winAt(Math.abs(n)));
+    const a = new Float64Array(M + 1);
+    for (let n = 0; n <= M; n++) {
+      const delta = n === 0 ? 1 : 0;
+      const h1 = response === "lowpass" ? low(c1, n) : response === "highpass" ? delta - low(c1, n) : response === "bandpass" ? low(fhi, n) - low(flo, n) : delta - (low(fhi, n) - low(flo, n));
+      a[n] = n === 0 ? h1 : 2 * h1;
+    }
+    const raw = mcclellanSynth5G(a, N);
+    for (let i = 0; i < h.length; i++) h[i] = round(raw[i]);
+  } else {
+    const hd = new Float64Array(N * N), cosTab = new Float64Array(N);
+    for (let a = 0; a < N; a++) cosTab[a] = cos12Rad5G((2 * Math.PI * a) / N);
+    for (let k2 = 0; k2 < N; k2++) for (let k1 = 0; k1 < N; k1++) {
+      const f1 = ((k1 - M) * 2) / N, f2 = ((k2 - M) * 2) / N, r = Math.sqrt(f1 * f1 + f2 * f2);
+      const low = r <= c1 ? 1 : 0, band = r >= flo && r <= fhi ? 1 : 0;
+      hd[k2 * N + k1] = response === "lowpass" ? low : response === "highpass" ? 1 - low : response === "bandpass" ? band : 1 - band;
+    }
+    for (let m2 = -M; m2 <= M; m2++) for (let m1 = -M; m1 <= M; m1++) {
+      let acc = 0;
+      for (let k2 = 0; k2 < N; k2++) for (let k1 = 0; k1 < N; k1++) acc += hd[k2 * N + k1] * cosTab[(((k1 - M) * m1 + (k2 - M) * m2) % N + N) % N];
+      const raw = acc / (N * N), at = (m2 + M) * N + m1 + M;
+      h[at] = round(method === "window" ? raw * winAt(Math.sqrt(m1 * m1 + m2 * m2)) : raw);
+    }
+  }
+  let sum = 0; for (const value of h) sum += value;
+  return { N, M, h, sum };
+}
+
+export function firResponse5G(h, N) {
+  const M = (N - 1) / 2, G = 64, c = new Float64Array(G), s = new Float64Array(G);
+  for (let a = 0; a < G; a++) { c[a] = cos12Rad5G((2 * Math.PI * a) / G); s[a] = sin12Rad5G((2 * Math.PI * a) / G); }
+  const stageR = new Float64Array(G * N), stageI = new Float64Array(G * N);
+  for (let g1 = 0; g1 < G; g1++) for (let row = 0; row < N; row++) {
+    const m2 = row - M; let re = 0, im = 0;
+    for (let col = 0; col < N; col++) {
+      const m1 = col - M, a = (((g1 - 32) * m1) % G + G) % G, hv = h[row * N + col];
+      re += hv * c[a]; im -= hv * s[a];
+    }
+    stageR[g1 * N + row] = re; stageI[g1 * N + row] = im;
+  }
+  const mag = new Float64Array(G * G);
+  for (let g2 = 0; g2 < G; g2++) for (let g1 = 0; g1 < G; g1++) {
+    let re = 0, im = 0;
+    for (let row = 0; row < N; row++) {
+      const m2 = row - M, a = (((g2 - 32) * m2) % G + G) % G, ar = stageR[g1 * N + row], ai = stageI[g1 * N + row];
+      re += ar * c[a] + ai * s[a]; im += ai * c[a] - ar * s[a];
+    }
+    mag[g2 * G + g1] = Math.sqrt(re * re + im * im);
+  }
+  return mag;
+}
+
+export function firFilter5G(plane, width, height, h, N, add128) {
+  const M = (N - 1) / 2, rx = new Int32Array(width + 2 * M), ry = new Int32Array(height + 2 * M);
+  for (let x = 0; x < rx.length; x++) rx[x] = reflect101_5G(x - M, width);
+  for (let y = 0; y < ry.length; y++) ry[y] = reflect101_5G(y - M, height);
+  const out = new Uint8Array(width * height);
+  for (let y = 0; y < height; y++) for (let x = 0; x < width; x++) {
+    let acc = 0;
+    for (let dy = -M; dy <= M; dy++) for (let dx = -M; dx <= M; dx++) {
+      const value = plane[ry[y + M + dy] * width + rx[x + M + dx]];
+      acc += h[(dy + M) * N + dx + M] * value;
+    }
+    const value = Math.floor((add128 ? acc + 128 : acc) + 0.5);
+    out[y * width + x] = Math.min(255, Math.max(0, value));
+  }
+  return out;
+}
+
+export function firResponseImage5G(mag) {
+  let scale = 1; for (const value of mag) if (value > scale) scale = value;
+  const out = new Uint8Array(256 * 256);
+  for (let y = 0; y < 256; y++) for (let x = 0; x < 256; x++) {
+    const g2 = 63 - Math.floor(y / 4), g1 = Math.floor(x / 4);
+    out[y * 256 + x] = Math.floor(mag[g2 * 64 + g1] / scale * 255 + 0.5);
+  }
+  return out;
+}
+
+export function firKernelImage5G(h, N) {
+  const q = Math.max(1, Math.floor(256 / N)), side = N * q;
+  let maxAbs = 0; for (const value of h) if (Math.abs(value) > maxAbs) maxAbs = Math.abs(value);
+  const out = new Uint8Array(side * side);
+  for (let y = 0; y < side; y++) for (let x = 0; x < side; x++) {
+    const value = maxAbs > 0 ? Math.floor(128 + (127 * h[Math.floor(y / q) * N + Math.floor(x / q)]) / maxAbs + 0.5) : 128;
+    out[y * side + x] = Math.min(255, Math.max(0, value));
+  }
+  return { data: out, width: side, height: side, scale: q };
+}
+
+export function firKernelSize5G(width, height, ch, N, workBudget) {
+  let result = N;
+  while (result > 3 && result * result * width * height * ch > 25 * workBudget) result -= 2;
+  return result;
+}
+
+export function exemplar5G(data, width, height, ch, maskData, patch, search, workCap) {
+  const P = patch, r = (P - 1) / 2, n = width * height, current = Uint8Array.from(data), omega0 = new Uint8Array(n), omega = new Uint8Array(n);
+  let nz = 0, bx0 = width, bx1 = -1, by0 = height, by1 = -1;
+  for (let y = 0; y < height; y++) for (let x = 0; x < width; x++) if (maskData[y * width + x]) {
+    const i = y * width + x; omega0[i] = omega[i] = 1; nz++;
+    if (x < bx0) bx0 = x; if (x > bx1) bx1 = x; if (y < by0) by0 = y; if (y > by1) by1 = y;
+  }
+  const stride = width + 1, sat = new Int32Array((width + 1) * (height + 1));
+  for (let y = 0; y < height; y++) for (let x = 0; x < width; x++) sat[(y + 1) * stride + x + 1] = omega0[y * width + x] + sat[y * stride + x + 1] + sat[(y + 1) * stride + x] - sat[y * stride + x];
+  const candidates = (s) => {
+    const out = [];
+    const cy0 = Math.max(r, by0 - s), cy1 = Math.min(height - 1 - r, by1 + s);
+    const cx0 = Math.max(r, bx0 - s), cx1 = Math.min(width - 1 - r, bx1 + s);
+    if (cy1 < cy0 || cx1 < cx0) return out;
+    for (let cy = cy0; cy <= cy1; cy++) for (let cx = cx0; cx <= cx1; cx++) {
+      const y0 = Math.max(0, cy - r), y1 = Math.min(height, cy + r + 1), x0 = Math.max(0, cx - r), x1 = Math.min(width, cx + r + 1);
+      if (y1 <= y0 || x1 <= x0) continue;
+      const a = y1 * stride + x1, b = y0 * stride + x1, c = y1 * stride + x0, d = y0 * stride + x0;
+      if (sat[a] - sat[b] - sat[c] + sat[d] === 0) out.push(cy * width + cx);
+    }
+    return out;
+  };
+  let s = search, Q = candidates(s);
+  if (Q.length === 0) { s = Math.max(width, height); Q = candidates(s); }
+  if (Q.length === 0) return { status: "fallback" };
+  const pp = P * P, estimate = (qCount) => Math.ceil(nz / Math.max(1, Math.floor(pp / 4))) * qCount * pp * ch;
+  let reduced = false;
+  while (estimate(Q.length) > workCap) {
+    s = Math.floor(s / 2);
+    if (s < r + 1) return { status: "refuse" };
+    const next = candidates(s);
+    if (next.length === 0) return { status: "refuse" };
+    Q = next; reduced = true;
+  }
+  const offsets = [];
+  for (let dy = -r; dy <= r; dy++) for (let dx = -r; dx <= r; dx++) offsets.push([dy, dx]);
+  const confidence = new Float64Array(n); for (let i = 0; i < n; i++) confidence[i] = omega[i] ? 0 : 1;
+  const igr = new Int32Array(n);
+  for (let i = 0; i < n; i++) { let sum = 0; for (let c = 0; c < ch; c++) sum += current[i * ch + c]; igr[i] = sum; }
+  let left = nz, iterations = 0;
+  const inside = (x, y) => x >= 0 && x < width && y >= 0 && y < height;
+  while (left > 0) {
+    const front = [];
+    const fy0 = Math.max(0, by0 - 1), fy1 = Math.min(height - 1, by1 + 1), fx0 = Math.max(0, bx0 - 1), fx1 = Math.min(width - 1, bx1 + 1);
+    for (let y = fy0; y <= fy1; y++) for (let x = fx0; x <= fx1; x++) {
+      const i = y * width + x;
+      if (!omega[i]) continue;
+      if ((y > 0 && !omega[i - width]) || (y + 1 < height && !omega[i + width]) || (x > 0 && !omega[i - 1]) || (x + 1 < width && !omega[i + 1])) front.push(i);
+    }
+    let bestPriority = -Infinity, bestIndex = -1, bestConfidence = 0;
+    for (const i of front) {
+      const x = i % width, y = Math.floor(i / width); let acc = 0, count = 0;
+      for (const [dy, dx] of offsets) { const qx = x + dx, qy = y + dy; if (inside(qx, qy)) { acc += confidence[qy * width + qx]; count++; } }
+      const cp = acc / count;
+      const omL = x > 0 && omega[i - 1] ? 1 : 0, omR = x + 1 < width && omega[i + 1] ? 1 : 0;
+      const omT = y > 0 && omega[i - width] ? 1 : 0, omB = y + 1 < height && omega[i + width] ? 1 : 0;
+      const nx = omR - omL, ny = omB - omT, nlen = Math.sqrt(nx * nx + ny * ny);
+      let bestG2 = -1, gx = 0, gy = 0;
+      for (const [dy, dx] of offsets) {
+        const qx = x + dx, qy = y + dy;
+        if (!inside(qx, qy) || !inside(qx - 1, qy) || !inside(qx + 1, qy) || !inside(qx, qy - 1) || !inside(qx, qy + 1)) continue;
+        const qi = qy * width + qx;
+        if (omega[qi] || omega[qi - 1] || omega[qi + 1] || omega[qi - width] || omega[qi + width]) continue;
+        const gxx = igr[qi + 1] - igr[qi - 1], gyy = igr[qi + width] - igr[qi - width], g2 = gxx * gxx + gyy * gyy;
+        if (g2 > bestG2) { bestG2 = g2; gx = gxx; gy = gyy; }
+      }
+      const D = nlen > 0 ? Math.abs((0 - gy) * nx + gx * ny) / (nlen * 2 * 255 * ch) : 0;
+      const priority = cp * (D + 0.001);
+      if (priority > bestPriority) { bestPriority = priority; bestIndex = i; bestConfidence = cp; }
+    }
+    if (bestIndex < 0) return { status: "fallback" };
+    const px = bestIndex % width, py = Math.floor(bestIndex / width);
+    let bestSSD = Infinity, bestQ = Q[0];
+    for (const candidate of Q) {
+      const qx = candidate % width, qy = Math.floor(candidate / width); let ssd = 0;
+      for (const [dy, dx] of offsets) {
+        const x = px + dx, y = py + dy;
+        if (!inside(x, y) || omega[y * width + x]) continue;
+        const sx = qx + dx, sy = qy + dy, a = (y * width + x) * ch, b = (sy * width + sx) * ch;
+        for (let c = 0; c < ch; c++) { const diff = current[a + c] - current[b + c]; ssd += diff * diff; }
+      }
+      if (ssd < bestSSD) { bestSSD = ssd; bestQ = candidate; }
+    }
+    const qx = bestQ % width, qy = Math.floor(bestQ / width);
+    for (const [dy, dx] of offsets) {
+      const x = px + dx, y = py + dy, sx = qx + dx, sy = qy + dy;
+      if (!inside(x, y)) continue;
+      const i = y * width + x;
+      if (!omega[i]) continue;
+      const src = (sy * width + sx) * ch, dst = i * ch;
+      for (let c = 0; c < ch; c++) current[dst + c] = current[src + c];
+      let sum = 0; for (let c = 0; c < ch; c++) sum += current[dst + c];
+      igr[i] = sum; confidence[i] = bestConfidence; omega[i] = 0; left--;
+    }
+    iterations++;
+  }
+  return { status: "ok", data: current, iterations, search: s, requestedSearch: search, reduced, nz };
+}
