@@ -1,5 +1,6 @@
 import { byte5E, yiq5E, srgbLut5E, decorr5E, pca5E, angle5E, guardThicken5E } from "./batch5e.js";
 import { byte5F, edgeTaper5F, activeContour5F, laplace5F, lucyStep5F, blind5F, multissim5F, fusion5F } from "./batch5f.js";
+import { testPattern5G, similarityTransform5G, ballMorph5G, ballKernelSize5G, quadtree5G, contourLines5G, mtbRegister5G, geodesicDistance5G, radon5G } from "./batch5g.js";
 // Registry ของ filter — แหล่งข้อมูลเดียว (single source of truth)
 // จัดกลุ่มตามหัวข้อการสอน Image Processing:
 //   1. Color Space      2. Enhancement
@@ -1182,6 +1183,8 @@ export const NLM_MAX_SIDE = 640;
 export const LUCY_MAX_ITERS = 50;
 // B6 (backlog 2026-10-17): งบงาน Lucy = พิกเซล × ช่อง × รอบ — ภาพ 640×480 สี 20 รอบ (ค่าที่ใช้ได้สบายใน UI) เป็นเพดาน · เกินงบ → ลดรอบ (ไม่ย่อภาพ เพราะ PSF จะผิดสเกล)
 export const LUCY_WORK_BUDGET = 640 * 480 * 3 * 20;
+export const BALL_WORK_BUDGET = LUCY_WORK_BUDGET * 64;
+export const BALL_LARGE_WORK_BUDGET = LUCY_WORK_BUDGET * 30;
 // รอบที่ใช้จริง: เท่าที่ขอ ถ้าไม่เกินงบ · เกินงบ → max(1, floor(งบ ÷ (กว้าง×สูง×ช่อง))) (ไม่เกินที่ขอ)
 export function lucyBudgetIters(w, h, ch, requested) {
   return Math.min(requested, Math.max(1, Math.floor(LUCY_WORK_BUDGET / Math.max(1, w * h * ch))));
@@ -1554,6 +1557,8 @@ export const PASS_FAIL_METRICS = {
   corr2: { op: "corr2", th: "Correlation Coefficient", pick: (v) => pfScalar(v, "corr2") },
   area: { op: "select_object", th: "Select Object", pick: (v) => pfScalar(v, "area") },
   msssim: { op: "multissim", th: "Multi-scale SSIM", pick: (v) => pfScalar(v, "msssim") },
+  contour_area: { op: "active_contour", th: "Active Contour", pick: (v) => pfScalar(v, "area") },
+  qt_blocks: { op: "quadtree", th: "Quadtree", pick: (v) => pfScalar(v, "qt_blocks") },
 };
 // เกณฑ์แสดงบนข้อความ: ปัด 2 ตำแหน่งแล้วตัดศูนย์ท้าย (0.30000000000000004 → 0.3 · 1 → 1)
 export const pfNum = (x) => String(Math.round(x * 100) / 100);
@@ -3303,6 +3308,19 @@ export const OPS = {
           if (stats) stats.delete();
           if (centroids) centroids.delete();
         }
+      }
+      if (p.shape === "ball" && ["erode", "dilate", "open", "close", "gradient", "tophat", "blackhat"].includes(p.op)) {
+        const ksize = intIn(p.ksize, 7, 1, 51), iterations = intIn(p.iterations, 1, 1, 100);
+        const ballHeight = intIn(p.ballHeight, 10, 1, 100);
+        if (src.empty()) return src.clone();
+        const workBudget = src.cols * src.rows > 640 * 480 ? BALL_LARGE_WORK_BUDGET : BALL_WORK_BUDGET;
+        const effectiveKsize = ballKernelSize5G(src.cols, src.rows, p.op, ksize, iterations, workBudget);
+        const radius = Math.floor(effectiveKsize / 2);
+        const pixels = Uint8Array.from(src.data);
+        const data = ballMorph5G(pixels, src.cols, src.rows, p.op, effectiveKsize, iterations, ballHeight);
+        const dst = cv.matFromArray(src.rows, src.cols, cv.CV_8UC1, data);
+        if (ctx) ctx.info = `Ball รัศมี ${radius} · สูง ${ballHeight} · ${p.op} × ${iterations} รอบ` + (effectiveKsize === ksize ? "" : ` · ภาพใหญ่ลดขนาด kernel เป็น ${effectiveKsize} px (ขอ ${ksize} px)`);
+        return dst;
       }
       let kernel;
       if (p.shape === "diamond" || p.shape === "octagon" || p.shape === "line") {
@@ -9738,6 +9756,256 @@ OPS.morphology.params.push({key:"perimConn",type:"select",label:"เพื่อ
 
 OPS.pass_fail.params[0].options.push({value:"area",label:"พื้นที่วัตถุที่เลือก (ต่อหลัง Select Object)"});
 OPS.pass_fail.params[0].options.push({value:"msssim",label:"MS-SSIM (ต่อหลัง Multi-scale SSIM)"});
+OPS.pass_fail.params[0].options.push({value:"contour_area",label:"พื้นที่วัตถุ (ต่อหลัง Active Contour)"});
+OPS.pass_fail.params[0].options.push({value:"qt_blocks",label:"จำนวนบล็อก (ต่อหลัง Quadtree)"});
+
+OPS.test_pattern = {
+  name: "Test Pattern (ภาพทดสอบ / ตารางหมากรุก)", needs: "any", modeHint: "สร้างลายภาพไว้ทดลอง",
+  desc: "สร้างภาพทดสอบแทนภาพเข้าโดยใช้แค่ขนาด เช่น ตารางหมากรุกสำหรับลองหา corner หรือ calibrate กล้อง และแถบสีไว้ทดสอบขั้นตอนสี · MATLAB checkerboard ให้ขนาดตามจำนวนช่องและครึ่งขวาเป็นสีเทาเสมอ แอปใช้ขนาดภาพเข้าหรือขนาดคงที่และเลือกครึ่งขวาสีเทาได้",
+  params: [
+    { key: "pattern", type: "select", label: "ลายภาพ", options: [
+      { value: "checkerboard", label: "ตารางหมากรุก" }, { value: "grid", label: "เส้นตาราง" }, { value: "dots", label: "จุดกลมเรียงตาราง" },
+      { value: "ramp_h", label: "ไล่ระดับซ้าย→ขวา" }, { value: "ramp_v", label: "ไล่ระดับบน→ล่าง" }, { value: "color_bars", label: "แถบสี 8 สี" },
+    ], default: "checkerboard" },
+    { key: "size", type: "select", label: "ขนาดภาพ", options: [
+      { value: "input", label: "เท่าภาพเข้า" }, { value: "256", label: "256×256" }, { value: "512", label: "512×512" }, { value: "1024", label: "1024×1024" },
+    ], default: "input", hint: "เลือกขนาดคงที่แล้วภาพผลลัพธ์อาจต่างจากภาพเข้า" },
+    { key: "square", type: "number", label: "ขนาดช่อง (px)", min: 2, max: 256, step: 1, default: 32, visibleWhen: [{ key: "pattern", in: ["checkerboard", "grid", "dots"] }] },
+    { key: "matlabGray", type: "boolean", label: "ครึ่งขวาสีเทา 0.7 แบบ MATLAB", default: false, visibleWhen: [{ key: "pattern", in: ["checkerboard"] }] },
+  ],
+  apply(cv, src, p, ctx) {
+    const pattern = ownKey({ checkerboard: true, grid: true, dots: true, ramp_h: true, ramp_v: true, color_bars: true }, p.pattern, "checkerboard");
+    const size = ownKey({ input: true, "256": true, "512": true, "1024": true }, String(p.size), "input");
+    if (size === "input" && isEmptyMat(src)) { if (ctx) ctx.info = "ภาพว่าง"; return src.clone(); }
+    const width = size === "input" ? src.cols : Number(size), height = size === "input" ? src.rows : Number(size);
+    const square = intIn(p.square, 32, 2, 256), matlabGray = boolOr(p.matlabGray, false);
+    const q = testPattern5G(width, height, pattern, square, matlabGray);
+    const out = cv.matFromArray(height, width, q.channels === 1 ? cv.CV_8UC1 : cv.CV_8UC3, q.data);
+    if (ctx) ctx.info = `Test pattern ${{ checkerboard: "ตารางหมากรุก", grid: "เส้นตาราง", dots: "จุดกลมเรียงตาราง", ramp_h: "ไล่ระดับซ้าย→ขวา", ramp_v: "ไล่ระดับบน→ล่าง", color_bars: "แถบสี 8 สี" }[pattern]} ${width}×${height} · ไม่ใช้ค่าพิกเซลของภาพเข้า`;
+    return out;
+  },
+};
+OPS.similarity_transform = {
+  name: "Similarity Transform (หมุน + ย่อขยาย + เลื่อน)", needs: "any", modeHint: "รวมการแปลงภาพในขั้นเดียว",
+  desc: "รวมหมุน ย่อขยาย และเลื่อนเป็นเมทริกซ์เดียว แล้วสุ่มค่าพิกเซลครั้งเดียว ภาพจึงคมกว่าทำทีละขั้น · หมุนรอบจุดกลางภาพและใช้ค่าประมาณระหว่างพิกเซลแบบ bilinear หรือ nearest · MATLAB rigidtform2d/simtform2d หมุนรอบจุด (0,0) และ imwarp ให้ผลขนาดพอดีภาพทั้งภาพเป็นค่าเริ่มต้น",
+  params: [
+    { key: "angle", type: "number", label: "มุมหมุน (องศา)", min: -180, max: 180, step: 0.5, default: 15, desc: "ค่าบวกหมุนทวนเข็มนาฬิกา" },
+    { key: "scale", type: "number", label: "ขนาดภาพ (เท่า)", min: 0.1, max: 4, step: 0.01, default: 1 },
+    { key: "tx", type: "number", label: "เลื่อนแนวนอน (% ของความกว้าง)", min: -100, max: 100, step: 0.5, default: 0 },
+    { key: "ty", type: "number", label: "เลื่อนแนวตั้ง (% ของความสูง)", min: -100, max: 100, step: 0.5, default: 0 },
+    { key: "interp", type: "select", label: "วิธีสุ่มค่า", options: [{ value: "bilinear", label: "เฉลี่ย 4 จุด (Bilinear)" }, { value: "nearest", label: "ใช้จุดใกล้สุด (Nearest)" }], default: "bilinear" },
+    { key: "output", type: "select", label: "ขนาดผลลัพธ์", options: [{ value: "same", label: "ขนาดเท่าเดิม" }, { value: "fit", label: "ขยายผืนให้เห็นทั้งภาพ", hint: "ภาพผลลัพธ์อาจใหญ่กว่าภาพเข้า; ถ้าเกิน 16 ล้านพิกเซลจะใช้ขนาดเดิม" }], default: "same" },
+  ],
+  apply(cv, src, p, ctx) {
+    if (isEmptyMat(src)) { if (ctx) ctx.info = "ภาพว่าง"; return src.clone(); }
+    const angle = numIn(p.angle, 15, -180, 180), scale = numIn(p.scale, 1, 0.1, 4);
+    const tx = numIn(p.tx, 0, -100, 100), ty = numIn(p.ty, 0, -100, 100);
+    const interpolation = ownKey({ bilinear: true, nearest: true }, p.interp, "bilinear");
+    const output = ownKey({ same: true, fit: true }, p.output, "same");
+    let rgb = null, dst = null;
+    try {
+      rgb = dropAlpha(cv, src);
+      const input = rgb || src, channels = input.channels();
+      const data = Uint8Array.from(input.data);
+      const q = similarityTransform5G(data, input.cols, input.rows, channels, angle, scale, tx, ty, interpolation, output);
+      dst = cv.matFromArray(q.height, q.width, channels === 1 ? cv.CV_8UC1 : cv.CV_8UC3, q.data);
+      if (ctx) {
+        const kind = scale === 1 ? "Similarity (rigid)" : "Similarity";
+        ctx.info = `${kind} · หมุน ${fixed3(angle)}° · ขยาย ×${fixed3(scale)} · เลื่อน (${fixed3(q.txp)}, ${fixed3(q.typ)}) px → ${q.width}×${q.height} · M = [${fixed3(q.a)} ${fixed3(q.b)} ${fixed3(q.matrixX)}; ${fixed3(-q.b)} ${fixed3(q.a)} ${fixed3(q.matrixY)}]${q.oversized ? " · ผลใหญ่เกินไป จึงใช้ขนาดเท่าเดิม" : ""}`;
+      }
+      const result = dst; dst = null; return result;
+    } catch (err) {
+      if (dst) dst.delete();
+      throw err;
+    } finally { if (rgb) rgb.delete(); }
+  },
+};
+OPS.morphology.params.find((q) => q.key === "shape").options.push({ value: "ball", label: "ลูกบอล (Ball, ไม่แบน — offsetstrel)", hint: `รูปทรง rolling ball · MATLAB offsetstrel ใช้ N = 8 · ${SLOW_MODE_HINT}` });
+OPS.morphology.params.push({
+  key: "ballHeight", type: "number", label: "ความสูงลูกบอล", min: 1, max: 100, step: 1, default: 10,
+  desc: "ความสูงของ kernel ลูกบอล · ใช้กับรูปทรง Ball เท่านั้น",
+  visibleWhen: [
+    { key: "op", in: ["erode", "dilate", "open", "close", "gradient", "tophat", "blackhat"] },
+    { key: "shape", in: ["ball"] },
+  ],
+});
+
+OPS.quadtree = {
+  name: "Quadtree (แบ่งบล็อกตามความเรียบ)", needs: "gray",
+  desc: "แบ่งภาพเป็นบล็อกสี่เหลี่ยม บล็อกที่ค่าสูงสุด − ต่ำสุดเกินเกณฑ์จะแบ่ง 4 ต่อไปจนถึงขนาดเล็กสุด · บริเวณเรียบได้บล็อกใหญ่ ส่วนที่มีรายละเอียดได้บล็อกเล็ก · MATLAB qtdecomp ต้องใช้ภาพสี่เหลี่ยมขนาดกำลังสองและเกณฑ์ 0–1 แอปรองรับภาพขนาดใดก็ได้และเกณฑ์ระดับเทา 0–255",
+  params: [
+    { key: "threshold", type: "number", label: "เกณฑ์ความต่างเทา", min: 0, max: 255, step: 1, default: 25, desc: "แบ่งบล็อกเมื่อค่าสูงสุด − ต่ำสุดมากกว่าเกณฑ์นี้" },
+    { key: "maxSize", type: "select", label: "ขนาดบล็อกใหญ่สุด", options: [8, 16, 32, 64, 128, 256].map((v) => ({ value: String(v), label: String(v) })), default: "64" },
+    { key: "minSize", type: "select", label: "ขนาดบล็อกเล็กสุด", options: [1, 2, 4, 8, 16].map((v) => ({ value: String(v), label: String(v) })), default: "2" },
+    { key: "view", type: "select", label: "มุมมองผล", options: [{ value: "blocks", label: "เส้นแบ่งบล็อกบนภาพ" }, { value: "mean", label: "เติมค่าเฉลี่ยของบล็อก" }, { value: "size", label: "ความสว่างตามขนาดบล็อก" }], default: "blocks" },
+  ],
+  apply(cv, src, p, ctx) {
+    const threshold = intIn(p.threshold, 25, 0, 255);
+    const maxSize = Number(ownKey({ 8: true, 16: true, 32: true, 64: true, 128: true, 256: true }, p.maxSize, "64"));
+    const requestedMin = Number(ownKey({ 1: true, 2: true, 4: true, 8: true, 16: true }, p.minSize, "2"));
+    const minSize = requestedMin > maxSize ? maxSize : requestedMin;
+    const view = ownKey({ blocks: true, mean: true, size: true }, p.view, "blocks");
+    if (src.empty()) {
+      if (ctx) { ctx.info = "ภาพว่าง"; ctx.values = scalarValues([["qt_blocks", "จำนวนบล็อก"]], []); }
+      return src.clone();
+    }
+    const pixels = Uint8Array.from(src.data);
+    const q = quadtree5G(pixels, src.cols, src.rows, threshold, maxSize, minSize, view);
+    const type = q.channels === 3 ? cv.CV_8UC3 : cv.CV_8UC1;
+    const dst = cv.matFromArray(src.rows, src.cols, type, q.data);
+    const countText = Array.from(q.counts.entries()).sort((a, b) => b[0] - a[0]).map(([size, count]) => `${size}:${count}`).join(" · ");
+    if (ctx) {
+      ctx.info = `Quadtree · ${q.blocks} บล็อก${countText ? ` (${countText})` : ""} · แบ่งเมื่อ max−min > ${threshold}`;
+      ctx.values = scalarValues([["qt_blocks", "จำนวนบล็อก"]], [q.blocks]);
+    }
+    return dst;
+  },
+};
+OPS.contour_lines = {
+  name: "Contours (เส้นชั้นแสง)", needs: "gray",
+  desc: "ลากเส้นผ่านพิกเซลที่ความสว่างใกล้กัน เหมือนเส้นชั้นความสูงในแผนที่ · MATLAB imcontour วาดเส้นละเอียดกว่าพิกเซลบนกราฟและเลือกระดับเอง แอปแบ่งระดับเท่า ๆ กันระหว่างค่าต่ำสุดถึงสูงสุดแล้วทำสีพิกเซลฝั่งสว่าง",
+  params: [
+    { key: "levels", type: "number", label: "จำนวนระดับ", min: 1, max: 20, step: 1, default: 5, desc: "แบ่งค่าความสว่างเป็นระดับเท่า ๆ กัน" },
+    { key: "view", type: "select", label: "มุมมองผล", options: [{ value: "overlay", label: "เส้นบนภาพเทา" }, { value: "plot", label: "เส้นบนพื้นขาว" }], default: "overlay" },
+  ],
+  apply(cv, src, p, ctx) {
+    const levelsCount = intIn(p.levels, 5, 1, 20);
+    const view = ownKey({ overlay: true, plot: true }, p.view, "overlay");
+    if (src.empty()) { if (ctx) ctx.info = "ภาพว่าง ไม่มีเส้นชั้นความสว่าง"; return src.clone(); }
+    const pixels = Uint8Array.from(src.data);
+    const q = contourLines5G(pixels, src.cols, src.rows, levelsCount, view);
+    const dst = cv.matFromArray(src.rows, src.cols, cv.CV_8UC3, q.data);
+    if (ctx) ctx.info = q.flat
+      ? "ภาพเรียบ ไม่มีเส้นชั้นความสว่าง"
+      : `เส้นชั้น ${levelsCount} ระดับ: ${q.levels.map(fixed1).join(", ")} (ค่าเทา)`;
+    return dst;
+  },
+};
+
+OPS.mtb_register = {
+  name: "MTB Alignment (จัดภาพต่างแสง)", needs: "any",
+  desc: "หาการเลื่อนจำนวนเต็มที่ทำให้ภาพ A ทับภาพ B โดยเทียบ bitmap สว่างกว่ามัธยฐาน จึงทนต่อความสว่างที่ต่างกัน · เลื่อนอย่างเดียว ไม่หมุน · MATLAB imregmtb รับหลายภาพและย่อด้วย imresize ส่วนแอปรับ 2 ภาพและใช้ค่าเฉลี่ย 2×2 · ลายซ้ำอาจทำให้ maxShift ที่กว้างจับคาบผิด จึงควรลด maxShift",
+  params: [
+    { key: "maxShift", type: "select", label: "เลื่อนได้มากสุด (px)", options: [7, 15, 31, 63].map((v) => ({ value: String(v), label: String(v) })), default: "31" },
+    { key: "exclusion", type: "number", label: "ช่วงยกเว้นรอบมัธยฐาน", min: 0, max: 20, step: 1, default: 4, desc: "ไม่ใช้พิกเซลที่อยู่ใกล้ค่ามัธยฐานในการเทียบ" },
+    { key: "view", type: "select", label: "มุมมองผล", options: [
+      { value: "aligned", label: "A ที่จัดแล้ว" },
+      { value: "overlay", label: "ซ้อนสี (ม่วง = A, เขียว = B)" },
+      { value: "diff", label: "|A ที่จัดแล้ว − B|" },
+      { value: "bitmap", label: "bitmap ของ A" },
+    ], default: "aligned" },
+  ],
+  apply(cv, src, p, ctx) {
+    const fields = [["dx", "เลื่อน x (px)"], ["dy", "เลื่อน y (px)"], ["err", "จำนวนที่ไม่ตรง"]];
+    const pass = passthroughNoSrc2(src, ctx);
+    if (pass) { if (ctx) ctx.values = scalarValues(fields, []); return pass; }
+    if (isEmptyMat(src)) { if (ctx) { ctx.info = "ภาพว่าง"; ctx.values = scalarValues(fields, []); } return src.clone(); }
+    const maxShift = Number(ownKey({ 7: true, 15: true, 31: true, 63: true }, p.maxShift, "31"));
+    const exclusion = intIn(p.exclusion, 4, 0, 20);
+    const view = ownKey({ aligned: true, overlay: true, diff: true, bitmap: true }, p.view, "aligned");
+    let grayA = null, grayB = null, resizedB = null, dst = null;
+    try {
+      grayA = grayIfNeeded(cv, src);
+      grayB = grayIfNeeded(cv, ctx.src2);
+      const aGray = grayA || src, bGray = grayB || ctx.src2;
+      const match = matchSize(cv, aGray, bGray);
+      resizedB = match.resized ? match.mat : null;
+      const bMatched = match.mat;
+      const rawA = Uint8Array.from(src.data), pixelsA = Uint8Array.from(aGray.data), pixelsB = Uint8Array.from(bMatched.data);
+      const q = mtbRegister5G(rawA, pixelsA, pixelsB, src.cols, src.rows, src.channels(), maxShift, exclusion, view);
+      const type = q.channels === 1 ? cv.CV_8UC1 : cv.CV_8UC3;
+      dst = cv.matFromArray(src.rows, src.cols, type, q.data);
+      if (ctx) {
+        ctx.info = `MTB · เลื่อน A (${q.sx}, ${q.sy}) px · ${q.levels} ชั้น · ไม่ตรง ${q.error} px` +
+          (q.comparable === 0 ? " · ไม่มีพิกเซลที่ใช้เทียบ (ภาพเรียบ)" : "") + (match.resized ? RESIZED_B_INFO : "");
+        ctx.values = scalarValues(fields, [q.sx, q.sy, q.error]);
+      }
+      const result = dst; dst = null; return result;
+    } finally {
+      for (const mat of [dst, resizedB, grayA, grayB]) if (mat) mat.delete();
+    }
+  },
+};
+
+OPS.geodesic_distance = {
+  name: "Geodesic Distance (ระยะเดินจากจุดเริ่ม)", needs: "gray", modeHint: SLOW_MODE_HINT + " · ภาพใหญ่ใช้รอบกวาดน้อยลง",
+  desc: "วัดระยะเดินจากจุดเริ่มบนภาพ: แบบวัตถุขาวเดินได้เฉพาะส่วนสว่าง, แบบเทาให้ทางมืดเดินง่าย, แบบความต่างให้ทางที่สีใกล้จุดเริ่มเดินง่าย · แบบความต่างใช้เส้นทางสั้นสุดบนกริด จึงต่างจาก Fast Marching ของ MATLAB · graydist อาจนับค่าจุดเริ่มเอง แต่แอปเริ่มที่ 0; bwdistgeodesic คืน NaN นอก mask แต่แอปแสดงเป็นสีน้ำเงินเข้ม",
+  params: [
+    { key: "method", type: "select", label: "วิธีคิดระยะ", options: [
+      { value: "similar", label: "ทางสีใกล้จุดเริ่ม" }, { value: "binary", label: "เดินบนวัตถุขาว" }, { value: "gray", label: "ทางมืดเดินง่าย" },
+    ], default: "similar" },
+    { key: "seedX", type: "number", label: "จุดเริ่ม X (%)", min: 0, max: 100, step: 0.5, default: 50 },
+    { key: "seedY", type: "number", label: "จุดเริ่ม Y (%)", min: 0, max: 100, step: 0.5, default: 50 },
+    { key: "metric", type: "select", label: "ทิศทางที่เดินได้", options: [
+      { value: "chessboard", label: "8 ทิศ ก้าวละ 1" }, { value: "cityblock", label: "4 ทิศ" }, { value: "quasi", label: "8 ทิศ ทแยง √2" },
+    ], default: "chessboard" },
+    { key: "weight", type: "number", label: "น้ำหนักความต่าง", min: 0, max: 10, step: 0.1, default: 1, visibleWhen: [{ key: "method", in: ["similar"] }] },
+    { key: "view", type: "select", label: "มุมมองผล", options: [
+      { value: "distance", label: "แผนที่ระยะ" }, { value: "segment", label: "ตัดเป็น mask" },
+    ], default: "distance" },
+    { key: "thresh", type: "number", label: "เกณฑ์ระยะ", min: 0, max: 1, step: 0.01, default: 0.1, visibleWhen: [{ key: "view", in: ["segment"] }] },
+  ],
+  apply(cv, src, p, ctx) {
+    const fields = [["maxDist", "ระยะไกลสุด"], ["reached", "พิกเซลที่ไปถึง"]];
+    const emptyValues = [...fields, ["area", "พื้นที่ mask"]];
+    if (isEmptyMat(src)) { if (ctx) { ctx.info = "ภาพว่าง"; ctx.values = scalarValues(emptyValues, []); } return src.clone(); }
+    const method = ownKey({ similar: true, binary: true, gray: true }, p.method, "similar");
+    const metric = ownKey({ chessboard: true, cityblock: true, quasi: true }, p.metric, "chessboard");
+    const view = ownKey({ distance: true, segment: true }, p.view, "distance");
+    const weight = numIn(p.weight, 1, 0, 10), threshold = numIn(p.thresh, 0.1, 0, 1);
+    const seedX = Math.min(src.cols - 1, Math.floor(numIn(p.seedX, 50, 0, 100) / 100 * src.cols));
+    const seedY = Math.min(src.rows - 1, Math.floor(numIn(p.seedY, 50, 0, 100) / 100 * src.rows));
+    const maxSets = lucyBudgetIters(src.cols, src.rows, 8, 100);
+    let gray = null, dst = null;
+    try {
+      gray = grayIfNeeded(cv, src);
+      const pixels = Uint8Array.from((gray || src).data);
+      const q = geodesicDistance5G(pixels, src.cols, src.rows, method, metric, weight, seedX, seedY, view, threshold, maxSets);
+      dst = cv.matFromArray(src.rows, src.cols, view === "distance" ? cv.CV_8UC3 : cv.CV_8UC1, q.data);
+      if (ctx) {
+        const stopped = q.converged ? "นิ่ง" : "ครบงบ";
+        const limited = !q.converged && maxSets < 100 ? ` · ภาพใหญ่ จึงจำกัดรอบกวาด (สูงสุด ${maxSets})` : "";
+        ctx.info = q.seedBlocked
+          ? `Geodesic (${method}, ${metric}) · จุดเริ่ม (${seedX}, ${seedY}) · จุดเริ่มไม่อยู่บนวัตถุ (ค่า ≤ 127)`
+          : `Geodesic (${method}, ${metric}) · จุดเริ่ม (${seedX}, ${seedY}) · ระยะไกลสุด ${fixed2(q.maxDist)} · ${q.sweeps} รอบกวาด (${stopped})` +
+            (view === "segment" ? ` · mask ${q.area} px` : "") + limited;
+        if (q.seedBlocked) delete ctx.values;
+        else ctx.values = scalarValues(view === "segment" ? emptyValues : fields, view === "segment" ? [q.maxDist, q.reached, q.area] : [q.maxDist, q.reached]);
+      }
+      const result = dst; dst = null; return result;
+    } finally { if (dst) dst.delete(); if (gray) gray.delete(); }
+  },
+};
+
+OPS.radon = {
+  name: "Radon Transform (ภาพ sinogram)", needs: "gray", modeHint: SLOW_MODE_HINT,
+  desc: "รวมความสว่างตามแนวเส้นหลายมุม 0–179° เป็นภาพ sinogram · พิกเซลย่อย 4 จุดช่วยกระจายค่าไปยังช่องระยะใกล้กัน · ภาพใหญ่ย่อด้วยค่าเฉลี่ยบล็อกเพื่อคงระยะห่างมุมที่อ่านง่าย · ใช้กับภาพขอบเพื่อหาแนวเส้นได้ง่าย ภาพผลมีขนาดต่างจากภาพเข้า",
+  params: [
+    { key: "thetaStep", type: "select", label: "ระยะห่างระหว่างมุม (องศา)", options: [1, 2, 5].map((v) => ({ value: String(v), label: String(v) })), default: "1" },
+    { key: "view", type: "select", label: "มุมมองผล", options: [
+      { value: "sinogram", label: "ภาพ sinogram" }, { value: "peak", label: "เส้นที่แรงสุดบนภาพ" },
+    ], default: "sinogram" },
+  ],
+  apply(cv, src, p, ctx) {
+    const fields = [["theta", "มุมยอด"], ["rho", "ระยะจากกลางภาพ"], ["peak", "ค่าสูงสุด"]];
+    if (isEmptyMat(src)) { if (ctx) { ctx.info = "ภาพว่าง"; ctx.values = scalarValues(fields, []); } return src.clone(); }
+    const requested = Number(ownKey({ 1: true, 2: true, 5: true }, p.thetaStep, "1"));
+    const view = ownKey({ sinogram: true, peak: true }, p.view, "sinogram");
+    const pixels = Uint8Array.from(src.data);
+    const q = radon5G(pixels, src.cols, src.rows, requested, view, LUCY_WORK_BUDGET);
+    const dst = cv.matFromArray(q.height, q.width, q.channels === 3 ? cv.CV_8UC3 : cv.CV_8UC1, q.data);
+    if (ctx) {
+      const large = q.degrees > requested ? ` · ภาพใหญ่ จึงใช้ทีละ ${q.degrees}° (ขอ ${requested}°)` : "";
+      ctx.info = q.nonzero === 0
+        ? `Radon · θ 0–${180 - q.degrees}° ทีละ ${q.degrees}° · ρ ${q.first}..${q.last} · ไม่มีพิกเซลที่ไม่เป็นศูนย์` + large
+        : `Radon · θ 0–${180 - q.degrees}° ทีละ ${q.degrees}° · ρ ${q.first}..${q.last} · ยอด θ=${q.peakTheta}° ρ=${q.peakRho}` + large;
+      if (q.factor > 1) ctx.info += ` · ภาพใหญ่ย่อเหลือ ${q.analysisWidth}×${q.analysisHeight} ด้วยค่าเฉลี่ยบล็อก ${q.factor}×${q.factor}`;
+      ctx.values = scalarValues(fields, q.nonzero === 0 ? [] : [q.peakTheta, q.peakRho, Math.floor(q.peakValue * 1000 + 0.5) / 1000]);
+    }
+    return dst;
+  },
+};
+
 const MORPH_SPLIT = [
   { op: "erode", name: "Erosion (กัดให้เล็กลง)",
     modeHint: "กัดขอบวัตถุขาวให้ผอมลง ลบจุดจิ๋วรบกวน",
@@ -10021,10 +10289,10 @@ export const FILTERS = {
   // IP batch 2 ชิ้น D เพิ่ม roi_polygon · 2026-10-07: เรียง dropdown ให้ตรงกับ palette (roi_polygon ต่อจาก crop) —
   // mode เก็บเป็นชื่อ op (ไม่ใช่ index) โปรเจกต์/เทมเพลตเก่าจึงไม่กระทบ · default "resize" เหมือนเดิม
   geometry: mergeGroup("Geometry", "Geometry",
-    ["crop", "roi_polygon", "resize", "image_pyramid", "rotate", "flip", "perspective_warp", "undistort", "translate_shear"], "resize"),
+    ["crop", "roi_polygon", "resize", "image_pyramid", "rotate", "flip", "perspective_warp", "undistort", "translate_shear", "similarity_transform", "test_pattern"], "resize"),
 
   frequency: mergeGroup("Frequency Domain", "Frequency Domain",
-    ["fft_magnitude", "fft_filter", "bandpass_notch", "dct_jpeg"], "fft_magnitude"),
+    ["fft_magnitude", "fft_filter", "bandpass_notch", "dct_jpeg", "radon"], "fft_magnitude"),
 
   // Image Arithmetic — กลุ่มใหม่ (Tier 2, 18a) ป้อนภาพ 2 ใบ (inputs:2 → FilterNode เพิ่มช่องอินพุต
   // "เข้า B" ให้อัตโนมัติ) กลุ่มนี้แยกจาก group อื่นเสมอเพราะ input contract ต่างกันจริง (ตามแนวเดียวกับ
@@ -10067,10 +10335,10 @@ export const FILTERS = {
     ["salt_pepper_noise", "gaussian_noise", "median_blur", "rank_filter", "gaussian_blur", "box_blur", "bilateral", "wiener_filter", "guided_filter", "anisotropic_diffusion", "nlm_denoise", "deconv_wiener", "deconv_lucy", "deconv_blind", "deconv_reg"], "salt_pepper_noise"),
 
   segment_edge: mergeGroup("Segment & Edge", "Segmentation & Edge",
-    ["binary_threshold", "otsu_threshold", "adaptive_threshold", "multi_otsu_threshold", "canny", "sobel", "gradient_dir", "laplacian_edge", "scharr_edge", "prewitt_edge", "roberts_edge", "log_edge", "frangi_vesselness", "watershed", "watershed_marker", "grabcut", "region_growing", "active_contour"], "binary_threshold"),
+    ["binary_threshold", "otsu_threshold", "adaptive_threshold", "multi_otsu_threshold", "canny", "sobel", "gradient_dir", "laplacian_edge", "scharr_edge", "prewitt_edge", "roberts_edge", "log_edge", "frangi_vesselness", "watershed", "watershed_marker", "grabcut", "region_growing", "active_contour", "geodesic_distance"], "binary_threshold"),
 
   analysis_detect: mergeGroup("Analyze / Detect", "Analysis & Detection",
-    ["find_contours", "connected_components", "distance_transform", "local_std_filter", "local_entropy_filter", "gabor_filter", "glcm", "focus_score", "regionprops", "euler_number", "image_stats", "feret", "line_profile", "shape_filter", "select_object", "bounding_boxes", "hough_circles", "hough_lines", "harris_corners", "shi_tomasi_corners", "orb_keypoints", "akaze_keypoints", "fast_keypoints", "pass_fail"], "find_contours"),
+    ["find_contours", "connected_components", "distance_transform", "local_std_filter", "local_entropy_filter", "gabor_filter", "glcm", "focus_score", "quadtree", "regionprops", "euler_number", "image_stats", "feret", "line_profile", "contour_lines", "shape_filter", "select_object", "bounding_boxes", "hough_circles", "hough_lines", "harris_corners", "shi_tomasi_corners", "orb_keypoints", "akaze_keypoints", "fast_keypoints", "pass_fail"], "find_contours"),
 
   // name (ชื่อบนการ์ด node, ถูกตัดที่ ~92px) ของ 2 กลุ่มข้างบนย่อให้พอดี · group (ชิปหมวดใน detail-panel/สี) ยังเป็นชื่อเต็มเหมือนหมวด palette
 
@@ -10085,7 +10353,7 @@ export const FILTERS = {
   // Image Registration (2026-10-24) — แทนหมวด TEMPLATE MATCHING ให้ตรง MATLAB ที่รวม normxcorr2 กับ imregister ไว้หมวดเดียว
   // template_matching (เดี่ยว) / image_arithmetic ที่ mode = ecc_register คงเป็น legacy · migrateLegacyStep ย้ายมาที่นี่
   image_registration: mergeGroup("Image Registration", "Image Registration",
-    ["template_matching", "ecc_register"], "template_matching", [], { inputs: 2 }),
+    ["template_matching", "ecc_register", "mtb_register"], "template_matching", [], { inputs: 2 }),
 
   // Morphology (2026-10-18) — 1 operation = 1 เครื่องมือ · ลำดับ dropdown = ลำดับ TOOL_SECTIONS.MORPHOLOGY · default = Erosion (เหมือนค่าเริ่มต้นเดิม)
   // ไม่อยู่ใน CATEGORY_FILTER_IDS (ที่มี OLD_HOST ให้เทียบ) — ย้ายจาก morphology ด้วย migrateMorphologyStep ด้านล่างแทน

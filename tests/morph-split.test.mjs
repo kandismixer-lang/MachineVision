@@ -30,7 +30,7 @@ const BASIC = ['erode', 'dilate', 'open', 'close', 'gradient', 'tophat', 'blackh
 
 // param ที่แต่ละตัวต้องมี "พอดี" (ตามลำดับที่ปรากฏในแผง)
 const EXPECT_KEYS = {};
-for (const o of BASIC) EXPECT_KEYS[o] = ['shape', 'ksize', 'iterations', 'lineAngle'];
+for (const o of BASIC) EXPECT_KEYS[o] = ['shape', 'ksize', 'iterations', 'lineAngle', 'ballHeight'];
 Object.assign(EXPECT_KEYS, {
   perimeter: ['perimConn'], thicken: ['iterations'], keep_border: [],
   fill_holes: [], clear_border: [], remove_small: ['minArea'], skeleton: [], reconstruct_open: ['ksize', 'iterations'], convex_hull: [],
@@ -182,11 +182,11 @@ test('mp-2. each op has EXACTLY its own params (no op / no unrelated keys); line
   const f = FILTERS.morph_tools;
   for (const op of SPLIT_ORDER) {
     const id = 'morph_' + op;
-    for (const shape of ['rect', 'line']) {
+    for (const shape of (BASIC.includes(op) ? ['rect', 'line', 'ball'] : ['rect', 'line'])) {
       const p = { ...defaultParams('morph_tools'), mode: id };
       if (OPS[id].params.some((q) => q.key === 'shape')) p[id + '__shape'] = shape;
       const vis = f.params.filter((q) => q.key !== 'mode' && isParamVisible(q, p, f.params)).map((q) => q.key);
-      const want = EXPECT_KEYS[op].filter((k) => k !== 'lineAngle' || shape === 'line').map((k) => id + '__' + k);
+      const want = EXPECT_KEYS[op].filter((k) => (k !== 'lineAngle' || shape === 'line') && (k !== 'ballHeight' || shape === 'ball')).map((k) => id + '__' + k);
       assert.deepEqual(vis, want, `${id} visible (shape=${shape})`);
     }
   }

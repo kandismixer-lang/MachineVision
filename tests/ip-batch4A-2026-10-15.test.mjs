@@ -1601,7 +1601,7 @@ test('ip4a-S1. (static structure) the 5 new ops exist with the right needs and h
   assert.deepEqual(sec('COLOR').slice(-2), ['invert', 'pseudocolor']);
   assert.deepEqual(sec('FILTER & DENOISE').slice(7, 9), ['wiener_filter', 'guided_filter']); // batch 4B appends nlm_denoise / deconv_wiener / deconv_lucy after them
   assert.ok(sec('ANALYSIS & DETECTION').indexOf('focus_score') > sec('ANALYSIS & DETECTION').indexOf('local_entropy_filter')); // batch 4B puts gabor_filter / glcm between them
-  assert.equal(sec('ANALYSIS & DETECTION').indexOf('regionprops'), sec('ANALYSIS & DETECTION').indexOf('focus_score') + 1);
+  assert.equal(sec('ANALYSIS & DETECTION').indexOf('regionprops'), sec('ANALYSIS & DETECTION').indexOf('focus_score') + 2); // 5G inserts Quadtree after focus_score
   assert.deepEqual(sec('IMAGE ARITHMETIC').slice(9, 11), ['hist_match', 'roi_apply']); // batch 5F inserts exposure_fusion after reconstruct
   assert.deepEqual(sec('IMAGE QUALITY'), ['psnr', 'ssim', 'multissim', 'delta_e', 'seg_score', 'bf_score', 'corr2', 'piqe']);
   for (const id of NEW_OPS) assert.equal(TOOL_SECTIONS.filter((s) => s.ops.includes(id)).length, 1, `${id} in exactly one section`);

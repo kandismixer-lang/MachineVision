@@ -93,6 +93,13 @@ export const OP_ICON = {
   gaussian_noise: "░", // แรเงาเม็ดละเอียด สื่อ "เกรนทั่วภาพ" (▒/▓ ของ local_std/entropy เข้มกว่า แยกด้วยตาได้)
   wiener_filter: "◍", // วงกลมมีเส้นแนวตั้งด้านใน สื่อ "เกลี่ยแบบเลือกบริเวณ" (ต่างจาก ◉/◎/● ของกลุ่ม blur)
   translate_shear: "▱", // สี่เหลี่ยมด้านขนาน = รูปทรงของสี่เหลี่ยมที่ถูก shear ตรงตัว
+  test_pattern: "📺",
+  similarity_transform: "⤾",
+  quadtree: "▤",
+  contour_lines: "⫽",
+  mtb_register: "⍟",
+  geodesic_distance: "⟳",
+  radon: "⌹",
   // ใหม่ (2026-10-03, IP batch 2 ชิ้น D) — เช็คทุกตัวกับ glyph เดิมทั้งไฟล์, GROUP_ICON และ app.js/detail-panel.js แล้วไม่ชน
   feret: "⌀", // สัญลักษณ์เส้นผ่านศูนย์กลาง สื่อ "วัดความกว้างแบบคาลิปเปอร์"
   line_profile: "〽", // เส้นกราฟขึ้นลง สื่อ "กราฟความสว่างตามเส้น" (ไม่ใช่ 〰 ของ GROUP_ICON.frequency)
@@ -152,7 +159,7 @@ function psfCardText(p) {
 const IMARITH_LABEL = { add: "A + B", subtract: "A − B", multiply: "A × B ÷ 255", divide: "A ÷ B × 255" };
 const LOGICAL_LABEL = { and: "A AND B", or: "A OR B", xor: "A XOR B", a_and_not_b: "A AND NOT B" };
 // ชื่อสั้นของ metric ของ pass_fail บนการ์ด (key ตรงกับ PASS_FAIL_METRICS ใน registry.js)
-const PASS_FAIL_SHORT = { msssim: "MS-SSIM", count: "จำนวนวัตถุ", area_sum: "พื้นที่รวม", area_max: "พื้นที่ใหญ่สุด", roi_mean: "สว่างใน ROI", focus: "ความคม", de_mean: "ΔE เฉลี่ย", iou: "IoU", dice: "Dice", bf: "Boundary F1 Score", piqe: "คุณภาพ PIQE", mean: "ความสว่างเฉลี่ย", std: "ส่วนเบี่ยงเบน", entropy: "เอนโทรปี", corr2: "ความสัมพันธ์", area: "พื้นที่วัตถุที่เลือก" };
+const PASS_FAIL_SHORT = { msssim: "MS-SSIM", contour_area: "พื้นที่วัตถุ", count: "จำนวนวัตถุ", area_sum: "พื้นที่รวม", area_max: "พื้นที่ใหญ่สุด", roi_mean: "สว่างใน ROI", focus: "ความคม", de_mean: "ΔE เฉลี่ย", iou: "IoU", dice: "Dice", bf: "Boundary F1 Score", piqe: "คุณภาพ PIQE", mean: "ความสว่างเฉลี่ย", std: "ส่วนเบี่ยงเบน", entropy: "เอนโทรปี", corr2: "ความสัมพันธ์", area: "พื้นที่วัตถุที่เลือก" };
 function ownOr(table, key, fallback) {
   return Object.hasOwn(table, key) ? table[key] : table[fallback];
 }
@@ -166,6 +173,7 @@ function mmTail(opId, p) {
   return f > 0 ? ` · ${f} มม./px` : "";
 }
 
+PASS_FAIL_SHORT.qt_blocks = "จำนวนบล็อก";
 export const OP_PRIMARY = {
   active_contour:()=>"แบ่งวัตถุด้วย Chan-Vese",
   deconv_blind:()=>"ประมาณ PSF และแก้เบลอ",
@@ -332,6 +340,13 @@ export const OP_PRIMARY = {
     const base = `เลื่อน ${pnum(op, "tx", p.tx)}%, ${pnum(op, "ty", p.ty)}%`;
     return kx === 0 && ky === 0 ? base : `${base} · shear ${kx}, ${ky}`;
   },
+  test_pattern: () => "สร้างภาพทดสอบ",
+  quadtree: () => "แบ่งบล็อกตามความเรียบ",
+  contour_lines: () => "วาดเส้นชั้นความสว่าง",
+  mtb_register: () => "จัดภาพด้วย bitmap มัธยฐาน",
+  geodesic_distance: () => "วัดระยะเดินจากจุดเริ่ม",
+  radon: () => "ฉายภาพหลายมุมเป็น sinogram",
+  similarity_transform: () => "หมุน/ย่อขยาย/เลื่อนพร้อมกัน",
   roi_polygon: (p) => `ROI ${pnum("roi_polygon", "points", p.points, { int: true })} จุด · ${ownOr({ apply: "ตัดนอกกรอบ", mask: "Mask", overlay: "ดูตำแหน่ง" }, p.view, "apply")}`,
   // ใหม่ (2026-10-04, IP batch 2 ชิ้น E) — ตัวเลขผ่าน pnum (ค่าหลัง clamp ที่ op ใช้จริง) · ตัวเลือกที่ไม่รู้จัก ("constructor" ฯลฯ) แสดงเป็นค่าเริ่มต้น
   slic: (p) => `~${pnum("slic", "count", p.count, { int: true })} ก้อน · compactness ${pnum("slic", "compactness", p.compactness)}${ownOr({ boundary: "", mean: " · สีเฉลี่ย" }, p.view, "boundary")}`,
@@ -472,16 +487,16 @@ export const OPTION_GROUPS = {
     ["หายอด / หุบ (ทำ marker ให้ Watershed)", ["regional_max", "regional_min", "h_maxima", "h_minima", "extended_max", "extended_min"]],
   ],
   "analysis_detect.mode": [
-    ["วัตถุ — หา / นับ / วัด", ["find_contours", "connected_components", "bounding_boxes", "regionprops", "euler_number", "image_stats", "shape_filter", "select_object", "feret", "distance_transform", "line_profile"]],
+    ["วัตถุ — หา / นับ / วัด", ["find_contours", "connected_components", "bounding_boxes", "regionprops", "euler_number", "image_stats", "shape_filter", "select_object", "feret", "distance_transform", "line_profile", "contour_lines"]],
     ["หาเส้นตรง / วงกลม", ["hough_lines", "hough_circles"]],
     ["หาจุดมุม / จุดเด่น", ["harris_corners", "shi_tomasi_corners", "fast_keypoints", "orb_keypoints", "akaze_keypoints"]],
-    ["ลายพื้นผิวและความคม", ["local_std_filter", "local_entropy_filter", "gabor_filter", "glcm", "focus_score"]],
+    ["ลายพื้นผิวและความคม", ["local_std_filter", "local_entropy_filter", "gabor_filter", "glcm", "focus_score", "quadtree"]],
     ["ตัดสินผ่าน / ไม่ผ่าน", ["pass_fail"]],
   ],
   "segment_edge.mode": [
     ["แยกขาว-ดำ (Threshold)", ["binary_threshold", "otsu_threshold", "adaptive_threshold", "multi_otsu_threshold"]],
     ["หาขอบ (Edge)", ["canny", "sobel", "gradient_dir", "scharr_edge", "prewitt_edge", "roberts_edge", "laplacian_edge", "log_edge", "frangi_vesselness"]],
-    ["แยกวัตถุเป็นชิ้น", ["watershed", "watershed_marker", "grabcut", "region_growing", "active_contour"]],
+    ["แยกวัตถุเป็นชิ้น", ["watershed", "watershed_marker", "grabcut", "region_growing", "active_contour", "geodesic_distance"]],
   ],
   "enhance_tools.mode": [
     ["ความสว่าง / คอนทราสต์", ["brightness_contrast", "gamma", "custom_lut", "contrast_stretch", "hist_equalize", "clahe", "flatfield_correction"]],

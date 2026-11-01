@@ -588,8 +588,8 @@ for (const [variant, what] of [['A', 'the old params'], ['B', 'every new param p
 // ===================================================================
 // ip4b-S — static structure / text / clamps / codegen
 // ===================================================================
-test('ip4b-S1. (static structure) the 8 new ops exist with the right needs and host groups; OPS = 155 (149 before batch 5F + 6 new ops), FILTERS = 35; Morphology has 27 operations (the old 14 first, in order); no select key is "mode"; defaultParams() == the OPS defaults (prefixed); legacy groups untouched; the category groups = the palette sections in order', () => {
-  assert.equal(Object.keys(OPS).length, 155); // 149 before batch 5F + 6 new ops
+test('ip4b-S1. (static structure) the 8 new ops exist with the right needs and host groups; OPS = 162 (+7 ops in batch 5G), FILTERS = 35; Morphology has 27 operations (the old 14 first, in order); no select key is "mode"; defaultParams() == the OPS defaults (prefixed); legacy groups untouched; the category groups = the palette sections in order', () => {
+  assert.equal(Object.keys(OPS).length, 162); // +7 operations in batch 5G
   assert.equal(Object.keys(FILTERS).length, 35); // +morph_tools (2026-10-18) +image_registration (2026-10-24)
   for (const id of NEW_OPS) {
     assert.ok(OPS[id], id); assert.equal(OPS[id].needs, NEEDS[id], `${id}.needs`);
@@ -608,7 +608,7 @@ test('ip4b-S1. (static structure) the 8 new ops exist with the right needs and h
   assert.deepEqual(opOptions.slice(0, 14), MORPH_OLD);
   assert.deepEqual(opOptions.slice(14), [...MORPH_NEW, "clean", "majority", "spur", "thin", "shrink", "h_minima", "extended_min", "ult_erode", "perimeter", "thicken", "keep_border"]);
   assert.equal(OPS.morphology.params.find((p) => p.key === 'op').default, 'erode');
-  assert.deepEqual(OPS.morphology.params.slice(-4).map((p) => p.key), ['hmPattern', 'hmRotate', 'hHeight', 'perimConn']);
+  assert.deepEqual(OPS.morphology.params.slice(-4).map((p) => p.key), ['hmRotate', 'hHeight', 'perimConn', 'ballHeight']);
   assert.deepEqual(OPS.morphology.params.slice(0, 6).map((p) => p.key), ['op', 'shape', 'ksize', 'iterations', 'minArea', 'lineAngle']);
   assert.equal(defaultParams('morphology').hmPattern, 'isolated'); assert.equal(defaultParams('morphology').hmRotate, true); assert.equal(defaultParams('morphology').hHeight, 10);
   assert.deepEqual(OPS.morphology.params.find((p) => p.key === 'hmPattern').options.map((o) => o.value), Object.keys(HITMISS_PATTERNS));
@@ -629,10 +629,10 @@ test('ip4b-S1. (static structure) the 8 new ops exist with the right needs and h
   assert.deepEqual(sec('ENHANCE').slice(-5), ['custom_kernel', 'dehaze', 'lowlight_enhance', 'local_contrast', 'local_laplacian']);
   assert.deepEqual(sec('FILTER & DENOISE').slice(-8), ['wiener_filter', 'guided_filter', 'anisotropic_diffusion', 'nlm_denoise', 'deconv_wiener', 'deconv_lucy', 'deconv_blind', 'deconv_reg']);
   const ad = sec('ANALYSIS & DETECTION');
-  assert.deepEqual(ad.slice(ad.indexOf('local_entropy_filter'), ad.indexOf('local_entropy_filter') + 5), ['local_entropy_filter', 'gabor_filter', 'glcm', 'focus_score', 'regionprops']);
-  assert.deepEqual(sec('FREQUENCY DOMAIN').slice(-2), ['bandpass_notch', 'dct_jpeg']);
+  assert.deepEqual(ad.slice(ad.indexOf('local_entropy_filter'), ad.indexOf('local_entropy_filter') + 6), ['local_entropy_filter', 'gabor_filter', 'glcm', 'focus_score', 'quadtree', 'regionprops']);
+  assert.deepEqual(sec('FREQUENCY DOMAIN').slice(-3), ['bandpass_notch', 'dct_jpeg', 'radon']);
   assert.equal(sec('IMAGE ARITHMETIC').at(-1), 'roi_apply'); // 2026-10-24 ecc_register ย้ายไป IMAGE REGISTRATION
-  assert.deepEqual(sec('IMAGE REGISTRATION'), ['template_matching', 'ecc_register']);
+  assert.deepEqual(sec('IMAGE REGISTRATION'), ['template_matching', 'ecc_register', 'mtb_register']);
   // 2026-10-18: MORPHOLOGY = 19 เครื่องมือ morph_* (ลำดับ/ความหมายล็อกใน tests/morph-split.test.mjs) · ตัวเก่า 'morphology' เป็น legacy ไม่อยู่บน palette
   assert.deepEqual(sec('MORPHOLOGY'), modes('morph_tools'));
   assert.equal(sec('MORPHOLOGY').length, 30);
@@ -640,7 +640,7 @@ test('ip4b-S1. (static structure) the 8 new ops exist with the right needs and h
   // ตรวจว่าคำใบ้งานช้าปรากฏกับโหมดที่ใช้เวลามากและแสดงใน dropdown
   for (const id of Object.keys(OPS)) {
     const has = typeof OPS[id].modeHint === 'string' && OPS[id].modeHint.includes('ช้า — เหมาะกับภาพนิ่ง');
-    assert.equal(has, ['nlm_denoise', 'deconv_lucy', 'deconv_blind', 'local_laplacian', 'exposure_fusion', 'morph_thin', 'morph_shrink', 'frangi_vesselness', 'anisotropic_diffusion'].includes(id), `${id} slow modeHint`);
+    assert.equal(has, ['nlm_denoise', 'deconv_lucy', 'deconv_blind', 'local_laplacian', 'exposure_fusion', 'morph_thin', 'morph_shrink', 'frangi_vesselness', 'anisotropic_diffusion', 'geodesic_distance', 'radon'].includes(id), `${id} slow modeHint`);
   }
   assert.ok(FILTERS.filter_denoise.params[0].options.find((o) => o.value === 'nlm_denoise').hint.includes('ช้า'));
   assert.ok(FILTERS.filter_denoise.params[0].options.find((o) => o.value === 'deconv_lucy').hint.includes('ช้า'));

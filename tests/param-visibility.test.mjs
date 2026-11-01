@@ -123,6 +123,7 @@ const RULES = {
     hmPattern: (l) => l.op === 'hit_or_miss',
     hmRotate: (l) => l.op === 'hit_or_miss',
     hHeight: (l) => ['h_maxima', 'extended_max', 'h_minima', 'extended_min'].includes(l.op),
+    ballHeight: (l) => BASIC.includes(l.op) && l.shape === 'ball',
   } },
   color_inrange: { controllers: ['colorSpace'], conditional: {
     hMin: (l) => l.colorSpace === 'hsv', hMax: (l) => l.colorSpace === 'hsv', sMin: (l) => l.colorSpace === 'hsv', vMin: (l) => l.colorSpace === 'hsv',
@@ -223,7 +224,8 @@ test('pv-04 R1 defaultParams ของทุก filter (key ลำดับ + �
   // P-8 เพิ่ม op pass_fail (key pass_fail__*) ใน analysis_detect — ตัดออกก่อน hash เพื่อให้ hash เดิมยังล็อกทุก param เดิมเหมือนเดิม
   const added5A = ['watershed_marker__', 'lowlight_enhance__', 'colorspace_inverse__', 'euler_number__', 'image_pyramid__', 'frangi_vesselness__', 'anisotropic_diffusion__', 'debayer__', 'bf_score__', 'local_contrast__', 'mask_overlay__', 'shape_filter__keepN', 'shape_filter__keepRank', 'rank_filter__', 'custom_lut__', 'image_stats__', 'corr2__', 'gradient_dir__', 'hough_lines__view', 'find_contours__simplify', 'srgb_linear__', 'color_matrix__', 'decorrstretch__', 'reconstruct__', 'select_object__', 'perimConn', 'white_balance__pcaPercent', 'hough_circles__view'];
   const added5F = ['active_contour__', 'deconv_blind__', 'deconv_reg__', 'local_laplacian__', 'multissim__', 'exposure_fusion__', 'deconv_wiener__taper', 'deconv_lucy__taper'];
-  const old = (k) => !k.startsWith('pass_fail__') && !added5A.some((prefix) => k.startsWith(prefix)) && !added5F.some((prefix) => k.startsWith(prefix));
+  const added5G = ['ballHeight', 'test_pattern__', 'similarity_transform__', 'quadtree__', 'contour_lines__', 'mtb_register__', 'geodesic_distance__', 'radon__'];
+  const old = (k) => !k.startsWith('pass_fail__') && !added5A.some((prefix) => k.startsWith(prefix)) && !added5F.some((prefix) => k.startsWith(prefix)) && !added5G.some((prefix) => k.startsWith(prefix));
   for (const id of Object.keys(FILTERS)) {
     if (id === 'morph_tools' || id === 'image_registration') continue; // image_registration (2026-10-24) ล็อกใน tests/category-merge.test.mjs // 2026-10-18: กลุ่มใหม่ (Morphology แยกเครื่องมือ) — hash นี้ล็อกเฉพาะ filter เดิมทั้ง 33 ตัว · morph_tools ล็อกใน tests/morph-split.test.mjs
     const d = defaultParams(id);

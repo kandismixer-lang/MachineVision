@@ -1,5 +1,6 @@
 import { color5EPy, jacobi5EPy } from "./codegen-batch5e.js";
 import { withTaper5FPy, regularized5FPy, active5FPy, laplace5FPy, blind5FPy, localLaplacian5FPy, multissim5FPy, fusion5FPy } from "./codegen-batch5f.js";
+import { testPattern5GPy, similarityTransform5GPy, ballMorph5GPy, quadtree5GPy, contourLines5GPy, mtbRegister5GPy, geodesicDistance5GPy, radon5GPy } from "./codegen-batch5g.js";
 // สร้างโค้ด Python (OpenCV) ตามลำดับ Box ที่ภาพวิ่งผ่านจริง ๆ ในกล่องผลลัพธ์หนึ่งกล่อง
 // (คนละอย่างกับปุ่ม Export ที่เป็นโค้ดเทรน YOLO)
 //
@@ -9,10 +10,15 @@ import { withTaper5FPy, regularized5FPy, active5FPy, laplace5FPy, blind5FPy, loc
 //
 // หมายเหตุ: โค้ดที่ gen ใช้ BGR (cv2.imread) ตามธรรมเนียม OpenCV — ต่างจากในแอปที่ทำงานบน RGB
 // ผลลัพธ์เชิงหลักการเหมือนกัน (ค่าเนื้อสี H, threshold ฯลฯ เท่ากัน)
-import { OPS, FILTERS, MORPH_OP_IDS, MORPH_5A_LUT, passFailParams, PASS_FAIL_METRICS, NLM_MAX_SIDE, LUCY_MAX_ITERS, LUCY_WORK_BUDGET, ECC_DEFAULT_SIDE, finiteOr, boolOr, HITMISS_PATTERNS } from "./filters/registry.js";
+import { OPS, FILTERS, MORPH_OP_IDS, MORPH_5A_LUT, passFailParams, PASS_FAIL_METRICS, NLM_MAX_SIDE, LUCY_MAX_ITERS, LUCY_WORK_BUDGET, BALL_WORK_BUDGET, BALL_LARGE_WORK_BUDGET, ECC_DEFAULT_SIDE, finiteOr, boolOr, HITMISS_PATTERNS } from "./filters/registry.js";
 
 // ชื่อไทยของ op (โยงกับที่ผู้เรียนเห็นบนจอ) + teaching note สั้น ๆ ต่อ op คลาสสิก
 const TEACH = {
+  test_pattern: "สร้างลายทดสอบโดยไม่ใช้ค่าพิกเซลของภาพเข้า",
+  similarity_transform: "รวมหมุน ย่อขยาย และเลื่อนในครั้งเดียว",
+  quadtree: "แบ่งภาพเป็นบล็อกตามความต่างของความสว่าง",
+  contour_lines: "วาดเส้นชั้นความสว่างบนภาพ",
+  mtb_register: "จัดภาพ A ด้วย bitmap มัธยฐานของภาพ B",
   grayscale: "รวม 3 ช่องสีเป็นความสว่างเดียว — พื้นฐานก่อน threshold/edge",
   gaussian_blur: "เฉลี่ยเพื่อนบ้านแบบถ่วงน้ำหนักระฆังคว่ำ — ลด noise แบบสุ่ม",
   median_blur: "ใช้ค่ากลางของเพื่อนบ้าน จึงลบ noise เกลือ-พริกไทยดีกว่า Gaussian",
@@ -1243,6 +1249,12 @@ for c, components in enumerate(((z,z,t,value,value,q), (t,value,value,q,z,z), (v
   // outOf แทน out คงที่ เพราะ endpoints_branchpoints (ใหม่ 2026-10-01) คืนภาพสี (BGR) เสมอ ส่วน op อื่น
   // ทั้งหมดในกลุ่มนี้คืนภาพขาวดำ — ตามแนวเดียวกับ region_growing ที่ out ขึ้นกับ view
   morphology: { needs: "gray", outOf: (p) => (p.op === "endpoints_branchpoints" ? "color" : "gray"), gen: (p) => {
+    if (["erode", "dilate", "open", "close", "gradient", "tophat", "blackhat"].includes(p.op) && p.shape === "ball") {
+      const k = Math.floor(clampNum(p.ksize, 7, 1, 51) + 0.5);
+      const it = Math.floor(clampNum(p.iterations, 1, 1, 100) + 0.5);
+      const height = Math.floor(clampNum(p.ballHeight, 10, 1, 100) + 0.5);
+      return ballMorph5GPy(p.op, k, it, height, BALL_WORK_BUDGET, BALL_LARGE_WORK_BUDGET);
+    }
     if (["perimeter","thicken","keep_border"].includes(p.op)) return morphology5EPy(p);
     if (p.op === "ult_erode") return ultimate5CPy();
     if (["clean", "majority", "spur", "thin", "shrink"].includes(p.op)) return binaryMorph5APy(p);
@@ -2473,6 +2485,35 @@ for c, components in enumerate(((z,z,t,value,value,q), (t,value,value,q,z,z), (v
     ];
   } },
 
+  similarity_transform: { needs: "any", out: "same", gen: (p) => {
+    const angle = clampNum(p.angle, 15, -180, 180);
+    const scale = clampNum(p.scale, 1, 0.1, 4);
+    const tx = clampNum(p.tx, 0, -100, 100);
+    const ty = clampNum(p.ty, 0, -100, 100);
+    const interpolation = pickOwn({ bilinear: "bilinear", nearest: "nearest" }, p.interp, "bilinear");
+    const output = pickOwn({ same: "same", fit: "fit" }, p.output, "same");
+    return similarityTransform5GPy(angle, scale, tx, ty, interpolation, output);
+  } },
+  test_pattern: { needs: "any", outOf: (p) => p.pattern === "color_bars" ? "color" : "gray", bgrChannelOrder: true, gen: (p) => {
+    const pattern = pickOwn({ checkerboard: "checkerboard", grid: "grid", dots: "dots", ramp_h: "ramp_h", ramp_v: "ramp_v", color_bars: "color_bars" }, p.pattern, "checkerboard");
+    const size = pickOwn({ input: "input", "256": "256", "512": "512", "1024": "1024" }, String(p.size), "input");
+    const square = Math.round(clampNum(p.square, 32, 2, 256));
+    return testPattern5GPy(pattern, size, square, boolOr(p.matlabGray, false));
+  } },
+  quadtree: { needs: "gray", outOf: (p) => p.view === "blocks" ? "color" : "gray", gen: (p) => {
+    const threshold = Math.floor(clampNum(p.threshold, 25, 0, 255) + 0.5);
+    const maxSize = Number(pickOwn({ "8": "8", "16": "16", "32": "32", "64": "64", "128": "128", "256": "256" }, String(p.maxSize), "64"));
+    let minSize = Number(pickOwn({ "1": "1", "2": "2", "4": "4", "8": "8", "16": "16" }, String(p.minSize), "2"));
+    if (minSize > maxSize) minSize = maxSize;
+    const view = pickOwn({ blocks: "blocks", mean: "mean", size: "size" }, p.view, "blocks");
+    return quadtree5GPy(threshold, maxSize, minSize, view);
+  } },
+  contour_lines: { needs: "gray", out: "color", bgrChannelOrder: true, gen: (p) => {
+    const levels = Math.floor(clampNum(p.levels, 5, 1, 20) + 0.5);
+    const view = pickOwn({ overlay: "overlay", plot: "plot" }, p.view, "overlay");
+    return contourLines5GPy(levels, view);
+  } },
+
   // IP batch 2 ชิ้น D — roipoly: ROI หลายเหลี่ยม 3–6 จุด หน่วย % · ผลรวมเลขจำนวนเต็ม + ลูปเดียวกับ registry.js จึงได้ตัวเลขเท่าแอปทุก bit
   roi_polygon: {
     needs: "any",
@@ -3576,6 +3617,26 @@ for c, components in enumerate(((z,z,t,value,value,q), (t,value,value,q,z,z), (v
   } },
 
   // Gabor: kernel จาก cv2.getGaborKernel (float32 เท่ากับสูตรของแอปทุกค่า) · ส่วนจริงลบค่าเฉลี่ย (บวกตามลำดับเหมือน JS) · ปรับให้ค่าสูงสุดเป็น 255
+  mtb_register: { needs: "any", outOf: (p) => p.view === "overlay" ? "color" : p.view === "aligned" ? "same" : "gray", gen: (p, ctx) => {
+    const maxShift = Number(pickOwn({ "7": "7", "15": "15", "31": "31", "63": "63" }, String(p.maxShift), "31"));
+    const exclusion = Math.floor(clampNum(p.exclusion, 4, 0, 20) + 0.5);
+    const view = pickOwn({ aligned: "aligned", overlay: "overlay", diff: "diff", bitmap: "bitmap" }, p.view, "aligned");
+    return mtbRegister5GPy(maxShift, exclusion, view, pyGrayCode(ctx), pyBGrayCode(ctx));
+  } },
+  geodesic_distance: { needs: "gray", outOf: (p) => p.view === "distance" ? "color" : "gray", bgrChannelOrder: true, gen: (p) => {
+    const method = pickOwn({ similar: "similar", binary: "binary", gray: "gray" }, p.method, "similar");
+    const metric = pickOwn({ chessboard: "chessboard", cityblock: "cityblock", quasi: "quasi" }, p.metric, "chessboard");
+    const weight = clampNum(p.weight, 1, 0, 10);
+    const seedX = clampNum(p.seedX, 50, 0, 100), seedY = clampNum(p.seedY, 50, 0, 100);
+    const view = pickOwn({ distance: "distance", segment: "segment" }, p.view, "distance");
+    const threshold = clampNum(p.thresh, 0.1, 0, 1);
+    return geodesicDistance5GPy(method, metric, weight, seedX, seedY, view, threshold, LUCY_WORK_BUDGET);
+  } },
+  radon: { needs: "gray", outOf: (p) => p.view === "peak" ? "color" : "gray", bgrChannelOrder: true, gen: (p) => {
+    const thetaStep = Number(pickOwn({ 1: "1", 2: "2", 5: "5" }, String(p.thetaStep), "1"));
+    const view = pickOwn({ sinogram: "sinogram", peak: "peak" }, p.view, "sinogram");
+    return radon5GPy(thetaStep, view, LUCY_WORK_BUDGET);
+  } },
   gabor_filter: { needs: "gray", out: "gray", gen: (p) => {
     const lambd = Math.round(clampNum(p.wavelength, 8, 2, 64)), theta = Math.round(clampNum(p.orientation, 0, 0, 179));
     const bw = clampNum(p.bandwidth, 1, 0.5, 3), gamma = clampNum(p.aspect, 0.5, 0.2, 1);
@@ -4248,14 +4309,16 @@ function appOnlyHeader(appOnly) {
 // PF_PY_SOURCES = ตัวที่ gen โค้ด snapshot ให้ได้ (ที่เหลือ: metric ตรงกับ op นั้นแต่ Python ยังไม่รองรับ = คำเตือน)
 // ข้อจำกัดที่รู้ (ยอมรับ): template_matching (ไม่มี template / ใหญ่เกินภาพ) และ psnr/ssim (ไม่ได้ต่อ B) แอปคืนภาพโดยไม่มี values แต่ที่นี่ยังนับเป็น
 // "กล่องวัดล่าสุด" เสมอ — ผลคือ Python ตัดสิน NG (กล่องผิดชนิด) ในกรณีที่แอปจะใช้ค่าของกล่องวัดก่อนหน้า · เอนเอียงไปทาง NG (fail-safe)
-export const PF_VALUE_OPS = new Set(["active_contour", "multissim", "select_object", "image_stats", "corr2", "regionprops", "template_matching", "psnr", "ssim", "mog2", "farneback_optical_flow", "pyrlk_optical_flow", "feret",
-  "line_profile", "shape_filter", "roi_polygon", "slic", "focus_score", "delta_e", "roi_apply", "ecc_register", "gabor_filter", "glcm", "dehaze", "dct_jpeg", "watershed_marker", "seg_score", "bf_score", "euler_number", "image_pyramid", "frangi_vesselness", "piqe"]);
-const PF_PY_SOURCES = { multissim: true, select_object: true, image_stats: true, corr2: true, regionprops: true, roi_polygon: true, focus_score: true, seg_score: true, bf_score: true, piqe: true };
+export const PF_VALUE_OPS = new Set(["active_contour", "multissim", "select_object", "image_stats", "corr2", "regionprops", "template_matching", "psnr", "ssim", "mog2", "farneback_optical_flow", "pyrlk_optical_flow", "feret", "quadtree",
+  "line_profile", "shape_filter", "roi_polygon", "slic", "focus_score", "delta_e", "roi_apply", "ecc_register", "gabor_filter", "glcm", "dehaze", "dct_jpeg", "watershed_marker", "seg_score", "bf_score", "euler_number", "image_pyramid", "frangi_vesselness", "piqe", "mtb_register", "geodesic_distance", "radon"]);
+const PF_PY_SOURCES = { active_contour: true, multissim: true, select_object: true, image_stats: true, corr2: true, regionprops: true, roi_polygon: true, focus_score: true, seg_score: true, bf_score: true, piqe: true, quadtree: true };
 // บรรทัดท้ายขั้นวัด: เก็บค่าที่ pass_fail ต้องใช้ลง `pf_up` ทันที (ตัวแปรของขั้นวัดอาจถูกทับโดยขั้นถัดไป) · เรียกเมื่อ pipeline มี pass_fail เท่านั้น
 function pfSnapshotLines(opId, local, ctx) {
   if (!PF_VALUE_OPS.has(opId)) return [];
   ctx.pfSource = opId;
   if (opId === "multissim") return ["pf_up = {'value': msssim5f}  # MS-SSIM"];
+  if (opId === "active_contour") return ["pf_up = {'value': area5f}  # active contour area"];
+  if (opId === "quadtree") return ["pf_up = {'value': qt_blocks}  # จำนวนบล็อก Quadtree"];
   if (opId === "image_stats") return ["pf_up = {'mean': stats_mean, 'std': stats_std, 'entropy': stats_entropy}  # ค่าให้ขั้น Pass / Fail"];
   if (opId === "select_object") return ["pf_up = {'value': area5e}  # selected object area"];
   if (opId === "corr2") return ["pf_up = {'value': corr2_value}  # ค่าให้ขั้น Pass / Fail"];

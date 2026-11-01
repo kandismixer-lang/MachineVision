@@ -220,7 +220,7 @@ test('p8-pf-7. mm: with a mm/px scale on regionprops the area metrics use area_m
 });
 
 test('p8-pf-8. every metric reads its own field: roi_mean / focus / de_mean (scalars) and the metric ids exist', () => {
-  assert.deepEqual(Object.keys(PASS_FAIL_METRICS), ['count', 'area_sum', 'area_max', 'roi_mean', 'focus', 'de_mean', 'iou', 'dice', 'bf', 'piqe', 'mean', 'std', 'entropy', 'corr2', 'area', 'msssim']);
+  assert.deepEqual(Object.keys(PASS_FAIL_METRICS), ['count', 'area_sum', 'area_max', 'roi_mean', 'focus', 'de_mean', 'iou', 'dice', 'bf', 'piqe', 'mean', 'std', 'entropy', 'corr2', 'area', 'msssim', 'contour_area', 'qt_blocks']);
   assert.equal(V({ metric: 'roi_mean', cond: 'range', lo: 100, hi: 120 }, SC('roi_polygon', 'roi_mean', 110.5)).result, 'OK');
   assert.equal(V({ metric: 'de_mean', cond: 'le', hi: 2.3 }, SC('delta_e', 'de_mean', 2.3)).result, 'OK');
   assert.equal(V({ metric: 'de_mean', cond: 'le', hi: 2.3 }, SC('delta_e', 'de_mean', 2.31)).result, 'NG');
@@ -758,14 +758,25 @@ test('p8-py-7. pass_fail on line B → WARNING skip (values never cross lines) �
 test('p8-py-8. PF_VALUE_OPS = exactly the ops of registry.js that assign ctx.values (static scan, minus pass_fail itself)', () => {
   const src = readSrc('filters/registry.js');
   const start = src.indexOf('export const OPS = {');
-  const end = src.indexOf('\n};\n\n// ---- ตัวช่วย/ตารางของ IP batch 4B');
+  const end = src.indexOf('\n};', start);
   assert.ok(start > 0 && end > start);
   const found = new Set();
-  let cur = null;
-  for (const line of src.slice(start, end).split('\n')) {
-    const m = /^  ([a-z_0-9]+): \{$/.exec(line);
-    if (m) cur = m[1];
-    if (cur && /ctx\.values\s*=/.test(line)) found.add(cur);
+  const collect = (block) => {
+    let cur = null;
+    for (const line of block.split('\n')) {
+      const m = /^  ([a-z_0-9]+): \{$/.exec(line);
+      if (m) cur = m[1];
+      if (cur && /ctx\.values\s*=/.test(line)) found.add(cur);
+    }
+  };
+  collect(src.slice(start, end));
+  const late = src.slice(end + 3);
+  const assignments = /^OPS\.([a-z_0-9]+)\s*=\s*\{/gm;
+  let assignment;
+  while ((assignment = assignments.exec(late))) {
+    const blockEnd = late.indexOf('\n};', assignment.index);
+    const block = late.slice(assignment.index, blockEnd < 0 ? late.length : blockEnd);
+    if (/ctx\.values\s*=/.test(block)) found.add(assignment[1]);
   }
   found.delete('pass_fail');
   assert.deepEqual([...found].sort(), [...PF_VALUE_OPS].sort());

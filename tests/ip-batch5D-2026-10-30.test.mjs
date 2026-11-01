@@ -57,7 +57,7 @@ test("ip5d-G. 730 clean-tree cases freeze pixels, info, values and Python bytes"
             for (const [fid, ids] of Object.entries(OLD_HOSTS))
                 for (const id of ids) {
                     const qs = legacyParams(id), defs = Object.fromEntries(qs.map(q => [q.key, q.default]));
-                    const variants = [{}, ...qs.filter(q => q.type === "select").flatMap(q => q.options.filter(o => o.value !== q.default && !(id === "delta_e" && ["cie94","angle"].includes(o.value)) && !(id === "pass_fail" && ["mean", "std", "entropy", "corr2", "area", "msssim"].includes(o.value))).map(o => ({ [q.key]: o.value })))];
+                    const variants = [{}, ...qs.filter(q => q.type === "select").flatMap(q => q.options.filter(o => o.value !== q.default && !(id === "delta_e" && ["cie94","angle"].includes(o.value)) && !(id === "pass_fail" && ["mean", "std", "entropy", "corr2", "area", "msssim", "contour_area", "qt_blocks"].includes(o.value))).map(o => ({ [q.key]: o.value })))];
                     for (const extra of variants) {
                         const local = { ...defs, ...extra }, params = { mode: id, ...Object.fromEntries(Object.entries(local).map(([k, v]) => [id + "__" + k, v])) }, st = { id: fid, params };
                         const key = JSON.stringify([kind, w, h, fid, id, extra]), ctx = { src2: c };

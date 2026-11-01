@@ -785,7 +785,7 @@ test('ipC-9. palette-panel.js: FILTER & DENOISE = salt_pepper_noise, gaussian_no
   const GEO7 = ['crop', 'resize', 'rotate', 'flip', 'perspective_warp', 'undistort', 'translate_shear'];
   assert.deepEqual(geo.filter((id) => GEO7.includes(id)), GEO7);
   assert.equal(geo.indexOf('translate_shear'), geo.indexOf('undistort') + 1);
-  assert.equal(geo.at(-1), 'translate_shear');
+  assert.deepEqual(geo.slice(-3), ['translate_shear', 'similarity_transform', 'test_pattern']);
   for (const id of NEW_OPS) {
     // 2026-10-07: palette ชี้กลุ่มระดับหมวด — HOST (กลุ่มเดิม) ยังเป็นที่อยู่ legacy ของ op ใน FILTERS
     assert.equal(OP_TO_FILTER[id], { gaussian_noise: 'filter_denoise', wiener_filter: 'filter_denoise', translate_shear: 'geometry' }[id]);
