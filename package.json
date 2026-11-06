@@ -1,7 +1,7 @@
 {
   "name": "machine-vision-app",
-  "version": "1.0.9",
-  "description": "Argus by IRiSH สำหรับการเรียนการสอนการประมวลผลภาพ (Electron + OpenCV.js)",
+  "version": "1.0.10",
+  "description": "FrameLab by IRiSH สำหรับการเรียนการสอนการประมวลผลภาพ (Electron + OpenCV.js)",
   "main": "electron/main.js",
   "type": "module",
   "scripts": {
@@ -16,7 +16,7 @@
   },
   "build": {
     "appId": "com.irish.machinevision",
-    "productName": "Argus",
+    "productName": "FrameLab",
     "directories": {
       "output": "release"
     },
@@ -36,7 +36,7 @@
     "nsis": {
       "oneClick": true,
       "perMachine": false,
-      "shortcutName": "Argus"
+      "shortcutName": "FrameLab"
     },
     "publish": {
       "provider": "github",

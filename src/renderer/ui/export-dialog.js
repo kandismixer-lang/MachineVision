@@ -486,7 +486,7 @@ results = model.train(
 )`;
 }
 
-// แปลงโมเดลที่เทรนเสร็จเป็น .onnx (เอาไปใช้ในแอป Argus ได้เลย)
+// แปลงโมเดลที่เทรนเสร็จเป็น .onnx (เอาไปใช้ในแอป FrameLab ได้เลย)
 // imgsz ต้องตรงกับตอนเทรนเสมอ — ไม่งั้นแอปโหลด onnx แล้วจับวัตถุไม่เจอ
 function exportBlock(imgsz) {
   const sz = imgsz || DEFAULT_IMG_SIZE;

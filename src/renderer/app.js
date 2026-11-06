@@ -84,7 +84,7 @@ const appEl = document.getElementById("app");
 {
   const verEl = document.getElementById("status-ver");
   const v = window.appInfo?.version;
-  if (verEl && v) verEl.textContent = `Argus by IRiSH · v${v}`;
+  if (verEl && v) verEl.textContent = `FrameLab by IRiSH · v${v}`;
 }
 const videoEl = document.getElementById("camera");
 const gridEl = document.getElementById("stage-grid");
@@ -1592,12 +1592,12 @@ function updateStatus() {
 
 // ---------- init ----------
 async function main() {
-  loadingText.textContent = "Argus by IRiSH · กำลังโหลด OpenCV.js (wasm ~10MB) ในเบื้องหลัง …";
+  loadingText.textContent = "FrameLab by IRiSH · กำลังโหลด OpenCV.js (wasm ~10MB) ในเบื้องหลัง …";
   worker.postMessage({ type: "init" });
 }
 
 async function onOpenCVReady() {
-  loadingText.textContent = "Argus by IRiSH · กำลังเปิดกล้อง …";
+  loadingText.textContent = "FrameLab by IRiSH · กำลังเปิดกล้อง …";
   palettePanel.render();
   renderDetail();
   showApp();

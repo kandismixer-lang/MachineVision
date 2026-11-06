@@ -12,13 +12,13 @@ const renderer = read('../src/renderer/app.js');
 const sha256 = (relative) => createHash('sha256')
   .update(readFileSync(new URL(relative, import.meta.url))).digest('hex');
 
-test('Argus product and shortcut names replace the old branding', () => {
-  assert.equal(pkg.build.productName, 'Argus');
-  assert.equal(pkg.build.nsis.shortcutName, 'Argus');
-  assert.match(pkg.description, /^Argus\b/);
-  assert.equal(mac.productName, 'Argus');
-  assert.equal(mac.dmg.artifactName, 'Argus-${version}-mac-${arch}.${ext}');
-  assert.match(mac.mac.extendInfo.NSCameraUsageDescription, /^Argus ใช้กล้อง/);
+test('FrameLab product and shortcut names replace the old branding', () => {
+  assert.equal(pkg.build.productName, 'FrameLab');
+  assert.equal(pkg.build.nsis.shortcutName, 'FrameLab');
+  assert.match(pkg.description, /^FrameLab\b/);
+  assert.equal(mac.productName, 'FrameLab');
+  assert.equal(mac.dmg.artifactName, 'FrameLab-${version}-mac-${arch}.${ext}');
+  assert.match(mac.mac.extendInfo.NSCameraUsageDescription, /^FrameLab ใช้กล้อง/);
 });
 
 test('the package identity and update feed remain compatible with existing installs', () => {
@@ -31,30 +31,30 @@ test('the package identity and update feed remain compatible with existing insta
   assert.equal(mac.publish, null);
 });
 
-test('window and document titles use Argus by IRiSH', () => {
-  assert.match(main, /title:\s*["']Argus by IRiSH["']/);
-  assert.match(html, /<title>Argus by IRiSH<\/title>/);
+test('window and document titles use FrameLab by IRiSH', () => {
+  assert.match(main, /title:\s*["']FrameLab by IRiSH["']/);
+  assert.match(html, /<title>FrameLab by IRiSH<\/title>/);
 });
 
-test('the header uses the Argus name, IRiSH subtitle and new brand mark', () => {
-  assert.match(html, /<h1>Argus<\/h1>/);
+test('the header uses the FrameLab name, IRiSH subtitle and new brand mark', () => {
+  assert.match(html, /<h1>FrameLab<\/h1>/);
   assert.match(html, /<span class="subtitle">by IRiSH<\/span>/);
-  assert.match(html, /<img src="\.\/assets\/argus-logo\.png" alt="Argus" class="brand-logo"\s*\/>/);
+  assert.match(html, /<img src="\.\/assets\/framelab-logo\.png" alt="FrameLab" class="brand-logo"\s*\/>/);
 });
 
-test('the loading screen uses the Argus mark and its existing text slot', () => {
-  assert.match(html, /<img src="\.\/assets\/argus-logo\.png" alt="Argus by IRiSH" class="loading-logo"\s*\/>/);
-  assert.match(html, /<p id="loading-text">Argus by IRiSH[^<]*<\/p>/);
+test('the loading screen uses the FrameLab mark and its existing text slot', () => {
+  assert.match(html, /<img src="\.\/assets\/framelab-logo\.png" alt="FrameLab by IRiSH" class="loading-logo"\s*\/>/);
+  assert.match(html, /<p id="loading-text">FrameLab by IRiSH[^<]*<\/p>/);
   // Progress messages keep the name; error messages stay plain so the error text is easy to read.
   for (const assignment of renderer.matchAll(/loadingText\.textContent\s*=\s*([^;]+);/g)) {
     if (/เกิดข้อผิดพลาด/.test(assignment[1])) continue;
-    assert.match(assignment[1], /Argus by IRiSH/);
+    assert.match(assignment[1], /FrameLab by IRiSH/);
   }
 });
 
-test('the status bar retains the Argus name when the version arrives', () => {
-  assert.match(html, /<span class="status-ver" id="status-ver">Argus by IRiSH<\/span>/);
-  assert.ok(renderer.includes('`Argus by IRiSH · v${v}`'));
+test('the status bar retains the FrameLab name when the version arrives', () => {
+  assert.match(html, /<span class="status-ver" id="status-ver">FrameLab by IRiSH<\/span>/);
+  assert.ok(renderer.includes('`FrameLab by IRiSH · v${v}`'));
 });
 
 test('userData stays in the exact legacy folder before Electron is ready', () => {
@@ -64,14 +64,14 @@ test('userData stays in the exact legacy folder before Electron is ready', () =>
   assert.ok(ready > pin.index, 'set userData before registering app readiness');
 });
 
-test('the Windows icon is an exact copy of the supplied Argus ICO', () => {
-  // SHA256 of specs/assets/argus-icon.ico supplied on 2026-10-30.
-  assert.equal(sha256('../electron/icon.ico'), '7ae40a7cdfd6ee2ad94d52c731339a44dd408131e9512b86d2ddda608f4670f0');
+test('the Windows icon is an exact copy of the generated FrameLab ICO', () => {
+  // SHA256 of specs/assets/framelab-icon.ico generated from Pic/Framlab.png on 2026-11-06.
+  assert.equal(sha256('../electron/icon.ico'), '8cb280e1405251eac8fae85d75809677145a35063cc94d30ac6d1e09a065a0fc');
 });
 
-test('the macOS icon is an exact copy of the supplied Argus PNG', () => {
-  // SHA256 of specs/assets/argus-icon-1024.png supplied on 2026-10-30.
-  assert.equal(sha256('../build-mac/icon.png'), '9e41fdcb6641a439993fe14045f61086cf2fe002b8a62703b5953817e8b0284d');
+test('the macOS icon is an exact copy of the generated FrameLab PNG', () => {
+  // SHA256 of specs/assets/framelab-icon-1024.png generated from Pic/Framlab.png on 2026-11-06.
+  assert.equal(sha256('../build-mac/icon.png'), '343382b96c5aba2d036ce232a425654e83a66a11348bf04d23a0da1e1c62c5f7');
 });
 
 test('the old IRiSH images are retained without being referenced by index.html', () => {
