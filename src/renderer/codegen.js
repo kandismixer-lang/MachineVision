@@ -4384,12 +4384,209 @@ function activeSteps(pipeline) {
 // ต้องมีโค้ดสองภาพนำเข้า (process(path_a, path_b)) — แยกไปทำที่ buildPythonCode2Image เพราะรูปแบบ
 // ฟังก์ชันต่างจาก process(path) เดี่ยวโดยพื้นฐาน (resolveOp ทำงานกับ step.id ตรง ๆ ซึ่งเป็น FILTERS key
 // เดียวกับที่ FILTERS[step.id] ใช้เช็ค — ยืนยันแล้วจาก tracePipeline ของ editor.js)
+// ── ส่วนรันท้ายไฟล์ตามแหล่งภาพในแอป (2026-11-06) ─────────────────────────────────────────────
+// เดิม __main__ บังคับอ่าน "input.jpg" เสมอ ผู้ใช้ต้องแก้ path เอง และใช้กับกล้องไม่ได้ · ตอนนี้แอปส่ง
+// opts.source มาให้: ภาพนิ่ง → ใส่ path ไฟล์จริงทุกภาพ · กล้อง → loop อ่านกล้อง · วิดีโอ → loop อ่านไฟล์วิดีโอ
+// ไม่ส่ง opts.source (เทสต์/ไฟล์เดิม) → ได้แม่แบบเดิมทุกไบต์ (golden ของทุก batch ไม่เปลี่ยน)
+// process(path) / process(path_a, path_b) คงไว้เหมือนเดิม แต่เรียก process_image(s) ที่รับภาพ numpy แทน
+const oneLine5S = (t, max = 120) => String(t ?? "").replace(/[\r\n\u0085\u2028\u2029]+/g, " ").replace(/[\u0000-\u001f\u007f]/g, "").slice(0, max);
+const intOr5S = (v, d, lo, hi) => (Number.isFinite(Number(v)) ? Math.min(hi, Math.max(lo, Math.round(Number(v)))) : d);
+const pyStr5S = (s) => JSON.stringify(String(s)); // สตริง JSON เป็นสตริง Python ที่ถูกต้องเสมอ (escape \ " และอักขระควบคุมแล้ว)
+
+export function normalizeSource5S(source) {
+  if (!source || typeof source !== "object") return null;
+  const maxSide = intOr5S(source.maxSide, 0, 0, 100000);
+  if (source.kind === "camera") {
+    return {
+      kind: "camera", maxSide,
+      index: intOr5S(source.index, 0, 0, 99),
+      total: intOr5S(source.total, 0, 0, 99),
+      label: oneLine5S(source.label),
+      width: intOr5S(source.width, 1280, 1, 16384),
+      height: intOr5S(source.height, 720, 1, 16384),
+    };
+  }
+  if (source.kind === "video") {
+    const path = typeof source.path === "string" && source.path ? source.path : null;
+    return { kind: "video", maxSide, path, name: oneLine5S(source.name) };
+  }
+  const list = Array.isArray(source.paths) ? source.paths : [];
+  const paths = list.filter((p) => typeof p === "string" && p.length > 0);
+  return { kind: "image", maxSide, paths, missing: list.length - paths.length };
+}
+
+function runSection5S(src, twoImage) {
+  const call = twoImage ? "process_images(img, img.copy())" : "process_image(img)";
+  const out = [
+    "# ── ส่วนรันโปรแกรม (สร้างตามแหล่งภาพที่เปิดอยู่ในโปรแกรมตอนกดสร้างโค้ด) ──",
+  ];
+  if (twoImage) {
+    out.push("# ในโปรแกรม ภาพ B มาจากแหล่งภาพเดียวกับภาพ A (แยกสายประมวลผล) จึงส่งภาพเดียวกันเข้าทั้งสองช่อง");
+    out.push("# ถ้าต้องการใช้ภาพ B อีกไฟล์ ให้เรียก process(\"ภาพA.jpg\", \"ภาพB.jpg\") แทน");
+  }
+  out.push(
+    `MAX_SIDE = ${src.maxSide}   # โปรแกรมย่อภาพให้ด้านยาวไม่เกินค่านี้ก่อนประมวลผล (ตั้งค่า "ขนาดประมวลผล") · 0 = ใช้ขนาดจริง`,
+    "",
+    "",
+    "def fit_size(img):",
+    "    # ย่อภาพแบบเดียวกับโปรแกรม: ด้านยาวเกิน MAX_SIDE → ย่อลงโดยคงอัตราส่วน",
+    "    # (ผลอาจต่างจากในโปรแกรมเล็กน้อย เพราะเบราว์เซอร์ย่อภาพด้วยวิธีของตัวเอง)",
+    "    h, w = img.shape[:2]",
+    "    if not MAX_SIDE or max(w, h) <= MAX_SIDE:",
+    "        return img",
+    "    s = MAX_SIDE / max(w, h)",
+    "    size = (max(1, int(w * s + 0.5)), max(1, int(h * s + 0.5)))",
+    "    return cv2.resize(img, size, interpolation=cv2.INTER_AREA)",
+    "",
+    "",
+    "def read_image(path):",
+    "    # อ่านภาพได้แม้ path มีภาษาไทยหรือเว้นวรรค (cv2.imread บน Windows อ่าน path ภาษาไทยไม่ได้)",
+    "    img = cv2.imdecode(np.fromfile(path, dtype=np.uint8), cv2.IMREAD_COLOR)",
+    "    if img is None:",
+    "        raise FileNotFoundError(path)",
+    "    return img",
+    "",
+    "",
+    "def save_image(path, img):",
+    "    # บันทึกภาพได้แม้ path มีภาษาไทย",
+    "    ok, buf = cv2.imencode(os.path.splitext(path)[1] or \".png\", img)",
+    "    if not ok:",
+    "        raise IOError(\"cannot save \" + path)",
+    "    buf.tofile(path)",
+    "",
+    "",
+  );
+
+  if (src.kind === "camera") {
+    const which = src.total > 0 ? ` (ตัวที่ ${src.index + 1} จาก ${src.total} ตัว)` : "";
+    const label = src.label ? `"${src.label}"` : "ที่เลือกไว้";
+    out.push(
+      `CAMERA_INDEX = ${src.index}   # กล้อง${label}ในโปรแกรม${which} — ถ้าเปิดผิดตัว ลองเปลี่ยนเป็น 0, 1, 2, ...`,
+      `CAMERA_WIDTH = ${src.width}   # ขนาดภาพจากกล้องตอนสร้างโค้ด`,
+      `CAMERA_HEIGHT = ${src.height}`,
+      "",
+      "",
+      "def open_camera():",
+      "    # บน Windows ใช้ DirectShow (เปิดกล้องเร็วกว่า) ถ้าเปิดไม่ได้ค่อยลองแบบปกติ",
+      "    backend = cv2.CAP_DSHOW if sys.platform.startswith(\"win\") else cv2.CAP_ANY",
+      "    cap = cv2.VideoCapture(CAMERA_INDEX, backend)",
+      "    if not cap.isOpened():",
+      "        cap = cv2.VideoCapture(CAMERA_INDEX)",
+      "    cap.set(cv2.CAP_PROP_FRAME_WIDTH, CAMERA_WIDTH)",
+      "    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, CAMERA_HEIGHT)",
+      "    return cap",
+      "",
+      "",
+      "def main():",
+      "    cap = open_camera()",
+      "    if not cap.isOpened():",
+      "        raise RuntimeError(\"cannot open camera index %d\" % CAMERA_INDEX)",
+      "    print(\"q / Esc = quit, s = save result\")",
+      "    saved = 0",
+      "    try:",
+      "        while True:",
+      "            ok, frame = cap.read()",
+      "            if not ok:",
+      "                print(\"cannot read a frame from the camera\")",
+      "                break",
+      "            img = fit_size(frame)",
+      `            result = ${call}`,
+      "            cv2.imshow(\"camera\", img)",
+      "            cv2.imshow(\"result\", result)",
+      "            key = cv2.waitKey(1) & 0xFF",
+      "            if key in (27, ord(\"q\")):",
+      "                break",
+      "            if key == ord(\"s\"):",
+      "                saved += 1",
+      "                path = \"result_%03d.png\" % saved",
+      "                save_image(path, result)",
+      "                print(\"saved:\", path)",
+      "    finally:",
+      "        cap.release()",
+      "        cv2.destroyAllWindows()",
+    );
+  } else if (src.kind === "video") {
+    out.push(
+      src.path
+        ? `VIDEO_PATH = ${pyStr5S(src.path)}   # วิดีโอที่เปิดในโปรแกรม`
+        : `VIDEO_PATH = "input.mp4"   # << ใส่ path วิดีโอของคุณ (โปรแกรมอ่าน path ของ "${src.name || "วิดีโอ"}" ไม่ได้)`,
+      "# ถ้าเปิดไม่ได้และ path มีภาษาไทย ให้ย้ายวิดีโอไปโฟลเดอร์ที่ชื่อเป็นภาษาอังกฤษ (cv2.VideoCapture บน Windows อ่าน path ภาษาไทยไม่ได้)",
+      "",
+      "",
+      "def main():",
+      "    cap = cv2.VideoCapture(VIDEO_PATH)",
+      "    if not cap.isOpened():",
+      "        raise RuntimeError(\"cannot open video: \" + VIDEO_PATH)",
+      "    fps = cap.get(cv2.CAP_PROP_FPS) or 30",
+      "    delay = max(1, int(1000 / fps))",
+      "    print(\"q / Esc = quit, space = pause, s = save result\")",
+      "    paused, saved, result = False, 0, None",
+      "    try:",
+      "        while True:",
+      "            if not paused:",
+      "                ok, frame = cap.read()",
+      "                if not ok:",
+      "                    break",
+      "                img = fit_size(frame)",
+      `                result = ${call}`,
+      "                cv2.imshow(\"video\", img)",
+      "                cv2.imshow(\"result\", result)",
+      "            key = cv2.waitKey(0 if paused else delay) & 0xFF",
+      "            if key in (27, ord(\"q\")):",
+      "                break",
+      "            if key == ord(\" \"):",
+      "                paused = not paused",
+      "            if key == ord(\"s\") and result is not None:",
+      "                saved += 1",
+      "                path = \"result_%03d.png\" % saved",
+      "                save_image(path, result)",
+      "                print(\"saved:\", path)",
+      "    finally:",
+      "        cap.release()",
+      "        cv2.destroyAllWindows()",
+    );
+  } else {
+    if (src.paths.length) {
+      out.push(`# ภาพที่เปิดอยู่ในโปรแกรม (${src.paths.length} ภาพ)`);
+      if (src.missing > 0) out.push(`# ไม่ได้ใส่อีก ${src.missing} ภาพ เพราะถ่ายจากกล้องในโปรแกรม จึงไม่มีไฟล์ต้นฉบับ`);
+      out.push("INPUT_PATHS = [", ...src.paths.map((p) => `    ${pyStr5S(p)},`), "]");
+    } else {
+      out.push(
+        "# ภาพในโปรแกรมไม่มีไฟล์ต้นฉบับ (ถ่ายจากกล้องในโปรแกรม) หรือโปรแกรมอ่าน path ไม่ได้ — ใส่ path ภาพของคุณเอง",
+        "INPUT_PATHS = [",
+        "    \"input.jpg\",   # << ใส่ path ภาพของคุณ",
+        "]",
+      );
+    }
+    out.push(
+      "OUTPUT_DIR = \"output\"   # โฟลเดอร์เก็บผลลัพธ์ (สร้างให้อัตโนมัติ)",
+      "",
+      "",
+      "def main():",
+      "    os.makedirs(OUTPUT_DIR, exist_ok=True)",
+      "    for path in INPUT_PATHS:",
+      "        img = fit_size(read_image(path))",
+      `        result = ${call}`,
+      "        out_path = os.path.join(OUTPUT_DIR, os.path.splitext(os.path.basename(path))[0] + \"_result.png\")",
+      "        save_image(out_path, result)",
+      "        print(\"saved:\", out_path)",
+      "        cv2.imshow(\"result\", result)",
+      "        if (cv2.waitKey(0) & 0xFF) in (27, ord(\"q\")):   # กดปุ่มใดก็ได้ = ภาพถัดไป · Esc / q = หยุด",
+      "            break",
+      "    cv2.destroyAllWindows()",
+    );
+  }
+  out.push("", "", "if __name__ == \"__main__\":", "    main()", "");
+  return out.join("\n");
+}
+
 export function buildPythonCode(pipeline, opts = {}) {
   pipeline = activeSteps(pipeline);
   const has2Image = (pipeline || []).some((step) => step && usesSecondImage(step));
   if (has2Image) return buildPythonCode2Image(pipeline, opts);
 
   const name = opts.displayName || "ผลลัพธ์";
+  const src = normalizeSource5S(opts.source); // แหล่งภาพในแอป (ภาพ/กล้อง/วิดีโอ) → ส่วนรันท้ายไฟล์ · ไม่ส่งมา = แม่แบบเดิม
   const body = [];
   const ctx = { gray: false, mirrored: true }; // เริ่มจากภาพสี (cv2.imread = BGR = ช่องของแอปเรียงกลับด้าน)
 
@@ -4447,7 +4644,7 @@ export function buildPythonCode(pipeline, opts = {}) {
 import cv2
 import numpy as np
 import sys
-
+${src ? "import os\n" : ""}
 # บังคับให้ข้อความที่ print() ออกมาเป็น UTF-8 เสมอ — บนวินโดวส์ เวลาส่งผลไปเก็บในไฟล์
 # (เช่น python code.py > log.txt) ระบบจะใช้รหัสอักขระเดิมของเครื่อง ซึ่งเขียนภาษาไทยหรือ
 # สัญลักษณ์อย่าง px² / ∞ ไม่ได้ แล้วโปรแกรมจะหยุดกลางคันด้วย UnicodeEncodeError
@@ -4457,7 +4654,21 @@ if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
 
-${jacobiHelper5E(body)}def process(path):
+${jacobiHelper5E(body)}${src ? `def process_image(img):
+    # ประมวลผลภาพ 1 ภาพ (numpy แบบ BGR เหมือน cv2.imread หรือเฟรมจากกล้อง) ตามขั้นตอนในโปรแกรม
+
+${indented}
+    return img
+
+
+def process(path):
+    img = cv2.imread(path)  # อ่านภาพ (BGR)
+    if img is None:
+        raise FileNotFoundError(path)
+    return process_image(img)
+
+
+${runSection5S(src, false)}` : `def process(path):
     img = cv2.imread(path)  # อ่านภาพ (BGR)
     if img is None:
         raise FileNotFoundError(path)
@@ -4472,7 +4683,7 @@ if __name__ == "__main__":
     cv2.imshow("result", result)
     cv2.waitKey(0)
     cv2.destroyAllWindows()
-`;
+`}`;
 }
 
 // Tier 2 §C.0/§C.1 — เวอร์ชัน 2 ภาพนำเข้า: เรนเดอร์ src2 sub-pipeline (ภาพ B) ลง bodyB ก่อน (ใช้ GEN
@@ -4569,6 +4780,7 @@ function emitBChain(step, depth, body, appOnly) {
 }
 function buildPythonCode2Image(pipeline, opts = {}) {
   const name = opts.displayName || "ผลลัพธ์";
+  const src = normalizeSource5S(opts.source); // แหล่งภาพในแอป (ภาพ/กล้อง/วิดีโอ) → ส่วนรันท้ายไฟล์ · ไม่ส่งมา = แม่แบบเดิม
   const bodyA = [];
   const ctxA = { gray: false };
   let stepNo = 0;
@@ -4626,7 +4838,7 @@ function buildPythonCode2Image(pipeline, opts = {}) {
 import cv2
 import numpy as np
 import sys
-
+${src ? "import os\n" : ""}
 # บังคับให้ข้อความที่ print() ออกมาเป็น UTF-8 เสมอ — บนวินโดวส์ เวลาส่งผลไปเก็บในไฟล์
 # (เช่น python code.py > log.txt) ระบบจะใช้รหัสอักขระเดิมของเครื่อง ซึ่งเขียนภาษาไทยหรือ
 # สัญลักษณ์อย่าง px² / ∞ ไม่ได้ แล้วโปรแกรมจะหยุดกลางคันด้วย UnicodeEncodeError
@@ -4636,7 +4848,23 @@ if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
 
-${jacobiHelper5E(bodyA)}def process(path_a, path_b):
+${jacobiHelper5E(bodyA)}${src ? `def process_images(img, img_b):
+    # ประมวลผลภาพ A (img) กับภาพ B (img_b) แบบ BGR ตามขั้นตอนในโปรแกรม
+    img_b_raw = img_b  # ภาพ B ดิบ — แต่ละขั้นที่ใช้ภาพ B เริ่มจากสำเนาของภาพนี้ (ไม่ต่อสาย B ของขั้นก่อนหน้า)
+
+${indentedA}
+    return img
+
+
+def process(path_a, path_b):
+    img = cv2.imread(path_a)    # ภาพหลัก (Src A)
+    img_b = cv2.imread(path_b)  # ภาพที่สอง (Src B)
+    if img is None or img_b is None:
+        raise FileNotFoundError(path_a if img is None else path_b)
+    return process_images(img, img_b)
+
+
+${runSection5S(src, true)}` : `def process(path_a, path_b):
     img = cv2.imread(path_a)    # ภาพหลัก (Src A)
     img_b = cv2.imread(path_b)  # ภาพที่สอง (Src B)
     if img is None or img_b is None:
@@ -4653,5 +4881,5 @@ if __name__ == "__main__":
     cv2.imshow("result", result)
     cv2.waitKey(0)
     cv2.destroyAllWindows()
-`;
+`}`;
 }

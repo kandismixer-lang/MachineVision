@@ -273,6 +273,30 @@ function procMax() {
   return (PROC_LEVELS.find((l) => l.value === state.procLevel) || PROC_LEVELS[1]).max;
 }
 
+// ที่อยู่ไฟล์จริงของ File (แอป Electron เท่านั้น · ภาพที่ถ่ายจากกล้อง/รันในเบราว์เซอร์ = null)
+function filePathOf(file) {
+  if (!file) return null;
+  try { return window.mvFile?.pathFor(file) || file.path || null; } catch { return null; }
+}
+
+// แหล่งภาพตอนกดสร้างโค้ด Python → codegen เขียนส่วนรันท้ายไฟล์ให้ตรงกัน (ภาพ = path จริง, กล้อง = loop กล้อง)
+function codegenSource() {
+  const maxSide = procMax();
+  if (state.source === "camera") {
+    const i = state.cameras.findIndex((c) => c.deviceId === state.cameraId);
+    return {
+      kind: "camera", maxSide,
+      index: Math.max(0, i),
+      total: state.cameras.length,
+      label: i >= 0 ? state.cameras[i].label : "",
+      width: videoEl.videoWidth || 1280,
+      height: videoEl.videoHeight || 720,
+    };
+  }
+  if (state.source === "video") return { kind: "video", maxSide, path: filePathOf(videoFile), name: videoFile?.name || "" };
+  return { kind: "image", maxSide, paths: state.images.map((im) => filePathOf(im.file)) };
+}
+
 // คำนวณขนาดหลังย่อ (คงอัตราส่วน) — ถ้าไม่เกินเกณฑ์ หรือระดับ = เต็ม คืนขนาดเดิม
 function processDims(w, h) {
   const max = procMax();
@@ -482,7 +506,7 @@ const editor = createGraphEditor(graphCanvasEl, {
       sel.onGenCode = () => {
         const dp = state.pipelines.find((d) => d.displayId === sel.id);
         const name = dp ? displayChip(dp) : "ผลลัพธ์";
-        const code = buildPythonCode(dp ? dp.pipeline : [], { displayName: name });
+        const code = buildPythonCode(dp ? dp.pipeline : [], { displayName: name, source: codegenSource() });
         showCodeDialog(code, { title: `🐍 โค้ด Python — ${name}`, filename: "image_processing.py" });
       };
       state.selectedDisplay = sel;
@@ -2401,7 +2425,7 @@ modelInput.addEventListener("change", async () => {
         statusEl.textContent = "แปลง .pt ได้เฉพาะในแอป (Electron) เท่านั้น";
         return;
       }
-      const ptPath = file.path;
+      const ptPath = filePathOf(file);
       if (!ptPath) {
         statusEl.textContent = "อ่านที่อยู่ไฟล์ .pt ไม่ได้";
         return;

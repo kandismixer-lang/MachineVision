@@ -1,6 +1,6 @@
 // Preload ทำงานใน context แยก (contextIsolation) — เปิดสะพานเฉพาะที่จำเป็น
 // Phase 1 ยังไม่ต้องใช้ IPC พิเศษ แต่วางโครงไว้ให้ Phase 3 (save/load pipeline)
-const { contextBridge, ipcRenderer } = require("electron");
+const { contextBridge, ipcRenderer, webUtils } = require("electron");
 
 // เวอร์ชันจริงจาก package.json — main.js ส่งมาทาง additionalArguments (--app-version=x.y.z)
 // preload รันแบบ sandboxed ใน Electron รุ่นนี้ ทำให้ require("../package.json") ใช้ไม่ได้โดยตรง
@@ -30,6 +30,14 @@ contextBridge.exposeInMainWorld("mvMetrics", {
 contextBridge.exposeInMainWorld("mvDL", {
   available: true,
   convertPt: (ptPath) => ipcRenderer.invoke("dl:convertPt", ptPath),
+});
+
+// สะพานอ่านที่อยู่ไฟล์จริงของ File ที่ผู้ใช้เลือก/ลากเข้ามา — Electron 32+ เอา file.path ออกแล้ว
+// ใช้ตอนสร้างโค้ด Python (ใส่ path ภาพ/วิดีโอให้เลย) และตอนแปลงโมเดล .pt
+contextBridge.exposeInMainWorld("mvFile", {
+  pathFor: (file) => {
+    try { return webUtils.getPathForFile(file) || null; } catch { return null; }
+  },
 });
 
 // สะพานแจ้งธีม (light/dark) ให้ main ตั้งสีพื้นหน้าต่าง — กันกะพริบสีเก่าตอน resize/รีโหลดในโหมดสว่าง
