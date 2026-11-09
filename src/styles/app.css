@@ -6740,3 +6740,64 @@ body:not(.ui-v2) .panel-collapse-btn, body:not(.ui-v2) .panel-collapse-anchor { 
   border-color: var(--border-strong);
   border-left-color: var(--border-strong);
 }
+
+/* ---------- ธีมมืด: ปุ่มรองต้องแยกจากพื้นหลังออก เหมือนธีมสว่าง (2026-11-09) ----------
+   เดิมหลายปุ่มไม่มีพื้น/ขอบเลย (↶ ↷ − ＋, หมวดเครื่องมือ, Model Detect) หรือขอบ rgba(255,255,255,.12–.20)
+   → ขอบต่างจากพื้นแค่ 1.0–1.9:1 · ตอนนี้: พื้นยกขึ้นหนึ่งขั้น (--btn-raised-bg) + ขอบ --btn-raised-border (≥ 3:1 ตาม WCAG 1.4.11)
+   + เงาดำบาง (ไม่ใช่เงาเรืองแสงสี) · สถานะ active/expanded/disabled และปุ่มสีหลัก (น้ำเงิน/แดง) ไม่แตะ */
+:root[data-theme="dark"] {
+  --btn-raised-bg: #172a43;
+  --btn-raised-bg-hover: #20385a;
+  --btn-raised-border: rgba(255, 255, 255, 0.34);
+  --btn-raised-border-hover: rgba(255, 255, 255, 0.55);
+  --btn-raised-shadow: 0 1px 2px rgba(0, 0, 0, 0.45);
+}
+:root[data-theme="dark"] .lvc-btn:not(.active):not(:disabled),
+:root[data-theme="dark"] .logs-clear,
+:root[data-theme="dark"] .panel-collapse-btn,
+:root[data-theme="dark"] .ui-v2 .panel-left > h2 .panel-collapse-btn,
+:root[data-theme="dark"] .ui-v2 .panel-right .panel-collapse-anchor .panel-collapse-btn,
+:root[data-theme="dark"] .stage-hide-btn,
+:root[data-theme="dark"] .panel-left .proj-btn:not(.tmpl-btn),
+:root[data-theme="dark"] .btn.btn-icon,
+:root[data-theme="dark"] .btn.btn-save:not(:disabled),
+:root[data-theme="dark"] .btn.import-folder-btn,
+:root[data-theme="dark"] .level-select select,
+:root[data-theme="dark"] .tool-row {
+  background: var(--btn-raised-bg);
+  border: 1px solid var(--btn-raised-border);
+  box-shadow: var(--btn-raised-shadow);
+}
+/* หมวดเครื่องมือ: คงแถบสีประจำหมวดทางซ้ายไว้ (ไม่ใช้ border shorthand) — ใส่ขอบแค่ บน/ขวา/ล่าง */
+:root[data-theme="dark"] .ui-v2 .pal-head:not([aria-expanded="true"]) {
+  background: var(--btn-raised-bg);
+  box-shadow: var(--btn-raised-shadow);
+}
+:root[data-theme="dark"] .ui-v2 .pal-head {
+  border-top: 1px solid var(--btn-raised-border);
+  border-right: 1px solid var(--btn-raised-border);
+  border-bottom: 1px solid var(--btn-raised-border);
+}
+/* ปุ่มเคลียร์ภาพ (ตัวแดง) — ขอบชัดขึ้นอย่างเดียว คงพื้นโทนแดงเดิม */
+:root[data-theme="dark"] .btn.import-clear-btn { border-color: rgba(248, 113, 113, 0.65); }
+/* hover: กฎ hover เดิมมี specificity ต่ำกว่ากฎด้านบน → ต้องเขียนใหม่ ไม่งั้นชี้แล้วไม่มี feedback */
+:root[data-theme="dark"] .lvc-btn:not(.active):not(:disabled):hover,
+:root[data-theme="dark"] .logs-clear:hover,
+:root[data-theme="dark"] .panel-collapse-btn:hover,
+:root[data-theme="dark"] .ui-v2 .panel-left > h2 .panel-collapse-btn:hover,
+:root[data-theme="dark"] .ui-v2 .panel-right .panel-collapse-anchor .panel-collapse-btn:hover,
+:root[data-theme="dark"] .stage-hide-btn:hover,
+:root[data-theme="dark"] .panel-left .proj-btn:not(.tmpl-btn):hover,
+:root[data-theme="dark"] .btn.btn-icon:hover,
+:root[data-theme="dark"] .btn.btn-save:not(:disabled):hover,
+:root[data-theme="dark"] .btn.import-folder-btn:hover,
+:root[data-theme="dark"] .level-select select:hover,
+:root[data-theme="dark"] .tool-row:hover,
+:root[data-theme="dark"] .ui-v2 .pal-head:not([aria-expanded="true"]):hover {
+  background: var(--btn-raised-bg-hover);
+  border-color: var(--btn-raised-border-hover);
+}
+/* chip จอที่ซ่อน: hover = น้ำเงินทึบ — ตัวขาวบน #2997ff ได้แค่ ~3:1 → ใช้ตัวเข้มแทน (≈ 6.9:1) */
+:root[data-theme="dark"] .lv-hidden-chip:hover,
+:root[data-theme="dark"] .lv-hidden-chip:focus-visible,
+:root[data-theme="dark"] .lv-hidden-all { color: #04111f; }
