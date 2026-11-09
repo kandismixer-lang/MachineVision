@@ -18,6 +18,9 @@ contextBridge.exposeInMainWorld("mvExport", {
   available: true,
   chooseDir: () => ipcRenderer.invoke("export:chooseDir"),
   writeFile: (dir, name, bytes) => ipcRenderer.invoke("export:writeFile", { dir, name, bytes }),
+  // Save Picture: หน้าต่าง Save As — count 1 = ไฟล์เดียว, > 1 = สร้างโฟลเดอร์ตามชื่อที่ตั้ง
+  chooseSaveTarget: (count, defaultName) => ipcRenderer.invoke("export:chooseSaveTarget", { count, defaultName }),
+  writeSavedFile: (filePath, bytes) => ipcRenderer.invoke("export:writeSavedFile", { filePath, bytes }),
 });
 
 // สะพานอ่านค่าประสิทธิภาพระบบ (CPU/RAM จาก main process) — Design §17

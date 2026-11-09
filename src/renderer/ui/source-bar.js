@@ -188,7 +188,7 @@ export function createSourceBar(container, cb) {
       saveBtn.id = "save-picture-btn"; // ให้ app.js หาเจอเพื่อ disable ระหว่าง export อื่นทำงานอยู่
       saveBtn.className = "btn btn-save"; // ปุ่มรอง (เดิมเขียวทึบ + ตัวขาว contrast ~2.1:1 ไม่ผ่าน)
       saveBtn.textContent = "💾 Save Picture";
-      saveBtn.title = "บันทึกภาพผลลัพธ์แต่ละกล่องเป็นไฟล์ PNG (เลือกโฟลเดอร์)";
+      saveBtn.title = "บันทึกภาพผลลัพธ์เป็น PNG — Display เดียว = ตั้งชื่อไฟล์เอง, หลาย Display/หลายภาพ = สร้างโฟลเดอร์ตามชื่อที่ตั้งให้อัตโนมัติ";
       if (cb.exportBusy && cb.exportBusy()) {
         saveBtn.disabled = true;
         saveBtn.title = "กำลัง export อยู่ — รอให้เสร็จก่อน";

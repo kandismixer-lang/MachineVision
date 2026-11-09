@@ -3,6 +3,7 @@ import path from "node:path";
 import fs from "node:fs/promises";
 import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
+import { safeBaseName, resolveSaveTarget } from "./save-target.js";
 import electronUpdater from "electron-updater"; // electron-updater เป็น CommonJS — ต้อง import แบบ default แล้วดึงออกมา
 const { autoUpdater } = electronUpdater;
 
@@ -82,6 +83,44 @@ ipcMain.handle("export:chooseDir", async () => {
   });
   if (res.canceled || res.filePaths.length === 0) return null;
   return res.filePaths[0];
+});
+
+// ---------- IPC: Save Picture แบบโปรแกรมทั่วไป (หน้าต่าง Save As ให้ตั้งชื่อ) ----------
+// count = 1 → เซฟเป็นไฟล์ .png ตามชื่อที่ตั้ง · count > 1 → สร้างโฟลเดอร์ชื่อนั้นแล้วเซฟทุกไฟล์ลงไป
+// จำโฟลเดอร์ล่าสุดไว้ (เฉพาะรอบที่เปิดแอป) ให้ครั้งต่อไปเปิดที่เดิม
+let lastSaveDir = null;
+const approvedSaveFiles = new Set(); // เขียนไฟล์เดี่ยวได้เฉพาะ path ที่ผู้ใช้เลือกจาก dialog จริง
+const pathExists = (p) => fs.access(p).then(() => true, () => false);
+
+ipcMain.handle("export:chooseSaveTarget", async (e, { count, defaultName } = {}) => {
+  const multi = Number(count) > 1;
+  const startDir = lastSaveDir || app.getPath("pictures");
+  const base = safeBaseName(defaultName, multi ? "FrameLab" : "result");
+  const win = BrowserWindow.fromWebContents(e.sender);
+  const res = await dialog.showSaveDialog(win, {
+    title: multi ? `ตั้งชื่อโฟลเดอร์สำหรับเซฟภาพ (${count} ภาพ)` : "บันทึกภาพ",
+    buttonLabel: "บันทึก",
+    defaultPath: path.join(startDir, multi ? base : base + ".png"),
+    // หลายภาพไม่ใส่ตัวกรองนามสกุล — Windows จะได้ไม่เติม .png ต่อท้ายชื่อโฟลเดอร์
+    filters: multi ? [] : [{ name: "PNG Image", extensions: ["png"] }],
+    properties: ["showOverwriteConfirmation"],
+  });
+  if (res.canceled || !res.filePath) return null;
+  const target = await resolveSaveTarget(res.filePath, multi, pathExists);
+  if (target.kind === "folder") {
+    await fs.mkdir(target.path, { recursive: true });
+  } else {
+    approvedSaveFiles.add(target.path);
+  }
+  lastSaveDir = path.dirname(target.path);
+  return { kind: target.kind, path: target.path, name: path.basename(target.path) };
+});
+
+ipcMain.handle("export:writeSavedFile", async (_e, { filePath, bytes }) => {
+  if (!approvedSaveFiles.has(filePath)) throw new Error("path นี้ไม่ได้เลือกจากหน้าต่างบันทึก");
+  approvedSaveFiles.delete(filePath);
+  await fs.writeFile(filePath, Buffer.from(bytes));
+  return true;
 });
 
 // ---------- IPC: อ่านค่าประสิทธิภาพระบบ (Design §17) ----------

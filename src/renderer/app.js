@@ -1150,7 +1150,7 @@ function openExportCode() {
   }); // โชว์/ดาวน์โหลดโค้ดเท่านั้น — เซฟภาพแยกเป็นอีกปุ่ม
 }
 document.getElementById("export-yolo-code-btn")?.addEventListener("click", openExportCode);
-// ปุ่ม "เซฟภาพ": บันทึกภาพผลลัพธ์เป็น PNG (เลือกโฟลเดอร์)
+// ปุ่ม "เซฟภาพ": บันทึกภาพผลลัพธ์เป็น PNG (Save As — ภาพเดียว = ไฟล์, หลายภาพ = โฟลเดอร์อัตโนมัติ)
 function saveImages() {
   const connected = state.pipelines.filter((d) => d.connected);
   if (connected.length === 0) {
@@ -1186,39 +1186,81 @@ async function saveOne(dir, name, blob) {
   return true;
 }
 
-// Export เฉพาะภาพ dataset (ผลลัพธ์ที่ผ่าน filter) — เลือกโฟลเดอร์ครั้งเดียว บันทึกทั้งหมด
+// Save Picture แบบโปรแกรมทั่วไป: เปิดหน้าต่าง Save As ให้ตั้งชื่อ
+// - ได้ภาพ 1 ไฟล์ (ภาพเดียว/กล้อง + Display ที่มีผลลัพธ์ 1 กล่อง) → เซฟเป็นไฟล์ .png ตามชื่อที่ตั้ง
+// - ได้หลายไฟล์ (หลาย Display หรือภาพนิ่งหลายภาพ) → สร้างโฟลเดอร์ตามชื่อที่ตั้งให้อัตโนมัติ แล้วเซฟทุกไฟล์ลงไป
+const canSaveAs = !!(window.mvExport && window.mvExport.chooseSaveTarget);
+function saveStamp() {
+  const d = new Date();
+  const p2 = (n) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}${p2(d.getMonth() + 1)}${p2(d.getDate())}-${p2(d.getHours())}${p2(d.getMinutes())}${p2(d.getSeconds())}`;
+}
 async function exportDataset() {
   const connected = state.pipelines.filter((d) => d.connected);
   if (connected.length === 0) {
     statusEl.textContent = "ยังไม่มีผลลัพธ์ให้ export — ต่อสายให้ครบก่อน";
     return;
   }
-  // เลือกโฟลเดอร์ปลายทางครั้งเดียว (ถ้าอยู่ใน Electron)
-  let dir = null;
-  if (canExportFolder) {
-    dir = await window.mvExport.chooseDir();
-    if (!dir) {
-      statusEl.textContent = "ยกเลิกการบันทึก dataset";
+  if (exporting) {
+    statusEl.textContent = "กำลัง Export อยู่ — รอให้เสร็จก่อน";
+    return;
+  }
+  const isBatch = state.source === "image" && state.images.length > 1;
+  // ภาพเดียว/กล้อง: เอาเฉพาะกล่องที่มีภาพผลลัพธ์แล้ว (จาก cache) — นับก่อนเปิด dialog จะได้รู้ว่าไฟล์เดียวหรือหลายไฟล์
+  const ready = isBatch ? [] : connected.filter((dp) => {
+    const oc = displayCanvases.get(dp.displayId);
+    return oc && oc.width;
+  });
+  if (!isBatch && ready.length === 0) {
+    statusEl.textContent = "ยังไม่มีภาพผลลัพธ์ (รอประมวลผลสักครู่)";
+    return;
+  }
+  const count = isBatch ? state.images.length * connected.length : ready.length;
+  const srcBase = state.source === "image" && state.images[state.imageIndex]
+    ? sanitizeName(state.images[state.imageIndex].name.replace(/\.[^.]+$/, ""))
+    : "";
+  const defaultName = isBatch
+    ? `FrameLab-batch-${saveStamp()}`
+    : count === 1
+      ? (srcBase ? `${srcBase}_` : "") + sanitizeName(captionFor(ready[0]))
+      : `${srcBase || "FrameLab"}-${saveStamp()}`;
+
+  let dir = null; // โฟลเดอร์ที่ main สร้างให้ (หลายไฟล์)
+  let target = null;
+  if (canSaveAs) {
+    target = await window.mvExport.chooseSaveTarget(count, defaultName);
+    if (!target) {
+      statusEl.textContent = "ยกเลิกการบันทึกภาพ";
       return;
     }
+    if (target.kind === "folder") dir = target.path;
   }
 
-  if (state.source === "image" && state.images.length > 1) {
-    await exportBatch(connected, dir);
-  } else {
-    // เดี่ยว/กล้อง: บันทึกภาพผลลัพธ์ปัจจุบันของแต่ละกล่อง (จาก cache)
-    let n = 0;
-    let i = 0;
-    for (const dp of connected) {
-      const oc = displayCanvases.get(dp.displayId);
-      if (!oc || !oc.width) continue;
-      i++;
-      const blob = await canvasToBlob(oc);
-      if (await saveOne(dir, `${i}_${sanitizeName(captionFor(dp))}.png`, blob)) n++;
+  if (isBatch) {
+    await exportBatch(connected, dir, target && target.name);
+    return;
+  }
+  try {
+    if (target && target.kind === "file") {
+      // ไฟล์เดียว: เขียนลง path ที่ผู้ใช้ตั้งชื่อเองตรง ๆ
+      const blob = await canvasToBlob(displayCanvases.get(ready[0].displayId));
+      await window.mvExport.writeSavedFile(target.path, new Uint8Array(await blob.arrayBuffer()));
+      statusEl.textContent = `บันทึกภาพแล้ว: ${target.name}`;
+      return;
     }
-    statusEl.textContent = n > 0
-      ? `บันทึก ${n} ภาพ${dir ? " ลงโฟลเดอร์ที่เลือกแล้ว" : "แล้ว"}`
-      : "ยังไม่มีภาพผลลัพธ์ (รอประมวลผลสักครู่)";
+    // หลายไฟล์ (หรือไม่มี Electron → ดาวน์โหลดทีละไฟล์)
+    let n = 0;
+    for (let i = 0; i < ready.length; i++) {
+      const dp = ready[i];
+      const blob = await canvasToBlob(displayCanvases.get(dp.displayId));
+      const name = ready.length === 1 && !dir
+        ? `${defaultName}.png`
+        : `${i + 1}_${sanitizeName(captionFor(dp))}.png`;
+      if (await saveOne(dir, name, blob)) n++;
+    }
+    statusEl.textContent = `บันทึก ${n} ภาพ${dir ? ` ลงโฟลเดอร์ "${target.name}" แล้ว` : "แล้ว"}`;
+  } catch (err) {
+    statusEl.textContent = `บันทึกภาพไม่สำเร็จ: ${(err && err.message) || err}`;
   }
 }
 
@@ -1291,9 +1333,7 @@ function pad(n, width) {
 
 let exporting = false;
 function csvStamp() {
-  const d = new Date();
-  const p2 = (n) => String(n).padStart(2, "0");
-  return `batch-${d.getFullYear()}${p2(d.getMonth() + 1)}${p2(d.getDate())}-${p2(d.getHours())}${p2(d.getMinutes())}${p2(d.getSeconds())}`;
+  return `batch-${saveStamp()}`;
 }
 // ระหว่าง export ใด ๆ (batch/YOLO) ทำงานอยู่ ปุ่ม export อื่นต้อง disable กันผู้ใช้กดซ้อน
 // (เช่นกด Save Picture ระหว่าง YOLO export ค้าง → เปิด dialog เลือกโฟลเดอร์ซ้อนแล้ว exportBatch return เงียบ สับสน)
@@ -1304,7 +1344,7 @@ function setExportButtonsDisabled(disabled) {
     if (el) el.disabled = disabled;
   }
 }
-async function exportBatch(connected, dir) {
+async function exportBatch(connected, dir, folderName) {
   if (exporting) return;
   const total = state.images.length;
   // โหมด fallback (ไม่มีโฟลเดอร์) ถ้าไฟล์เยอะจะเด้ง dialog รัว — เตือนก่อน
@@ -1366,7 +1406,7 @@ async function exportBatch(connected, dir) {
     const partial = aborted
       ? " · หยุดกลางทาง (ผลบางส่วน)"
       : failed > 0 ? ` · บันทึกภาพไม่สำเร็จ ${failed} ภาพ (ผลบางส่วน)` : "";
-    statusEl.textContent = `Export เสร็จ ${saved} ไฟล์ จาก ${total} ภาพ${dir ? " (ลงโฟลเดอร์ที่เลือก)" : ""}${partial}${csvNote}`;
+    statusEl.textContent = `Export เสร็จ ${saved} ไฟล์ จาก ${total} ภาพ${dir ? ` (ลงโฟลเดอร์ "${folderName || dir}")` : ""}${partial}${csvNote}`;
   } finally {
     exporting = false;
     setExportButtonsDisabled(false);
