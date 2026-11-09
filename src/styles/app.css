@@ -6680,35 +6680,63 @@ body:not(.ui-v2) .panel-collapse-btn, body:not(.ui-v2) .panel-collapse-anchor { 
 :root[data-theme="light"] .ui-v2 .class-panel-empty { padding: var(--space-3); color: var(--text-secondary); font-size: var(--fs-sm); line-height: 1.5; }
 
 /* ---------- ซ่อน/แสดงจอผลลัพธ์ (2026-11-09) ---------- */
-/* ปุ่ม "ซ่อน" ชิดขวาในหัวจอ — ปุ่มรอง ไม่แย่งสายตาจาก chip ชื่อจอ */
+/* ปุ่ม "ซ่อน" ชิดขวาในหัวจอ — ปุ่มรอง แต่ขอบต้องเห็นชัด (ไม่กลืนกับหัวจอ) */
 .stage-hide-btn {
   margin-left: auto;
   flex: 0 0 auto;
-  padding: 2px 8px;
+  padding: 3px 10px;
   font-size: 12px;
   line-height: 1.4;
-  color: var(--text-muted);
-  background: transparent;
-  border: 1px solid var(--border-default);
+  color: var(--text-secondary, var(--text));
+  background: var(--surface-2);
+  border: 1px solid var(--border-strong, var(--border-default));
   border-radius: 6px;
   cursor: pointer;
+  transition: background-color .15s, border-color .15s, color .15s;
 }
 .stage-hide-btn:hover,
-.stage-hide-btn:focus-visible { color: var(--text); border-color: var(--border-strong, var(--border-default)); background: var(--surface-3); }
-/* แถบ "ซ่อนอยู่: [👁 Display 2]" ในหัว VIEWER */
+.stage-hide-btn:focus-visible { color: var(--text-primary, var(--text)); border-color: var(--accent-blue); background: var(--surface-3); }
+/* แถบ "ซ่อนอยู่: [👁 Display 2]" ในหัว VIEWER — ใช้สีน้ำเงิน (accent) ให้สะดุดตาว่ามีจอถูกซ่อนอยู่ */
 .lv-hidden { display: inline-flex; align-items: center; gap: 6px; flex-wrap: wrap; min-width: 0; }
 .lv-hidden.hidden { display: none; }
-.lv-hidden-label { color: var(--text-muted); font-size: 12px; }
+.lv-hidden-label { color: var(--accent-blue); font-size: 12px; font-weight: 600; }
 .lv-hidden-chip {
-  padding: 2px 8px;
+  padding: 3px 10px;
   font-size: 12px;
+  font-weight: 600;
   line-height: 1.4;
-  color: var(--text);
-  background: var(--surface-3);
-  border: 1px dashed var(--border-default);
-  border-radius: 6px;
+  color: var(--accent-blue);
+  background: var(--accent-blue-soft, rgba(41, 151, 255, 0.14));
+  border: 1px solid var(--accent-blue-solid, var(--accent-blue));
+  border-radius: 999px;
   cursor: pointer;
+  transition: background-color .15s, color .15s;
 }
 .lv-hidden-chip:hover,
-.lv-hidden-chip:focus-visible { border-style: solid; border-color: var(--accent-blue, var(--border-default)); }
-.lv-hidden-all { background: transparent; border-style: solid; color: var(--text-muted); }
+.lv-hidden-chip:focus-visible { background: var(--accent-blue-solid, var(--accent-blue)); color: var(--text-on-accent, #fff); }
+.lv-hidden-chip:focus-visible { outline: none; box-shadow: var(--focus-ring, 0 0 0 2px var(--accent-blue)); }
+.lv-hidden-all { background: var(--accent-blue-solid, var(--accent-blue)); color: var(--text-on-accent, #fff); }
+.lv-hidden-all:hover,
+.lv-hidden-all:focus-visible { background: var(--accent-blue-solid-hover, var(--accent-blue)); }
+
+/* ---------- ธีมสว่าง: ปุ่มรองต้องแยกจากพื้นหลังออก (2026-11-09) ----------
+   เดิมพื้นปุ่ม #fafaf7 บนแผง #f6f6f3 + ขอบ #cbd1d4 → ขอบต่างจากพื้นแค่ ~1.4:1 มองแทบไม่เห็นว่าเป็นปุ่ม
+   → พื้นขาว + ขอบ --border-strong (#7e8a93 ≥ 3:1 ตาม WCAG 1.4.11) + เงาบาง · hover/active/disabled ของเดิมยังชนะ (specificity สูงกว่า) */
+:root[data-theme="light"] .lvc-btn,
+:root[data-theme="light"] .logs-clear,
+:root[data-theme="light"] .panel-collapse-btn,
+:root[data-theme="light"] .ui-v2 .panel-left > h2 .panel-collapse-btn,
+:root[data-theme="light"] .ui-v2 .panel-right .panel-collapse-anchor .panel-collapse-btn,
+:root[data-theme="light"] .tool-row {
+  background: #ffffff;
+  border-color: var(--border-strong);
+  box-shadow: 0 1px 2px rgba(23, 32, 42, 0.10);
+}
+:root[data-theme="light"] .stage-hide-btn { background: #ffffff; box-shadow: 0 1px 2px rgba(23, 32, 42, 0.10); }
+/* หมวดเครื่องมือ (COLOR, ENHANCE …) เป็นปุ่มกดเปิดได้ — ขอบชัดขึ้นหนึ่งขั้น พื้นขาว */
+:root[data-theme="light"] .ui-v2 .pal-head,
+:root[data-theme="light"] .ui-v2 .pal-head[aria-disabled="true"] {
+  background: #ffffff;
+  border-color: var(--border-strong);
+  border-left-color: var(--border-strong);
+}
