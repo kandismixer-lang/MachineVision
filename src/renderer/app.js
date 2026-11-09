@@ -39,7 +39,7 @@ import { exportYoloDataset } from "./dataset/export-yolo.js";
 import { importYoloDataset } from "./dataset/import-yolo.js";
 import { defaultAugmentConfig, normalizeAugmentConfig } from "./dataset/augment.js";
 import { createAugmentDialog } from "./ui/augment-dialog.js";
-import { initLayoutResize, initViewMenu, togglePanel, setPanelCollapsed } from "./ui/layout-resize.js";
+import { initLayoutResize, initViewMenu, togglePanel, setPanelCollapsed, setStageBoost } from "./ui/layout-resize.js";
 // ใบอนุญาตฟอนต์ (SIL OFL-1.1) ต้องไปกับตัวแอปที่ bundle ฟอนต์ IBM Plex — import เพื่อให้ Vite คัดลอกเข้า dist/assets (ไม่ได้ใช้ค่า)
 import "../assets/fonts/OFL.txt?url";
 import { statusText, sourceDetail, statusLevel, sourceChipLabel } from "./graph/layout-math.js";
@@ -333,6 +333,8 @@ function ensureGrid(order) {
   const hidden = order.filter((id) => hiddenDisplays.has(id));
   const key = shown.join(",") + "|" + hidden.join(",");
   if (key === gridKey) return;
+  // 3 จอขึ้นไป (ตาราง 2 แถว) → ขยายจอผลลัพธ์ลงไปทับ Pipeline อัตโนมัติ ภาพจะไม่เตี้ย · เหลือ 1–2 จอคืนความสูงเดิม
+  setStageBoost(shown.length >= 3);
   gridKey = key;
   closeAllChainMenus();
   for (const c of cells.values()) c.insp?.destroy();

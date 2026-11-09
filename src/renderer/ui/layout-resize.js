@@ -26,6 +26,23 @@ const px = (s) => parseFloat(s) || 0;
 
 let live = null; // instance ปัจจุบันของ initLayoutResize (เมนู "มุมมอง" เรียกผ่าน setStageRatio / setPanelWidth)
 
+// ขยายจอผลลัพธ์อัตโนมัติเมื่อมีหลายจอ (app.js สั่งตอนเห็น ≥ 3 จอ) — ไม่บันทึกลง state: พอเหลือ 1–2 จอก็กลับไปค่าที่ผู้ใช้ตั้งเอง
+// ถ้าระหว่างขยายผู้ใช้ลาก/เลือก preset เอง → ค่าของผู้ใช้ชนะ (ไม่บังคับ 70% ทับ) จนกว่าการขยายจะปิดแล้วเปิดใหม่
+export const STAGE_BOOST_RATIO = 0.70; // = preset "ภาพใหญ่"
+const DEFAULT_STAGE_RATIO = 0.5; // ไม่มีค่าที่ผู้ใช้ตั้ง = 1fr : 1fr ใน CSS
+let boostWanted = false;
+export function setStageBoost(on) {
+  on = !!on;
+  if (on === boostWanted) return;
+  boostWanted = on;
+  if (live) live.applyBoost();
+}
+// สัดส่วนที่ใช้จริง: ค่าผู้ใช้ หรือ ≥ 70% ระหว่างขยายอัตโนมัติ (null = ใช้ค่าเริ่มต้นของ CSS)
+export function effectiveStageRatio(userRatio, boostOn, yielded) {
+  if (boostOn && !yielded && (userRatio ?? DEFAULT_STAGE_RATIO) < STAGE_BOOST_RATIO) return STAGE_BOOST_RATIO;
+  return userRatio;
+}
+
 // ตั้งสัดส่วนจอผลลัพธ์ : กระดาน (0.1–0.9) แล้วบันทึกเหมือนการลาก · คืน false ถ้ายังไม่พร้อม (ไม่ใช่ ui-v2)
 export function setStageRatio(r) { return live ? live.setStageRatio(r) : false; }
 // ตั้งความกว้างแถบเครื่องมือ/แผงคุณสมบัติ (px) — clamp ตามขอบเขตเดียวกับการลาก
@@ -65,6 +82,8 @@ export function initLayoutResize() {
   let saveTimer = 0;
   let readoutTimer = 0;
   let animTimer = 0;
+  let boostYield = false; // ผู้ใช้ปรับสัดส่วนเองระหว่างขยายอัตโนมัติ → ไม่ขยายทับ
+  const stageRatioNow = () => effectiveStageRatio(state.stageRatio, boostWanted, boostYield);
 
   // ---------- วัดขนาด (อ่านอย่างเดียว) ----------
   function measurable() {
@@ -150,14 +169,16 @@ export function initLayoutResize() {
       if (stage.classList.contains("stage-fullscreen")) return;
       writeWidth("palette", state.paletteW);
       writeWidth("props", state.propsW);
-      writeSplit(state.stageRatio == null ? null : state.stageRatio * 1000);
+      const r0 = stageRatioNow();
+      writeSplit(r0 == null ? null : r0 * 1000);
       return;
     }
     const mc = measureCols();
     const eff = effectiveCols(mc);
     const { avail } = measureRows();
     let k = null;
-    if (state.stageRatio != null && avail > 0) k = (clampStagePx(state.stageRatio * avail, avail) / avail) * 1000;
+    const ratio = stageRatioNow();
+    if (ratio != null && avail > 0) k = (clampStagePx(ratio * avail, avail) / avail) * 1000;
     writeWidth("palette", eff.palette);
     writeWidth("props", eff.props);
     if (avail > 0) writeSplit(k);
@@ -193,8 +214,9 @@ export function initLayoutResize() {
     ariaCol("palette", pw, colMax("palette", mc.inner, qw));
     ariaCol("props", qw, colMax("props", mc.inner, pw));
     if (avail > 0) {
-      const sp = state.stageRatio == null ? stage.getBoundingClientRect().height
-        : clampStagePx(state.stageRatio * avail, avail);
+      const ratio = stageRatioNow();
+      const sp = ratio == null ? stage.getBoundingClientRect().height
+        : clampStagePx(ratio * avail, avail);
       ariaRow(sp, avail);
     }
   }
@@ -263,6 +285,7 @@ export function initLayoutResize() {
   function commit(which, res, ctx) {
     if (which === "stage") {
       state.stageRatio = clamp(res.v / ctx.avail, RATIO.min, RATIO.max);
+      if (boostWanted) boostYield = true;
       return;
     }
     state[FIELD[which]] = clamp(res.v, LIMITS[which].min, LIMITS[which].max);
@@ -303,6 +326,7 @@ export function initLayoutResize() {
     for (const w of list) {
       if (!(w in FIELD)) continue;
       state[FIELD[w]] = null;
+      if (w === "stage") boostYield = false; // คืนค่าเดิม = กลับไปให้ขยายอัตโนมัติทำงานได้อีก
       els.add(w === "stage" ? center : ws);
     }
     if (!els.size) return;
@@ -457,6 +481,7 @@ export function initLayoutResize() {
   function setStageRatioImpl(r) {
     if (!(typeof r === "number" && Number.isFinite(r)) || drag) return false;
     state.stageRatio = clamp(r, RATIO.min, RATIO.max);
+    if (boostWanted) boostYield = true;
     persistNow();
     stopAnim();
     render();
@@ -501,7 +526,17 @@ export function initLayoutResize() {
     else if (rails[which]?.contains(document.activeElement)) panelEl[which].querySelector("[data-collapse]")?.focus();
     return true;
   }
+  // เปิด/ปิดการขยายอัตโนมัติ (เรียกจาก setStageBoost) — เลื่อนเส้นแบ่งแบบมี transition เหมือนตอนคืนค่า
+  function applyBoost() {
+    if (!boostWanted) boostYield = false;
+    if (drag) return; // กำลังลาก → ค่าที่ลากชนะ (endDrag เรียก render เอง)
+    stopAnim();
+    center.classList.add("lr-animating");
+    animTimer = setTimeout(() => center.classList.remove("lr-animating"), 200);
+    render();
+  }
   live = {
+    applyBoost,
     setPanelCollapsed: setPanelCollapsedImpl,
     togglePanel: (w) => setPanelCollapsedImpl(w, !isHidden(w)),
     reset,
