@@ -49,7 +49,6 @@ import {
   SELECTED_PREVIEW_PREFIX, SELECTED_INPUT_PREFIX, buildInputPipeline, pickWorkerPipelines, classifyResultId,
 } from "./ui/phase3-math.js";
 import { localParamsFor } from "./filters/ui-meta.js";
-import { bestGridCols, gridPlacement } from "./ui/stage-layout.js";
 
 // framework เป้าหมายของ dataset/โค้ดเทรน: 'yolo' (YOLO txt) | 'rfdetr' (COCO json) — เลือกในหน้าต่าง Export Code (จำค่าล่าสุดไว้)
 let exportFramework = "yolo";
@@ -340,7 +339,8 @@ function ensureGrid(order) {
   gridEl.innerHTML = "";
   cells.clear();
   renderHiddenBar(hidden);
-  gridLayoutKey = ""; // ชุดจอเปลี่ยน → จัด layout ใหม่ (layoutGrid ท้ายฟังก์ชัน)
+  const cols = Math.min(shown.length, Math.ceil(Math.sqrt(shown.length)) || 1);
+  gridEl.style.setProperty("--cols", cols || 1);
   for (const id of shown) {
     const root = document.createElement("div");
     root.className = "stage-cell";
@@ -399,45 +399,7 @@ function ensureGrid(order) {
     cell.insp = createTileInspector({ view, canvas: cvs, gridCanvas: gridCv, readout, badge }, { getImage: () => cell.lastImg });
     cells.set(id, cell);
   }
-  layoutGrid();
 }
-
-// จัดจำนวนคอลัมน์ให้ภาพใหญ่ที่สุดตามพื้นที่จริง + สัดส่วนภาพ (ui/stage-layout.js)
-// grid มี cols*2 track: แต่ละจอกว้าง 2 track → แถวสุดท้ายที่ไม่เต็มเลื่อนมาตรงกลางได้ครึ่งช่อง
-let gridLayoutKey = "";
-let gridAspect = 0; // กว้าง/สูงของภาพผลลัพธ์ล่าสุด (0 = ยังไม่รู้ → ใช้ 4:3)
-function layoutGrid() {
-  const n = cells.size;
-  if (n === 0 || gridEl.classList.contains("hidden")) return;
-  const cs = getComputedStyle(gridEl);
-  const W = gridEl.clientWidth - parseFloat(cs.paddingLeft) - parseFloat(cs.paddingRight);
-  const H = gridEl.clientHeight - parseFloat(cs.paddingTop) - parseFloat(cs.paddingBottom);
-  if (!(W > 0 && H > 0)) return;
-  const key = `${n}|${Math.round(W)}|${Math.round(H)}|${gridAspect.toFixed(3)}`;
-  if (key === gridLayoutKey) return;
-  gridLayoutKey = key;
-  const firstCell = cells.values().next().value;
-  const capH = firstCell?.root.querySelector(".stage-cap")?.offsetHeight || 0;
-  const gap = parseFloat(cs.columnGap) || 0;
-  const cols = bestGridCols(n, W, H, gridAspect || 4 / 3, capH, gap);
-  gridEl.style.setProperty("--cols", cols * 2);
-  const place = gridPlacement(n, cols);
-  let i = 0;
-  for (const cell of cells.values()) {
-    const p = place[i++];
-    cell.root.style.gridColumn = `${p.start} / span ${p.span}`;
-  }
-}
-// ภาพผลลัพธ์เปลี่ยนสัดส่วน (เปลี่ยนภาพ/resize/crop) → จัด layout ใหม่
-function noteGridAspect(w, h) {
-  if (!(w > 0 && h > 0)) return;
-  const a = w / h;
-  if (Math.abs(a - gridAspect) > 0.01) {
-    gridAspect = a;
-    layoutGrid();
-  }
-}
-new ResizeObserver(() => layoutGrid()).observe(gridEl);
 
 // แถบ "ซ่อนอยู่: [👁 Display 2] …" ในหัว VIEWER — กดเพื่อเอาจอกลับ
 function renderHiddenBar(hidden) {
@@ -2535,7 +2497,6 @@ function drawDLCells(dls, src, w, h) {
     editor.setDisplayImage(d.displayId, oc);
     const cell = cells.get(d.displayId);
     if (cell) {
-      noteGridAspect(w, h);
       if (cell.canvas.width !== w) { cell.canvas.width = w; cell.canvas.height = h; }
       cell.ctx.drawImage(oc, 0, 0);
       cell.lastImg = null; // จอ DL วาดผ่าน drawImage — inspector อ่านพิกเซลจาก canvas ตรง ๆ
@@ -3246,7 +3207,6 @@ function drawResults(results) {
     // 2) วาดลงจอของกล่องนี้ใน grid ใหญ่
     const cell = cells.get(displayId);
     if (cell) {
-      noteGridAspect(width, height);
       if (cell.canvas.width !== width) cell.canvas.width = width;
       if (cell.canvas.height !== height) cell.canvas.height = height;
       cell.ctx.putImageData(img, 0, 0);

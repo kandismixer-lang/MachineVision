@@ -7,10 +7,10 @@ const read = (rel) => fs.readFileSync(new URL(`../${rel}`, import.meta.url), 'ut
 const app = read('src/renderer/app.js');
 const grid = app.slice(app.indexOf('function ensureGrid(order)'), app.indexOf('let workerReady = false;'));
 
-test('hd-1. ensureGrid lays out only the shown displays; key covers shown + hidden; layout counts only shown cells', () => {
+test('hd-1. ensureGrid lays out only the shown displays; key covers shown + hidden; cols from shown', () => {
   assert.match(grid, /const shown = order\.filter\(\(id\) => !hiddenDisplays\.has\(id\)\);/);
   assert.match(grid, /const key = shown\.join\(","\) \+ "\|" \+ hidden\.join\(","\);/);
-  assert.match(grid, /function layoutGrid\(\) \{\s*const n = cells\.size;/); // cells = จอที่เห็นเท่านั้น
+  assert.match(grid, /Math\.min\(shown\.length, Math\.ceil\(Math\.sqrt\(shown\.length\)\) \|\| 1\)/);
   assert.match(grid, /for \(const id of shown\) \{/);
   assert.ok(!/for \(const id of order\) \{\s*const root/.test(grid), 'hidden displays must not get a cell');
 });
