@@ -6678,3 +6678,37 @@ body:not(.ui-v2) .panel-collapse-btn, body:not(.ui-v2) .panel-collapse-anchor { 
 /* ยังไม่มีคลาส: กรอบเส้นประ (ไม่ให้ดูเหมือนช่องกรอก) */
 :root[data-theme="light"] .ui-v2 .class-panel-list:has(> .class-panel-empty) { border-style: dashed; background: transparent; }
 :root[data-theme="light"] .ui-v2 .class-panel-empty { padding: var(--space-3); color: var(--text-secondary); font-size: var(--fs-sm); line-height: 1.5; }
+
+/* ---------- ซ่อน/แสดงจอผลลัพธ์ (2026-11-09) ---------- */
+/* ปุ่ม "ซ่อน" ชิดขวาในหัวจอ — ปุ่มรอง ไม่แย่งสายตาจาก chip ชื่อจอ */
+.stage-hide-btn {
+  margin-left: auto;
+  flex: 0 0 auto;
+  padding: 2px 8px;
+  font-size: 12px;
+  line-height: 1.4;
+  color: var(--text-muted);
+  background: transparent;
+  border: 1px solid var(--border-default);
+  border-radius: 6px;
+  cursor: pointer;
+}
+.stage-hide-btn:hover,
+.stage-hide-btn:focus-visible { color: var(--text); border-color: var(--border-strong, var(--border-default)); background: var(--surface-3); }
+/* แถบ "ซ่อนอยู่: [👁 Display 2]" ในหัว VIEWER */
+.lv-hidden { display: inline-flex; align-items: center; gap: 6px; flex-wrap: wrap; min-width: 0; }
+.lv-hidden.hidden { display: none; }
+.lv-hidden-label { color: var(--text-muted); font-size: 12px; }
+.lv-hidden-chip {
+  padding: 2px 8px;
+  font-size: 12px;
+  line-height: 1.4;
+  color: var(--text);
+  background: var(--surface-3);
+  border: 1px dashed var(--border-default);
+  border-radius: 6px;
+  cursor: pointer;
+}
+.lv-hidden-chip:hover,
+.lv-hidden-chip:focus-visible { border-style: solid; border-color: var(--accent-blue, var(--border-default)); }
+.lv-hidden-all { background: transparent; border-style: solid; color: var(--text-muted); }

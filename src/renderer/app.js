@@ -319,18 +319,29 @@ function displayCanvasFor(id) {
 // ---------- grid จอผลลัพธ์ (1 กล่อง = 1 จอ + หัวข้อกำกับ) ----------
 const cells = new Map(); // displayId -> { root, canvas, ctx, cap }
 let gridKey = "";
+// จอที่ผู้ใช้กด "ซ่อน" (ยังประมวลผล/ยังเซฟตามปกติ แค่ไม่กินพื้นที่ใน grid) — เอากลับได้จากแถบ VIEWER
+const hiddenDisplays = new Set();
+const hiddenBarEl = document.getElementById("lv-hidden-displays");
+const hiddenBarBtns = new Map(); // displayId -> ปุ่มเอากลับในแถบ VIEWER (อัปเดตชื่อใน updateCaptions)
 // สร้าง/ปรับ grid ให้ตรงกับชุดกล่องผลลัพธ์ปัจจุบัน (rebuild เฉพาะเมื่อชุดเปลี่ยน)
 function ensureGrid(order) {
-  const key = order.join(",");
+  // ห้ามซ่อนหมด: ถ้าจอที่เห็นอยู่ถูกลบ/ถอดสายจนเหลือแต่จอที่ซ่อน → เอากลับมาแสดงทั้งหมด
+  if (order.length > 0 && order.every((id) => hiddenDisplays.has(id))) {
+    for (const id of order) hiddenDisplays.delete(id);
+  }
+  const shown = order.filter((id) => !hiddenDisplays.has(id));
+  const hidden = order.filter((id) => hiddenDisplays.has(id));
+  const key = shown.join(",") + "|" + hidden.join(",");
   if (key === gridKey) return;
   gridKey = key;
   closeAllChainMenus();
   for (const c of cells.values()) c.insp?.destroy();
   gridEl.innerHTML = "";
   cells.clear();
-  const cols = Math.min(order.length, Math.ceil(Math.sqrt(order.length)) || 1);
+  renderHiddenBar(hidden);
+  const cols = Math.min(shown.length, Math.ceil(Math.sqrt(shown.length)) || 1);
   gridEl.style.setProperty("--cols", cols || 1);
-  for (const id of order) {
+  for (const id of shown) {
     const root = document.createElement("div");
     root.className = "stage-cell";
 
@@ -343,6 +354,20 @@ function ensureGrid(order) {
     chain.className = "stage-chain";
     cap.appendChild(chip);
     cap.appendChild(chain);
+    // ปุ่มซ่อนจอ — มีเฉพาะตอนเห็นมากกว่า 1 จอ (จอสุดท้ายซ่อนไม่ได้)
+    if (shown.length > 1) {
+      const hideBtn = document.createElement("button");
+      hideBtn.type = "button";
+      hideBtn.className = "stage-hide-btn";
+      hideBtn.textContent = "ซ่อน";
+      hideBtn.title = "ซ่อนจอนี้ให้จออื่นใหญ่ขึ้น (ยังประมวลผลอยู่) — กดชื่อจอที่แถบ VIEWER ด้านบนเพื่อเอากลับ";
+      hideBtn.setAttribute("aria-label", "ซ่อนจอนี้");
+      hideBtn.addEventListener("click", (e) => {
+        e.stopPropagation();
+        setDisplayHidden(id, true);
+      });
+      cap.appendChild(hideBtn);
+    }
 
     // viewport ของภาพ (3.1): canvas ผลลัพธ์ + ตารางพิกเซล (overlay) + แถบ readout + ป้ายซูม — ซูม/เลื่อนด้วย CSS transform ของ canvas
     const view = document.createElement("div");
@@ -373,6 +398,62 @@ function ensureGrid(order) {
     const cell = { root, canvas: cvs, ctx: cvs.getContext("2d"), chip, chain, lastImg: null, insp: null };
     cell.insp = createTileInspector({ view, canvas: cvs, gridCanvas: gridCv, readout, badge }, { getImage: () => cell.lastImg });
     cells.set(id, cell);
+  }
+}
+
+// แถบ "ซ่อนอยู่: [👁 Display 2] …" ในหัว VIEWER — กดเพื่อเอาจอกลับ
+function renderHiddenBar(hidden) {
+  if (!hiddenBarEl) return;
+  hiddenBarEl.innerHTML = "";
+  hiddenBarBtns.clear();
+  hiddenBarEl.classList.toggle("hidden", hidden.length === 0);
+  if (hidden.length === 0) return;
+  const label = document.createElement("span");
+  label.className = "lv-hidden-label";
+  label.textContent = "ซ่อนอยู่:";
+  hiddenBarEl.appendChild(label);
+  for (const id of hidden) {
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "lv-hidden-chip";
+    const dp = state.pipelines.find((d) => d.displayId === id);
+    btn.textContent = "👁 " + (dp ? displayChip(dp) : "Display");
+    btn.title = "แสดงจอนี้กลับมา";
+    btn.addEventListener("click", () => setDisplayHidden(id, false));
+    hiddenBarEl.appendChild(btn);
+    hiddenBarBtns.set(id, btn);
+  }
+  if (hidden.length > 1) {
+    const all = document.createElement("button");
+    all.type = "button";
+    all.className = "lv-hidden-chip lv-hidden-all";
+    all.textContent = "แสดงทั้งหมด";
+    all.addEventListener("click", () => {
+      for (const id of hidden) hiddenDisplays.delete(id);
+      refreshGridNow();
+    });
+    hiddenBarEl.appendChild(all);
+  }
+}
+
+function setDisplayHidden(id, hide) {
+  if (hide) hiddenDisplays.add(id);
+  else hiddenDisplays.delete(id);
+  refreshGridNow();
+}
+
+// rebuild grid ทันที แล้ววาดภาพล่าสุดของแต่ละจอจาก offscreen canvas (ไม่ต้องรอเฟรมถัดไป — ภาพนิ่งจะได้ไม่ว่าง)
+function refreshGridNow() {
+  ensureGrid(connectedDisplayIds());
+  updateCaptions();
+  for (const [id, cell] of cells) {
+    const oc = displayCanvases.get(id);
+    if (!oc || !oc.width) continue;
+    if (cell.canvas.width !== oc.width) cell.canvas.width = oc.width;
+    if (cell.canvas.height !== oc.height) cell.canvas.height = oc.height;
+    cell.ctx.drawImage(oc, 0, 0);
+    cell.lastImg = null; // inspector อ่านพิกเซลจาก canvas ตรง ๆ จนกว่าเฟรมใหม่จะเข้า
+    cell.insp.onFrame();
   }
 }
 
@@ -474,6 +555,9 @@ const editor = createGraphEditor(graphCanvasEl, {
     const alive = new Set(pipelines.map((d) => d.displayId));
     for (const id of displayCanvases.keys()) {
       if (!alive.has(id)) displayCanvases.delete(id);
+    }
+    for (const id of hiddenDisplays) {
+      if (!alive.has(id)) hiddenDisplays.delete(id);
     }
     updateStatus();
     updateCaptions(); // ชื่อ/สายเปลี่ยน → อัปเดตหัวจอทันที
@@ -3068,6 +3152,12 @@ function updateCaptions() {
     const chip = displayChip(dp);
     if (cell.chip.textContent !== chip) cell.chip.textContent = chip;
     buildChain(cell, dp);
+  }
+  // ชื่อจอที่ซ่อนอยู่ในแถบ VIEWER (เปลี่ยนชื่อ Display ระหว่างซ่อน)
+  for (const [id, btn] of hiddenBarBtns) {
+    const dp = state.pipelines.find((d) => d.displayId === id);
+    const text = "👁 " + (dp ? displayChip(dp) : "Display");
+    if (btn.textContent !== text) btn.textContent = text;
   }
 }
 
