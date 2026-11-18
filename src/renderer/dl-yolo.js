@@ -1,5 +1,6 @@
 // Deep Learning — YOLO detect (proxy ไป Web Worker เพื่อไม่ให้ inference บล็อก UI)
 // main thread: letterbox (เบา) + วาดกล่อง · worker: session.run + decode + NMS (หนัก)
+import { tileGrid, mergeTileBoxes } from "./dl-tiles.js";
 let worker = null;
 let ready = false;
 let inputSize = 640;
@@ -206,6 +207,23 @@ export function detect(src, W, H, { conf = 0.25, iou = 0.45, labels } = {}) {
     resolveMap(res);
     worker.postMessage({ type: "detect", reqId: id, data, r, dx, dy, conf, iou }, [data.buffer]);
   });
+}
+
+// ตรวจแบบแบ่ง tile — หั่นภาพเป็นชิ้น tile×tile (เหลื่อมกัน overlap 0..0.9) ตรวจทุกชิ้น แล้วรวมกล่องกลับเป็นพิกัดภาพเต็ม
+// ทุกชิ้นถูก preprocess ใน loop เดียวแบบ synchronous (detect() อ่านพิกเซลก่อน return) → ทุกชิ้นมาจากเฟรมเดียวกัน
+// แม้ src เป็นวิดีโอสด · worker รันทีละชิ้นตามคิว
+const tileCanvas = typeof document !== "undefined" ? document.createElement("canvas") : null;
+export function detectTiled(src, W, H, { tile = 640, overlap = 0.2, ...opts } = {}) {
+  const rects = tileGrid(W, H, tile, overlap);
+  if (!ready || rects.length <= 1) return detect(src, W, H, opts);
+  const ctx = tileCanvas.getContext("2d", { willReadFrequently: true });
+  const jobs = rects.map((r) => {
+    tileCanvas.width = r.w;
+    tileCanvas.height = r.h;
+    ctx.drawImage(src, r.x, r.y, r.w, r.h, 0, 0, r.w, r.h);
+    return detect(tileCanvas, r.w, r.h, opts).then((bs) => bs.map((b) => ({ ...b, x: b.x + r.x, y: b.y + r.y })));
+  });
+  return Promise.all(jobs).then((lists) => mergeTileBoxes(lists.flat()));
 }
 
 // canvas ชั่วคราวสำหรับ blit mask (ความละเอียด proto) ก่อน scale ทับกล่อง

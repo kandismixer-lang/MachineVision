@@ -670,11 +670,136 @@ export function createDetailPanel(container, cb) {
     mk("📂 เลือกโมเดล (best.pt / yolo / .onnx)", () => info.onBrowseModel(), true);
     mk("🏷️ โหลดชื่อคลาส (data.yaml / classes.txt / .json)", () => info.onBrowseLabels(), false);
 
+    if (info.getConf && info.onConf) {
+      container.appendChild(dlSlider("ความมั่นใจขั้นต่ำ (conf)", 0.05, 0.9, 0.05, 0.25, info.getConf(), (v) => info.onConf(v)));
+    }
+    if (info.getTile && info.onTile) renderDLTile(info);
+
     const hint = document.createElement("div");
     hint.className = "param-hint";
     hint.style.marginTop = "10px";
     hint.textContent = "ต่อสาย: แหล่งภาพ → กล่องนี้ → ผลลัพธ์ แล้วกล่องผลลัพธ์จะโชว์การตรวจจับ";
     container.appendChild(hint);
+  }
+
+  // สไลเดอร์ของกล่อง Model Detect (หน้าตาเดียวกับ param ตัวเลขของ filter แต่ไม่ผูกกับ step/notifyParam)
+  function dlSlider(label, min, max, step, defVal, value, onChange) {
+    const wrap = document.createElement("div");
+    wrap.className = "param param-num";
+    wrap.style.marginTop = "12px";
+    const lab = document.createElement("div");
+    lab.className = "pn-label";
+    lab.textContent = label;
+    const input = document.createElement("input");
+    input.type = "range";
+    input.className = "pn-slider";
+    Object.assign(input, { min, max, step, value });
+    const box = document.createElement("input");
+    box.type = "number";
+    box.className = "pn-value mono";
+    Object.assign(box, { min, max, step, value });
+    const reset = document.createElement("button");
+    reset.type = "button";
+    reset.className = "pn-reset";
+    reset.textContent = "↺";
+    reset.title = `คืนค่าเริ่มต้น (${defVal})`;
+    reset.setAttribute("aria-label", `คืนค่าเริ่มต้นของ ${label} (${defVal})`);
+    const syncReset = () => {
+      const off = Number(input.value) === Number(defVal);
+      reset.disabled = off;
+      reset.classList.toggle("is-off", off);
+    };
+    const apply = (v) => {
+      const c = Math.min(max, Math.max(min, v));
+      input.value = c;
+      box.value = c;
+      syncReset();
+      onChange(c);
+    };
+    input.addEventListener("input", () => apply(Number(input.value)));
+    box.addEventListener("change", () => {
+      const v = Number(box.value);
+      if (box.value === "" || Number.isNaN(v)) { box.value = input.value; return; }
+      apply(v);
+    });
+    box.addEventListener("keydown", (e) => { if (e.key === "Enter") box.blur(); });
+    reset.addEventListener("click", () => apply(Number(defVal)));
+    const range = document.createElement("div");
+    range.className = "pn-range mono";
+    const rmin = document.createElement("span");
+    rmin.textContent = String(min);
+    const rmax = document.createElement("span");
+    rmax.textContent = String(max);
+    range.append(rmin, rmax);
+    syncReset();
+    wrap.append(lab, box, reset, input, range);
+    return wrap;
+  }
+
+  // ส่วน "ตรวจแบบแบ่ง tile" ของ Model Detect — สวิตช์ + ขนาด tile + ส่วนเหลื่อม + บอกจำนวนชิ้นต่อภาพ
+  function renderDLTile(info) {
+    const sec = document.createElement("div");
+    sec.style.marginTop = "14px";
+    const t = info.getTile();
+
+    const row = document.createElement("button");
+    row.type = "button";
+    row.className = "param-toggle" + (t.on ? " on" : "");
+    row.setAttribute("role", "switch");
+    row.setAttribute("aria-checked", t.on ? "true" : "false");
+    const lab = document.createElement("span");
+    lab.className = "pt-label";
+    lab.textContent = "ตรวจแบบแบ่ง tile (วัตถุเล็กบนภาพใหญ่)";
+    const st = document.createElement("span");
+    st.className = "pt-state";
+    st.textContent = t.on ? "ON" : "OFF";
+    const sw = document.createElement("span");
+    sw.className = "pt-switch";
+    sw.innerHTML = `<span class="pt-knob"></span>`;
+    row.append(lab, st, sw);
+    sec.appendChild(row);
+
+    const body = document.createElement("div");
+    body.hidden = !t.on;
+    const count = document.createElement("div");
+    count.className = "param-hint";
+    count.style.marginTop = "8px";
+    const cur = { ...t };
+    const syncCount = () => {
+      const c = info.countTiles ? info.countTiles(cur.size, cur.overlap) : null;
+      count.textContent = c
+        ? `ภาพ ${c.W}×${c.H} → ${c.n} ชิ้นต่อภาพ (ตรวจช้าลงราว ${c.n} เท่า)`
+        : "หั่นภาพเป็นชิ้นเล็ก ๆ ตรวจทีละชิ้น แล้วรวมกรอบกลับลงภาพเต็ม";
+    };
+    body.appendChild(dlSlider("ขนาด tile (px)", 128, 1280, 32, 640, t.size, (v) => {
+      cur.size = v;
+      syncCount();
+      info.onTile({ size: v });
+    }));
+    body.appendChild(dlSlider("ส่วนเหลื่อม (%)", 0, 50, 5, 20, t.overlap, (v) => {
+      cur.overlap = v;
+      syncCount();
+      info.onTile({ overlap: v });
+    }));
+    body.appendChild(count);
+    const tip = document.createElement("div");
+    tip.className = "param-hint";
+    tip.textContent =
+      "ตั้งขนาด tile ให้วัตถุในแต่ละชิ้นมีขนาดใกล้กับตอนเทรน · ส่วนเหลื่อมควรกว้างกว่าวัตถุ กันวัตถุโดนรอยต่อตัดครึ่ง";
+    body.appendChild(tip);
+    sec.appendChild(body);
+    syncCount();
+
+    row.addEventListener("click", () => {
+      cur.on = !row.classList.contains("on");
+      row.classList.toggle("on", cur.on);
+      row.setAttribute("aria-checked", cur.on ? "true" : "false");
+      st.textContent = cur.on ? "ON" : "OFF";
+      body.hidden = !cur.on;
+      syncCount();
+      info.onTile({ on: cur.on });
+    });
+    container.appendChild(sec);
   }
 
   function buildParam(param, value, defVal, filterId) {

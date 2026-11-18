@@ -14,7 +14,8 @@ import { createBatchCsv, finishBatchCsv } from "./ui/batch-csv.js";
 import { createExportDialog } from "./ui/export-dialog.js";
 import { startCamera, listCameras } from "./camera.js";
 import { startPose, stopPose, pausePose, resumePose, renderStillErgonomics } from "./mediapipe-pose.js";
-import { loadModel as dlLoadModel, isLoaded as dlLoaded, detect as dlDetect, drawDetections as dlDraw, COCO } from "./dl-yolo.js";
+import { loadModel as dlLoadModel, isLoaded as dlLoaded, detect as dlDetect, detectTiled as dlDetectTiled, drawDetections as dlDraw, COCO } from "./dl-yolo.js";
+import { tileGrid as dlTileGrid } from "./dl-tiles.js";
 import { FILTERS, isParamVisible, orderParamsControllersFirst } from "./filters/registry.js";
 
 // ปิดโหมด Pose / Ergonomics ไว้ชั่วคราว (กล้องสดกระตุกหนัก) — ซ่อนทุกทางเข้า: ปุ่ม Pose, คีย์ลัด, ปุ่มดู Ergonomics ในคลัง
@@ -224,6 +225,25 @@ export const PROC_LEVELS = [
   { value: "full", label: "ภาพเต็ม(ต้นฉบับ)", max: 0 },
 ];
 
+// ค่าเริ่มต้นการตรวจแบบแบ่ง tile (Model Detect) — ปิดไว้ก่อน · size/overlap เลือกจากการทดสอบกับ PCB missing-hole
+const DET_TILE_DEFAULT = { on: false, size: 640, overlap: 20 };
+function loadDetTile() {
+  try {
+    const v = JSON.parse(localStorage.getItem("mv-det-tile") || "null");
+    if (v && typeof v === "object") {
+      return {
+        on: !!v.on,
+        size: Math.min(1280, Math.max(128, Number(v.size) || DET_TILE_DEFAULT.size)),
+        overlap: Math.min(50, Math.max(0, Number.isFinite(Number(v.overlap)) ? Number(v.overlap) : DET_TILE_DEFAULT.overlap)),
+      };
+    }
+  } catch { /* localStorage ใช้ไม่ได้ → ค่าเริ่มต้น */ }
+  return { ...DET_TILE_DEFAULT };
+}
+function saveDetTile() {
+  try { localStorage.setItem("mv-det-tile", JSON.stringify(state.detTile)); } catch { /* ignore */ }
+}
+
 // ---------- state ----------
 const state = {
   pipelines: [], // หนึ่งรายการต่อหนึ่งกล่องผลลัพธ์: [{ displayId, name, pipeline, connected }]
@@ -233,6 +253,7 @@ const state = {
   cameraId: null, // กล้องที่กำลังใช้ (deviceId)
   labels: COCO, // ชื่อคลาสของโมเดล DL (ค่าเริ่ม = COCO)
   detConf: 0.25, // ความไวการจับของ YOLO Detect (0.05–0.90) — single source, ใช้ทั้งกล้องสดและภาพนิ่ง
+  detTile: loadDetTile(), // ตรวจแบบแบ่ง tile ใน Model Detect: { on, size (px), overlap (%) } — จำไว้ใน localStorage
   images: [], // ชุดภาพนำเข้า (batch): [{ canvas, w, h, name }]
   imageIndex: 0, // ภาพที่กำลังดูอยู่ในชุด
   procLevel: "balanced", // ระดับความละเอียดประมวลผล (ดู PROC_LEVELS)
@@ -1680,6 +1701,20 @@ function renderDetail() {
         // (renderDLDisplays เรียกทุกเฟรม) ส่วนภาพนิ่งต้องสั่ง requestProcess() เพื่อรันซ้ำทันที
         if (state.source === "image") requestProcess();
       },
+      getTile: () => ({ ...state.detTile }),
+      // ขนาดภาพปัจจุบัน (ไว้บอกว่าจะแบ่งได้กี่ชิ้น) — ภาพนิ่ง = ภาพที่เลือก · กล้อง = ขนาดเฟรมวิดีโอ
+      countTiles: (size, overlap) => {
+        const img = state.source === "image" ? state.images[state.imageIndex] : null;
+        const vid = state.source === "video" ? sourceVideoEl : videoEl;
+        const W = (img ? img.w : vid?.videoWidth) || 0;
+        const H = (img ? img.h : vid?.videoHeight) || 0;
+        return W && H ? { n: dlTileGrid(W, H, size, overlap / 100).length, W, H } : null;
+      },
+      onTile: (patch) => {
+        state.detTile = { ...state.detTile, ...patch };
+        saveDetTile();
+        if (state.source === "image") requestProcess();
+      },
     });
     return;
   }
@@ -2522,7 +2557,9 @@ function renderDLDisplays(src, w, h) {
     return;
   }
   detBusy = true;
-  dlDetect(src, w, h, { labels: state.labels, conf: state.detConf })
+  const detOpts = { labels: state.labels, conf: state.detConf };
+  const t = state.detTile;
+  (t.on ? dlDetectTiled(src, w, h, { ...detOpts, tile: t.size, overlap: t.overlap / 100 }) : dlDetect(src, w, h, detOpts))
     .then((bs) => {
       detBoxes = bs;
       drawDLCells(connectedDLDisplays(), src, w, h); // วาดกล่องใหม่ (สำคัญสำหรับภาพนิ่ง)
