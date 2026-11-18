@@ -196,12 +196,18 @@ function decodeSeg(detDims, det, protoDims, proto, r, dx, dy, conf, iou) {
 
 // รับทีละข้อความ: onmessage เป็น async — ถ้าไม่ต่อคิว ข้อความ detect หลายอันที่มาติดกัน (เช่น ตรวจแบบแบ่ง tile
 // ส่งมาทีเดียว 8 ชิ้น) จะเรียก session.run ซ้อนกันบน session เดียว → ผลลัพธ์ปนกันระหว่างชิ้น/หาย
+// โหลดโมเดลใหม่ = รุ่น (gen) ใหม่: detect ของโมเดลเก่าที่ยังค้างคิว (เช่น tile ที่เหลือ) ตอบกล่องว่างทันทีไม่ต้องรัน
+// → โหลดโมเดลไม่ต้องรอ tile เก่าทั้งชุด (รอแค่ชิ้นที่กำลังรันอยู่)
 let queue = Promise.resolve();
+let gen = 0;
 self.onmessage = (e) => {
-  queue = queue.then(() => handleMessage(e.data), () => handleMessage(e.data));
+  const m = e.data;
+  if (m.type === "load") gen += 1;
+  const myGen = gen;
+  queue = queue.then(() => handleMessage(m, myGen), () => handleMessage(m, myGen));
 };
 
-async function handleMessage(m) {
+async function handleMessage(m, myGen) {
 
   if (m.type === "load") {
     try {
@@ -238,7 +244,7 @@ async function handleMessage(m) {
   }
 
   if (m.type === "detect") {
-    if (!session) {
+    if (!session || myGen !== gen) {
       self.postMessage({ type: "result", reqId: m.reqId, boxes: [] });
       return;
     }

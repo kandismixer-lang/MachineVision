@@ -76,6 +76,9 @@ test('DL result canvas resizes when only the height changes (no strip of the pre
 
 test('worker handles one message at a time (8 tile requests must not run session.run concurrently)', async () => {
   const w = await readFile(new URL('../src/renderer/dl-worker.js', import.meta.url), 'utf8');
-  assert.match(w, /queue = queue\.then\(\(\) => handleMessage\(e\.data\), \(\) => handleMessage\(e\.data\)\)/);
+  assert.match(w, /queue = queue\.then\(\(\) => handleMessage\(m, myGen\), \(\) => handleMessage\(m, myGen\)\)/);
+  // a new model load skips the old model's queued tiles instead of waiting for all of them
+  assert.match(w, /if \(m\.type === "load"\) gen \+= 1;/);
+  assert.match(w, /if \(!session \|\| myGen !== gen\)/);
   assert.doesNotMatch(w, /self\.onmessage = async/);
 });
