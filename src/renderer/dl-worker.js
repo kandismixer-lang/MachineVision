@@ -194,8 +194,14 @@ function decodeSeg(detDims, det, protoDims, proto, r, dx, dy, conf, iou) {
   return kept;
 }
 
-self.onmessage = async (e) => {
-  const m = e.data;
+// รับทีละข้อความ: onmessage เป็น async — ถ้าไม่ต่อคิว ข้อความ detect หลายอันที่มาติดกัน (เช่น ตรวจแบบแบ่ง tile
+// ส่งมาทีเดียว 8 ชิ้น) จะเรียก session.run ซ้อนกันบน session เดียว → ผลลัพธ์ปนกันระหว่างชิ้น/หาย
+let queue = Promise.resolve();
+self.onmessage = (e) => {
+  queue = queue.then(() => handleMessage(e.data), () => handleMessage(e.data));
+};
+
+async function handleMessage(m) {
 
   if (m.type === "load") {
     try {
@@ -276,4 +282,4 @@ self.onmessage = async (e) => {
     }
     return;
   }
-};
+}

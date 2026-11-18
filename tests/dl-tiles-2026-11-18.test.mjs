@@ -71,3 +71,9 @@ test('DL result canvas resizes when only the height changes (no strip of the pre
   assert.match(app, /if \(oc\.width !== w \|\| oc\.height !== h\)/);
   assert.match(app, /if \(cell\.canvas\.width !== w \|\| cell\.canvas\.height !== h\)/);
 });
+
+test('worker handles one message at a time (8 tile requests must not run session.run concurrently)', async () => {
+  const w = await readFile(new URL('../src/renderer/dl-worker.js', import.meta.url), 'utf8');
+  assert.match(w, /queue = queue\.then\(\(\) => handleMessage\(e\.data\), \(\) => handleMessage\(e\.data\)\)/);
+  assert.doesNotMatch(w, /self\.onmessage = async/);
+});
