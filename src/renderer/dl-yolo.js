@@ -1,11 +1,15 @@
 // Deep Learning — YOLO detect (proxy ไป Web Worker เพื่อไม่ให้ inference บล็อก UI)
 // main thread: letterbox (เบา) + วาดกล่อง · worker: session.run + decode + NMS (หนัก)
 import { tileGrid, mergeTileBoxes } from "./dl-tiles.js";
+import { decodeOutputs, kindFromOutputRanks, guessKind } from "./dl-decode.js";
 let worker = null;
 let ready = false;
 let inputSize = 640;
 let segModel = false; // โมเดลที่โหลดล่าสุดเป็น segmentation ไหม
 let modelKind = "yolo"; // 'yolo' | 'yoloseg' | 'rfdetr'
+// ตัวรัน: "native" = onnxruntime-node ใน Electron main (GPU DirectML → CPU, เร็วกว่ามาก) · "worker" = WASM ใน Web Worker (สำรอง)
+let backend = "worker";
+let nativeOutputNames = [];
 let seq = 0;
 const waiters = new Map();
 const loadResolvers = []; // คิว resolver ของ loadModel (FIFO) — กันโหลดซ้อนแล้ว promise สลับกัน
@@ -113,6 +117,22 @@ export function loadModel(bytes) {
   const names = extractOnnxNames(bytes); // ดึงชื่อคลาสก่อน transfer buffer
   const imgsz = extractOnnxImgsz(bytes); // ดึง input size จริง (เช่น 1280) ก่อน transfer buffer
   const task = async () => {
+    // ลอง native ก่อน (มีเฉพาะในแอป Electron) — ไม่สำเร็จ (ไม่มีแพ็กเกจ / GPU+CPU โหลดไม่ได้) ค่อยใช้ WASM worker
+    if (typeof window !== "undefined" && window.mvDL?.nativeLoad) {
+      let r;
+      try { r = await window.mvDL.nativeLoad(bytes, imgsz); } catch (e) { r = { ok: false, error: e?.message || String(e) }; }
+      if (r && r.ok) {
+        backend = "native";
+        nativeOutputNames = r.outputNames;
+        inputSize = r.inputSize;
+        modelKind = r.outputRanks.every((x) => x > 0) ? kindFromOutputRanks(r.outputRanks) : guessKind(r.outputNames);
+        segModel = modelKind === "yoloseg";
+        ready = true;
+        return { inputSize, names, seg: segModel, kind: modelKind, threads: 0, engine: r.ep === "dml" ? "GPU (DirectML)" : "CPU native" };
+      }
+      console.warn("[Model Detect] native ใช้ไม่ได้ → ใช้ WASM:", r?.error);
+    }
+    backend = "worker";
     const wasmBase = new URL("./onnx/", location.href).href; // path wasm (absolute — worker ใช้ได้)
     const p = new Promise((res) => loadResolvers.push(res));
     worker.postMessage({ type: "load", bytes, wasmBase, imgsz }, [bytes.buffer]);
@@ -123,7 +143,8 @@ export function loadModel(bytes) {
     inputSize = m.inputSize;
     segModel = !!m.seg;
     modelKind = m.kind || "yolo";
-    return { inputSize, names, seg: segModel, kind: modelKind, threads: m.threads || 1 };
+    const threads = m.threads || 1;
+    return { inputSize, names, seg: segModel, kind: modelKind, threads, engine: `WASM ${threads} thread` };
   };
   const result = loadChain.then(task, task); // ต่อคิว: โหลดก่อนหน้าเสร็จค่อยเริ่มตัวถัดไป
   loadChain = result.catch(() => {}); // กัน chain ขาดถ้าตัวก่อนหน้า error
@@ -194,6 +215,23 @@ export function detect(src, W, H, { conf = 0.25, iou = 0.45, labels } = {}) {
     waiters.set(id, (boxes) =>
       res(boxes.map((b) => ({ ...b, label: (labels && labels[b.cls]) || String(b.cls) })))
     );
+  if (backend === "native") {
+    // native: preprocess เหมือนเดิม → main รัน → ถอดผลที่นี่ด้วยโค้ดชุดเดียวกับ worker (dl-decode.js)
+    let data, meta;
+    if (modelKind === "rfdetr") {
+      ({ data } = rfdetrPreprocess(src, W, H));
+      meta = { origW: W, origH: H, conf };
+    } else {
+      const lb = letterbox(src, W, H);
+      data = lb.data;
+      meta = { r: lb.r, dx: lb.dx, dy: lb.dy, conf, iou };
+    }
+    const kindNow = modelKind, namesNow = nativeOutputNames, sizeNow = inputSize;
+    return window.mvDL.nativeRun(data, sizeNow).then((res) => {
+      const boxes = res.skipped ? [] : decodeOutputs(kindNow, namesNow, res.outputs, meta, sizeNow);
+      return boxes.map((b) => ({ ...b, label: (labels && labels[b.cls]) || String(b.cls) }));
+    });
+  }
   if (modelKind === "rfdetr") {
     const { data } = rfdetrPreprocess(src, W, H);
     return new Promise((res) => {

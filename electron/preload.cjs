@@ -33,6 +33,9 @@ contextBridge.exposeInMainWorld("mvMetrics", {
 contextBridge.exposeInMainWorld("mvDL", {
   available: true,
   convertPt: (ptPath) => ipcRenderer.invoke("dl:convertPt", ptPath),
+  // Model Detect แบบ native (onnxruntime-node ใน main: GPU DirectML → CPU) — ล้มเหลวแล้ว renderer ใช้ WASM เอง
+  nativeLoad: (bytes, imgsz) => ipcRenderer.invoke("dl:nativeLoad", { bytes, imgsz }),
+  nativeRun: (data, size) => ipcRenderer.invoke("dl:nativeRun", { data, size }),
 });
 
 // สะพานอ่านที่อยู่ไฟล์จริงของ File ที่ผู้ใช้เลือก/ลากเข้ามา — Electron 32+ เอา file.path ออกแล้ว

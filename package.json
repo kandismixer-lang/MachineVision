@@ -23,7 +23,10 @@
     "files": [
       "dist/**/*",
       "electron/**/*",
-      "package.json"
+      "package.json",
+      "!node_modules/onnxruntime-node/bin/napi-v*/linux/**",
+      "!node_modules/onnxruntime-node/bin/napi-v*/darwin/**",
+      "!node_modules/onnxruntime-node/bin/napi-v*/win32/arm64/**"
     ],
     "asar": false,
     "win": {
@@ -64,6 +67,7 @@
     "electron-updater": "^6.8.9",
     "jszip": "^3.10.1",
     "litegraph.js": "^0.7.18",
+    "onnxruntime-node": "^1.31.1",
     "onnxruntime-web": "^1.19.2"
   }
 }

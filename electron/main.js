@@ -4,6 +4,7 @@ import fs from "node:fs/promises";
 import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { safeBaseName, resolveSaveTarget } from "./save-target.js";
+import { nativeLoad, nativeRun } from "./dl-native.js";
 import electronUpdater from "electron-updater"; // electron-updater เป็น CommonJS — ต้อง import แบบ default แล้วดึงออกมา
 const { autoUpdater } = electronUpdater;
 
@@ -176,6 +177,10 @@ function runCmd(cmd, args, cwd, timeoutMs = 180000) {
     });
   });
 }
+
+// Model Detect แบบ native — ดู dl-native.js
+ipcMain.handle("dl:nativeLoad", (_e, { bytes, imgsz } = {}) => nativeLoad(bytes, imgsz));
+ipcMain.handle("dl:nativeRun", (_e, { data, size } = {}) => nativeRun(data, size));
 
 ipcMain.handle("dl:convertPt", async (_e, ptPath) => {
   const dir = path.dirname(ptPath);

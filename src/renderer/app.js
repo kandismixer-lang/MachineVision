@@ -2623,7 +2623,7 @@ modelInput.addEventListener("change", async () => {
       bytes = new Uint8Array(await file.arrayBuffer());
     }
     statusEl.textContent = `กำลังโหลดโมเดล ${file.name} … (ครั้งแรกอาจใช้เวลาสักครู่)`;
-    const { inputSize, names, seg, kind: modelKind, threads } = await dlLoadModel(bytes);
+    const { inputSize, names, seg, kind: modelKind, engine } = await dlLoadModel(bytes);
     // ชื่อคลาส: จากในโมเดลก่อน (YOLO ฝังให้) · ถ้าไม่มี (เช่น RF-DETR/.onnx เปล่า) ใช้คลาสของ dataset
     // ที่ผู้ใช้สร้างไว้ในแอป (เช่น "Defect") · สุดท้ายค่อย fallback COCO — จะได้ไม่ต้องโหลดไฟล์ชื่อคลาสเอง
     const datasetNames = datasetGetClasses().map((c) => c.name);
@@ -2631,8 +2631,8 @@ modelInput.addEventListener("change", async () => {
     const hasDL = connectedDLDisplays().length > 0;
     const kind = modelKind === "rfdetr" ? "RF-DETR" : seg ? "segmentation (วาด mask)" : "detection";
     statusEl.textContent = hasDL
-      ? `โมเดล ${kind} พร้อม (${file.name}, ${state.labels.length} คลาส, ${threads} thread) — ดูผลในกล่องผลลัพธ์ที่ต่อสายผ่านกล่อง DL`
-      : `โมเดล ${kind} พร้อม (${file.name}, ${state.labels.length} คลาส, ${threads} thread) — ต่อสาย แหล่งภาพ → กล่อง YOLO → ผลลัพธ์`;
+      ? `โมเดล ${kind} พร้อม (${file.name}, ${state.labels.length} คลาส, ${engine}) — ดูผลในกล่องผลลัพธ์ที่ต่อสายผ่านกล่อง DL`
+      : `โมเดล ${kind} พร้อม (${file.name}, ${state.labels.length} คลาส, ${engine}) — ต่อสาย แหล่งภาพ → กล่อง YOLO → ผลลัพธ์`;
     if (state.source === "image") requestProcess();
     if (state.selectedDL) renderDetail();
   } catch (err) {
