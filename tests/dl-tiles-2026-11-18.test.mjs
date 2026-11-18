@@ -65,3 +65,9 @@ test('app wiring: Model Detect uses detectTiled when the tile switch is on', asy
   // tile offsets are added back so boxes land on full-image coordinates
   assert.match(yolo, /x: b\.x \+ r\.x, y: b\.y \+ r\.y/);
 });
+
+test('DL result canvas resizes when only the height changes (no strip of the previous image)', async () => {
+  const app = await readFile(new URL('../src/renderer/app.js', import.meta.url), 'utf8');
+  assert.match(app, /if \(oc\.width !== w \|\| oc\.height !== h\)/);
+  assert.match(app, /if \(cell\.canvas\.width !== w \|\| cell\.canvas\.height !== h\)/);
+});

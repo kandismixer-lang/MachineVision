@@ -2527,14 +2527,14 @@ function drawDLCells(dls, src, w, h) {
   const scale = Math.max(1, w / 640);
   for (const d of dls) {
     const oc = displayCanvasFor(d.displayId);
-    if (oc.width !== w) { oc.width = w; oc.height = h; }
+    if (oc.width !== w || oc.height !== h) { oc.width = w; oc.height = h; } // เช็คทั้งกว้างและสูง: ภาพกว้างเท่ากันแต่สูงต่างกันต้องไม่เหลือแถบภาพเก่า
     const octx = oc.getContext("2d");
     octx.drawImage(src, 0, 0, w, h);
     dlDraw(octx, detBoxes, scale);
     editor.setDisplayImage(d.displayId, oc);
     const cell = cells.get(d.displayId);
     if (cell) {
-      if (cell.canvas.width !== w) { cell.canvas.width = w; cell.canvas.height = h; }
+      if (cell.canvas.width !== w || cell.canvas.height !== h) { cell.canvas.width = w; cell.canvas.height = h; }
       cell.ctx.drawImage(oc, 0, 0);
       cell.lastImg = null; // จอ DL วาดผ่าน drawImage — inspector อ่านพิกเซลจาก canvas ตรง ๆ
       cell.insp.onFrame();
