@@ -272,9 +272,13 @@ export function drawDetections(ctx, boxes, scale = 1) {
     const text = `${b.label} ${(b.score * 100) | 0}%`;
     const tw = ctx.measureText(text).width + 6 * scale;
     const th = 20 * scale;
+    // ป้ายไม่ล้นขอบภาพ: ชิดขวาถ้าเกินขอบขวา · ย้ายลงใต้กรอบถ้าเกินขอบบน
+    const cw = ctx.canvas?.width || Infinity;
+    const lx = Math.max(0, Math.min(b.x, cw - tw));
+    const ly = b.y - th >= 0 ? b.y - th : b.y + b.h;
     ctx.fillStyle = "#00e0ff";
-    ctx.fillRect(b.x, b.y - th, tw, th);
+    ctx.fillRect(lx, ly, tw, th);
     ctx.fillStyle = "#001018";
-    ctx.fillText(text, b.x + 3 * scale, b.y - 5 * scale);
+    ctx.fillText(text, lx + 3 * scale, ly + th - 5 * scale);
   }
 }
