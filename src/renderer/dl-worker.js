@@ -1,6 +1,9 @@
 // Web Worker: รัน YOLO inference (onnxruntime-web) แยกจาก main thread — กัน UI ค้าง/แลค
 // main ทำ preprocess (letterbox) แล้วส่ง tensor มา, worker รัน session + decode + NMS แล้วคืนกล่อง
-import * as ort from "onnxruntime-web";
+// "onnxruntime-web/wasm" (ไม่ใช่ตัว bundle ที่ฝัง glue ไว้ในตัว): glue ort-wasm-simd-threaded.mjs โหลดจาก wasmPaths (public/onnx)
+// → ตอนรันหลาย thread, emscripten สร้าง pthread worker จากไฟล์ glue นั้นได้ถูกตัว — ถ้าใช้ตัว bundle มันจะเอา
+// ไฟล์ worker นี้เองไปเป็น pthread แล้วค้างตอนโหลดโมเดล
+import * as ort from "onnxruntime-web/wasm";
 
 let session = null;
 let inputName = "";

@@ -92,3 +92,9 @@ test('multi-thread ORT: Electron enables SharedArrayBuffer, worker uses threads 
   assert.match(w, /ort\.env\.wasm\.numThreads = typeof SharedArrayBuffer !== "undefined"\s*\? Math\.min\(8, Math\.max\(1, Math\.floor\(\(self\.navigator\?\.hardwareConcurrency \|\| 2\) \/ 2\)\)\)\s*: 1;/);
   assert.doesNotMatch(w, /ort\.env\.wasm\.numThreads = 1;/);
 });
+
+test('worker imports the non-bundled ORT wasm build (bundle build hangs with pthreads)', async () => {
+  const w = await readFile(new URL('../src/renderer/dl-worker.js', import.meta.url), 'utf8');
+  assert.match(w, /^import \* as ort from "onnxruntime-web\/wasm";$/m);
+  assert.doesNotMatch(w, /from "onnxruntime-web";/);
+});
