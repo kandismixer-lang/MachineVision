@@ -59,7 +59,9 @@ test('mergeTileBoxes: duplicate from the overlap strip keeps the higher score', 
 
 test('app wiring: Model Detect uses detectTiled when the tile switch is on', async () => {
   const app = await readFile(new URL('../src/renderer/app.js', import.meta.url), 'utf8');
-  assert.match(app, /t\.on \? dlDetectTiled\(src, w, h, \{ \.\.\.detOpts, tile: t\.size, overlap: t\.overlap \/ 100 \}\)/);
+  assert.match(app, /t\.on\s*\? dlDetectTiled\(src, w, h, \{ \.\.\.detOpts, tile: t\.size, overlap: t\.overlap \/ 100, onProgress \}\)/);
+  // boxes are only drawn on the image they belong to (no stale boxes while a new still image is being checked)
+  assert.match(app, /dlDraw\(octx, detBoxesSrc === src \? detBoxes : \[\], scale\)/);
   const yolo = await readFile(new URL('../src/renderer/dl-yolo.js', import.meta.url), 'utf8');
   assert.match(yolo, /export function detectTiled\(/);
   // tile offsets are added back so boxes land on full-image coordinates

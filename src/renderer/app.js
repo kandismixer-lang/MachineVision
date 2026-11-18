@@ -2519,6 +2519,7 @@ function renderTray() {
 let detBusy = false;
 let detPendingArgs = null; // มีคำขอ detect ค้างระหว่าง detect รอบก่อนยังไม่เสร็จ (เช่น ลากสไลเดอร์ conf เร็ว ๆ) → เก็บ src/w/h ล่าสุดไว้รันซ้ำ
 let detBoxes = [];
+let detBoxesSrc = null; // ภาพ (src) ที่ detBoxes เป็นผลของมัน — เปลี่ยนภาพนิ่งแล้วไม่เอากรอบของภาพเก่ามาวาดทับระหว่างรอผลใหม่
 function connectedDLDisplays() {
   return state.pipelines.filter((d) => d.connected && d.dl);
 }
@@ -2530,7 +2531,7 @@ function drawDLCells(dls, src, w, h) {
     if (oc.width !== w || oc.height !== h) { oc.width = w; oc.height = h; } // เช็คทั้งกว้างและสูง: ภาพกว้างเท่ากันแต่สูงต่างกันต้องไม่เหลือแถบภาพเก่า
     const octx = oc.getContext("2d");
     octx.drawImage(src, 0, 0, w, h);
-    dlDraw(octx, detBoxes, scale);
+    dlDraw(octx, detBoxesSrc === src ? detBoxes : [], scale);
     editor.setDisplayImage(d.displayId, oc);
     const cell = cells.get(d.displayId);
     if (cell) {
@@ -2559,9 +2560,20 @@ function renderDLDisplays(src, w, h) {
   detBusy = true;
   const detOpts = { labels: state.labels, conf: state.detConf };
   const t = state.detTile;
-  (t.on ? dlDetectTiled(src, w, h, { ...detOpts, tile: t.size, overlap: t.overlap / 100 }) : dlDetect(src, w, h, detOpts))
+  // ภาพนิ่ง + แบ่ง tile: ตรวจหลายชิ้นใช้เวลา → บอกความคืบหน้า/ผลในแถบสถานะ (กล้องสดไม่บอก กันข้อความกระพริบทุกเฟรม)
+  const still = state.source === "image" && t.on;
+  const prefix = still ? statusEl.textContent.split(" · Model Detect")[0] : "";
+  const t0 = performance.now();
+  const onProgress = still ? (d, n) => { statusEl.textContent = `${prefix} · Model Detect: ตรวจ tile ${d}/${n} …`; } : null;
+  // Promise.resolve().then: ถ้า detect โยน error แบบ synchronous ก็ยังเข้า .finally → detBusy ไม่ค้าง
+  Promise.resolve()
+    .then(() => (t.on
+      ? dlDetectTiled(src, w, h, { ...detOpts, tile: t.size, overlap: t.overlap / 100, onProgress })
+      : dlDetect(src, w, h, detOpts)))
     .then((bs) => {
       detBoxes = bs;
+      detBoxesSrc = src;
+      if (still) statusEl.textContent = `${prefix} · Model Detect: เจอ ${bs.length} จุด (${((performance.now() - t0) / 1000).toFixed(1)} วินาที)`;
       drawDLCells(connectedDLDisplays(), src, w, h); // วาดกล่องใหม่ (สำคัญสำหรับภาพนิ่ง)
     })
     .catch((e) => console.error("[YOLO detect]", e))

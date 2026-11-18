@@ -213,15 +213,21 @@ export function detect(src, W, H, { conf = 0.25, iou = 0.45, labels } = {}) {
 // ทุกชิ้นถูก preprocess ใน loop เดียวแบบ synchronous (detect() อ่านพิกเซลก่อน return) → ทุกชิ้นมาจากเฟรมเดียวกัน
 // แม้ src เป็นวิดีโอสด · worker รันทีละชิ้นตามคิว
 const tileCanvas = typeof document !== "undefined" ? document.createElement("canvas") : null;
-export function detectTiled(src, W, H, { tile = 640, overlap = 0.2, ...opts } = {}) {
+export function detectTiled(src, W, H, { tile = 640, overlap = 0.2, onProgress = null, ...opts } = {}) {
   const rects = tileGrid(W, H, tile, overlap);
   if (!ready || rects.length <= 1) return detect(src, W, H, opts);
   const ctx = tileCanvas.getContext("2d", { willReadFrequently: true });
+  let done = 0;
+  if (onProgress) onProgress(0, rects.length);
   const jobs = rects.map((r) => {
     tileCanvas.width = r.w;
     tileCanvas.height = r.h;
     ctx.drawImage(src, r.x, r.y, r.w, r.h, 0, 0, r.w, r.h);
-    return detect(tileCanvas, r.w, r.h, opts).then((bs) => bs.map((b) => ({ ...b, x: b.x + r.x, y: b.y + r.y })));
+    return detect(tileCanvas, r.w, r.h, opts).then((bs) => {
+      done += 1;
+      if (onProgress) onProgress(done, rects.length);
+      return bs.map((b) => ({ ...b, x: b.x + r.x, y: b.y + r.y }));
+    });
   });
   return Promise.all(jobs).then((lists) => mergeTileBoxes(lists.flat()));
 }
