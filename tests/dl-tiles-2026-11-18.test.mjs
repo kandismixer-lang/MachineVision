@@ -98,3 +98,12 @@ test('worker imports the non-bundled ORT wasm build (bundle build hangs with pth
   assert.match(w, /^import \* as ort from "onnxruntime-web\/wasm";$/m);
   assert.doesNotMatch(w, /from "onnxruntime-web";/);
 });
+
+test('a finished detection of an image the user already left does not redraw it over the current one', async () => {
+  const app = await readFile(new URL('../src/renderer/app.js', import.meta.url), 'utf8');
+  const fn = app.slice(app.indexOf('function renderDLDisplays('), app.indexOf('// เลือกไฟล์โมเดล .onnx'));
+  assert.match(fn, /detLatestSrc = src;/);
+  const then = fn.slice(fn.indexOf('detBoxesSrc = src;'));
+  assert.ok(then.indexOf('if (src !== detLatestSrc) return;') < then.indexOf('drawDLCells('));
+  assert.match(fn, /if \(src === detLatestSrc\) statusEl\.textContent/);
+});

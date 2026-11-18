@@ -2519,6 +2519,7 @@ function renderTray() {
 let detBusy = false;
 let detPendingArgs = null; // มีคำขอ detect ค้างระหว่าง detect รอบก่อนยังไม่เสร็จ (เช่น ลากสไลเดอร์ conf เร็ว ๆ) → เก็บ src/w/h ล่าสุดไว้รันซ้ำ
 let detBoxes = [];
+let detLatestSrc = null; // ภาพล่าสุดที่ขอให้ตรวจ — ผลของภาพที่ผู้ใช้เลื่อนผ่านไปแล้วห้ามวาดทับ/เขียนสถานะทับภาพปัจจุบัน
 let detBoxesSrc = null; // ภาพ (src) ที่ detBoxes เป็นผลของมัน — เปลี่ยนภาพนิ่งแล้วไม่เอากรอบของภาพเก่ามาวาดทับระหว่างรอผลใหม่
 function connectedDLDisplays() {
   return state.pipelines.filter((d) => d.connected && d.dl);
@@ -2546,6 +2547,7 @@ function drawDLCells(dls, src, w, h) {
 function renderDLDisplays(src, w, h) {
   const dls = connectedDLDisplays();
   if (dls.length === 0) return;
+  detLatestSrc = src;
   if (!dlLoaded()) {
     // ยังไม่โหลดโมเดล → โชว์ภาพเฉย ๆ พร้อมข้อความ
     drawDLCells(dls, src, w, h);
@@ -2564,7 +2566,9 @@ function renderDLDisplays(src, w, h) {
   const still = state.source === "image" && t.on;
   const prefix = still ? statusEl.textContent.split(" · Model Detect")[0] : "";
   const t0 = performance.now();
-  const onProgress = still ? (d, n) => { statusEl.textContent = `${prefix} · Model Detect: ตรวจ tile ${d}/${n} …`; } : null;
+  const onProgress = still
+    ? (d, n) => { if (src === detLatestSrc) statusEl.textContent = `${prefix} · Model Detect: ตรวจ tile ${d}/${n} …`; }
+    : null;
   // Promise.resolve().then: ถ้า detect โยน error แบบ synchronous ก็ยังเข้า .finally → detBusy ไม่ค้าง
   Promise.resolve()
     .then(() => (t.on
@@ -2573,6 +2577,8 @@ function renderDLDisplays(src, w, h) {
     .then((bs) => {
       detBoxes = bs;
       detBoxesSrc = src;
+      // ผู้ใช้เลื่อนไปภาพอื่นระหว่างตรวจ → ไม่วาดภาพเก่าทับ (รอบของภาพใหม่ค้างคิวอยู่ใน detPendingArgs)
+      if (src !== detLatestSrc) return;
       if (still) statusEl.textContent = `${prefix} · Model Detect: เจอ ${bs.length} จุด (${((performance.now() - t0) / 1000).toFixed(1)} วินาที)`;
       drawDLCells(connectedDLDisplays(), src, w, h); // วาดกล่องใหม่ (สำคัญสำหรับภาพนิ่ง)
     })
