@@ -2521,6 +2521,8 @@ let detPendingArgs = null; // มีคำขอ detect ค้างระหว
 let detBoxes = [];
 let detLatestSrc = null; // ภาพล่าสุดที่ขอให้ตรวจ — ผลของภาพที่ผู้ใช้เลื่อนผ่านไปแล้วห้ามวาดทับ/เขียนสถานะทับภาพปัจจุบัน
 let detBoxesSrc = null; // ภาพ (src) ที่ detBoxes เป็นผลของมัน — เปลี่ยนภาพนิ่งแล้วไม่เอากรอบของภาพเก่ามาวาดทับระหว่างรอผลใหม่
+let detSnap = null; // เฟรมวิดีโอ/กล้องที่ถ่ายเก็บไว้ส่งตรวจ (วาดคู่กับกรอบของมันเอง)
+let detFrameShown = false; // มีเฟรมที่ตรวจแล้วขึ้นจอแล้วหรือยัง (ก่อนหน้านั้นโชว์เฟรมสดไปก่อน)
 function connectedDLDisplays() {
   return state.pipelines.filter((d) => d.connected && d.dl);
 }
@@ -2558,13 +2560,24 @@ function renderDLDisplays(src, w, h) {
     drawDLCells(dls, src, w, h);
     return;
   }
-  drawDLCells(dls, src, w, h);
+  // วิดีโอ/กล้อง (src เป็น <video> ที่เฟรมเปลี่ยนไปเรื่อย ๆ): ถ่ายเฟรมเก็บก่อนส่งตรวจ แล้ววาด "เฟรมนั้น + กรอบของมัน"
+  // ทีเดียวตอนผลกลับ → กรอบตรงกับวัตถุเสมอ (เดิมวาดกรอบของเฟรมก่อนหน้าทับเฟรมล่าสุด วัตถุวิ่ง ~6 px/เฟรม กรอบเลยตามหลัง)
+  // จอผลลัพธ์จึงอัปเดตตามความเร็วการตรวจ · ภาพนิ่งวาดภาพทันทีเหมือนเดิม
+  const moving = typeof HTMLVideoElement !== "undefined" && src instanceof HTMLVideoElement;
+  if (!moving || !detFrameShown) drawDLCells(dls, src, w, h);
   if (detBusy) {
     // detect รอบก่อนยังไม่เสร็จ → เก็บ args ล่าสุดไว้ รันซ้ำทันทีที่ว่าง (กันค้างที่ conf ค่ากลางทางตอนลากสไลเดอร์เร็ว)
     detPendingArgs = { src, w, h };
     return;
   }
   detBusy = true;
+  let frame = src;
+  if (moving) {
+    if (!detSnap) detSnap = document.createElement("canvas");
+    if (detSnap.width !== w || detSnap.height !== h) { detSnap.width = w; detSnap.height = h; }
+    detSnap.getContext("2d").drawImage(src, 0, 0, w, h);
+    frame = detSnap;
+  }
   const detOpts = { labels: state.labels, conf: state.detConf };
   const t = state.detTile;
   // ภาพนิ่ง + แบ่ง tile: ตรวจหลายชิ้นใช้เวลา → บอกความคืบหน้า/ผลในแถบสถานะ (กล้องสดไม่บอก กันข้อความกระพริบทุกเฟรม)
@@ -2582,17 +2595,21 @@ function renderDLDisplays(src, w, h) {
   // Promise.resolve().then: ถ้า detect โยน error แบบ synchronous ก็ยังเข้า .finally → detBusy ไม่ค้าง
   Promise.resolve()
     .then(() => (t.on
-      ? dlDetectTiled(src, w, h, { ...detOpts, tile: t.size, overlap: t.overlap / 100, onProgress })
-      : dlDetect(src, w, h, detOpts)))
+      ? dlDetectTiled(frame, w, h, { ...detOpts, tile: t.size, overlap: t.overlap / 100, onProgress })
+      : dlDetect(frame, w, h, detOpts)))
     .then((bs) => {
       detBoxes = bs;
-      detBoxesSrc = src;
+      detBoxesSrc = frame;
       // ผู้ใช้เลื่อนไปภาพอื่นระหว่างตรวจ → ไม่วาดภาพเก่าทับ (รอบของภาพใหม่ค้างคิวอยู่ใน detPendingArgs)
       if (!isCurrent()) return;
       if (still) statusEl.textContent = `${prefix} · Model Detect: เจอ ${bs.length} จุด (${((performance.now() - t0) / 1000).toFixed(1)} วินาที)`;
-      drawDLCells(connectedDLDisplays(), src, w, h); // วาดกล่องใหม่ (สำคัญสำหรับภาพนิ่ง)
+      drawDLCells(connectedDLDisplays(), frame, w, h); // วาดกล่องใหม่บนภาพ/เฟรมที่ตรวจจริง
+      if (moving) detFrameShown = true;
     })
-    .catch((e) => console.error("[YOLO detect]", e))
+    .catch((e) => {
+      console.error("[YOLO detect]", e);
+      detFrameShown = false; // ตรวจพัง → กลับไปโชว์เฟรมสด ไม่ค้างที่เฟรมเก่า
+    })
     .finally(() => {
       detBusy = false;
       if (detPendingArgs) {

@@ -51,15 +51,39 @@ test('mergeTileBoxes: keeps separate objects and other classes, highest score fi
   assert.deepEqual(mergeTileBoxes([a, b, c]), [b, c, a]);
 });
 
-test('mergeTileBoxes: duplicate from the overlap strip keeps the higher score', () => {
+test('mergeTileBoxes: duplicate from the overlap strip merges into one box covering both, best score', () => {
   const lo = { x: 300, y: 50, w: 25, h: 25, score: 0.7, cls: 0 };
   const hi = { x: 302, y: 51, w: 24, h: 25, score: 0.92, cls: 0 };
-  assert.deepEqual(mergeTileBoxes([lo, hi]), [hi]);
+  assert.deepEqual(mergeTileBoxes([lo, hi]), [{ x: 300, y: 50, w: 26, h: 26, score: 0.92, cls: 0 }]);
+});
+
+test('mergeTileBoxes: a higher-scoring half box cut by the seam grows to the full box (union, not suppress)', () => {
+  const half = { x: 384, y: 100, w: 90, h: 120, score: 0.95, cls: 2 }; // tile 2 sees only the right part
+  const full = { x: 300, y: 98, w: 174, h: 124, score: 0.9, cls: 2 };  // tile 1 sees the whole object
+  assert.deepEqual(mergeTileBoxes([full, half]), [{ x: 300, y: 98, w: 174, h: 124, score: 0.95, cls: 2 }]);
+});
+
+test('mergeTileBoxes: input boxes are not mutated', () => {
+  const a = { x: 0, y: 0, w: 10, h: 10, score: 0.9, cls: 0 };
+  const b = { x: 2, y: 2, w: 10, h: 10, score: 0.5, cls: 0 };
+  mergeTileBoxes([a, b]);
+  assert.deepEqual(a, { x: 0, y: 0, w: 10, h: 10, score: 0.9, cls: 0 });
+});
+
+test('video/camera: Model Detect draws the analysed frame with its own boxes (no lag)', async () => {
+  const app = await readFile(new URL('../src/renderer/app.js', import.meta.url), 'utf8');
+  const fn = app.slice(app.indexOf('function renderDLDisplays('), app.indexOf('// เลือกไฟล์โมเดล .onnx'));
+  assert.match(fn, /src instanceof HTMLVideoElement/);
+  assert.match(fn, /detSnap\.getContext\("2d"\)\.drawImage\(src, 0, 0, w, h\)/);
+  assert.match(fn, /dlDetect\(frame, w, h, detOpts\)/);
+  assert.match(fn, /detBoxesSrc = frame;/);
+  assert.match(fn, /drawDLCells\(connectedDLDisplays\(\), frame, w, h\)/);
+  assert.match(fn, /if \(!moving \|\| !detFrameShown\) drawDLCells\(dls, src, w, h\);/);
 });
 
 test('app wiring: Model Detect uses detectTiled when the tile switch is on', async () => {
   const app = await readFile(new URL('../src/renderer/app.js', import.meta.url), 'utf8');
-  assert.match(app, /t\.on\s*\? dlDetectTiled\(src, w, h, \{ \.\.\.detOpts, tile: t\.size, overlap: t\.overlap \/ 100, onProgress \}\)/);
+  assert.match(app, /t\.on\s*\? dlDetectTiled\(frame, w, h, \{ \.\.\.detOpts, tile: t\.size, overlap: t\.overlap \/ 100, onProgress \}\)/);
   // boxes are only drawn on the image they belong to (no stale boxes while a new still image is being checked)
   assert.match(app, /dlDraw\(octx, detBoxesSrc === src \? detBoxes : \[\], scale\)/);
   const yolo = await readFile(new URL('../src/renderer/dl-yolo.js', import.meta.url), 'utf8');
@@ -103,7 +127,7 @@ test('a finished detection of an image the user already left does not redraw it 
   const app = await readFile(new URL('../src/renderer/app.js', import.meta.url), 'utf8');
   const fn = app.slice(app.indexOf('function renderDLDisplays('), app.indexOf('// เลือกไฟล์โมเดล .onnx'));
   assert.match(fn, /detLatestSrc = src;/);
-  const then = fn.slice(fn.indexOf('detBoxesSrc = src;'));
+  const then = fn.slice(fn.indexOf('detBoxesSrc = frame;'));
   assert.ok(then.indexOf('if (!isCurrent()) return;') < then.indexOf('drawDLCells('));
   assert.match(fn, /if \(isCurrent\(\)\) statusEl\.textContent/);
   // still images: the result must belong to the image open now, and the status prefix comes from state
