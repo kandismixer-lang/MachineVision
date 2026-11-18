@@ -104,6 +104,10 @@ test('a finished detection of an image the user already left does not redraw it 
   const fn = app.slice(app.indexOf('function renderDLDisplays('), app.indexOf('// เลือกไฟล์โมเดล .onnx'));
   assert.match(fn, /detLatestSrc = src;/);
   const then = fn.slice(fn.indexOf('detBoxesSrc = src;'));
-  assert.ok(then.indexOf('if (src !== detLatestSrc) return;') < then.indexOf('drawDLCells('));
-  assert.match(fn, /if \(src === detLatestSrc\) statusEl\.textContent/);
+  assert.ok(then.indexOf('if (!isCurrent()) return;') < then.indexOf('drawDLCells('));
+  assert.match(fn, /if \(isCurrent\(\)\) statusEl\.textContent/);
+  // still images: the result must belong to the image open now, and the status prefix comes from state
+  assert.match(fn, /state\.source !== "image" \|\| currentImageCanvas\(\) === src/);
+  assert.match(fn, /`ภาพ \$\{state\.imageIndex \+ 1\}\/\$\{state\.images\.length\} — \$\{rec\.name\}`/);
+  assert.doesNotMatch(fn, /statusEl\.textContent\.split/);
 });

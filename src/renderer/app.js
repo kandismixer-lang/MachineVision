@@ -2544,6 +2544,11 @@ function drawDLCells(dls, src, w, h) {
   }
 }
 // เรียกทุกเฟรม (กล้อง) หรือครั้งเดียว (ภาพนิ่ง) — src = video/canvas
+// canvas ที่ถอดรหัสไว้ของภาพนิ่งที่เปิดอยู่ (null ถ้ายังถอดไม่เสร็จ)
+function currentImageCanvas() {
+  const i = state.imageIndex;
+  return decodeCache.get(i)?.canvas || state.images[i]?.canvas || null;
+}
 function renderDLDisplays(src, w, h) {
   const dls = connectedDLDisplays();
   if (dls.length === 0) return;
@@ -2564,10 +2569,15 @@ function renderDLDisplays(src, w, h) {
   const t = state.detTile;
   // ภาพนิ่ง + แบ่ง tile: ตรวจหลายชิ้นใช้เวลา → บอกความคืบหน้า/ผลในแถบสถานะ (กล้องสดไม่บอก กันข้อความกระพริบทุกเฟรม)
   const still = state.source === "image" && t.on;
-  const prefix = still ? statusEl.textContent.split(" · Model Detect")[0] : "";
+  // ข้อความนำหน้าสร้างจาก state (ไม่อ่านจาก statusEl — ข้อความเดิมอาจเป็นของภาพก่อนหน้าที่เพิ่งตรวจเสร็จ)
+  const rec = still ? state.images[state.imageIndex] : null;
+  const prefix = rec ? `ภาพ ${state.imageIndex + 1}/${state.images.length} — ${rec.name}` : "";
+  // ผลนี้ยังเป็นของภาพที่เปิดอยู่ไหม — ภาพนิ่ง: canvas ที่ถอดไว้ของภาพปัจจุบันต้องเป็น src ตัวนี้ (เลื่อนภาพเร็ว ๆ
+  // แล้วภาพใหม่ยังถอดรหัสไม่เสร็จ detLatestSrc ยังชี้ภาพเก่าอยู่) · กล้อง/วิดีโอ: src เดียวกันตลอด
+  const isCurrent = () => src === detLatestSrc && (state.source !== "image" || currentImageCanvas() === src);
   const t0 = performance.now();
   const onProgress = still
-    ? (d, n) => { if (src === detLatestSrc) statusEl.textContent = `${prefix} · Model Detect: ตรวจ tile ${d}/${n} …`; }
+    ? (d, n) => { if (isCurrent()) statusEl.textContent = `${prefix} · Model Detect: ตรวจ tile ${d}/${n} …`; }
     : null;
   // Promise.resolve().then: ถ้า detect โยน error แบบ synchronous ก็ยังเข้า .finally → detBusy ไม่ค้าง
   Promise.resolve()
@@ -2578,7 +2588,7 @@ function renderDLDisplays(src, w, h) {
       detBoxes = bs;
       detBoxesSrc = src;
       // ผู้ใช้เลื่อนไปภาพอื่นระหว่างตรวจ → ไม่วาดภาพเก่าทับ (รอบของภาพใหม่ค้างคิวอยู่ใน detPendingArgs)
-      if (src !== detLatestSrc) return;
+      if (!isCurrent()) return;
       if (still) statusEl.textContent = `${prefix} · Model Detect: เจอ ${bs.length} จุด (${((performance.now() - t0) / 1000).toFixed(1)} วินาที)`;
       drawDLCells(connectedDLDisplays(), src, w, h); // วาดกล่องใหม่ (สำคัญสำหรับภาพนิ่ง)
     })
