@@ -11,6 +11,10 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 // Keep existing templates and settings after the productName changes (Argus → FrameLab).
 app.setPath('userData', path.join(app.getPath('appData'), 'Machine Vision By IRiSH'));
 const isDev = process.env.NODE_ENV === "development";
+// เปิด SharedArrayBuffer ให้ renderer/worker → onnxruntime-web (Model Detect) รัน WASM หลาย thread ได้
+// (RF-DETR nano 384: 1 thread ~3.6 วิ/รอบ → 8 thread ~0.5 วิ) · แอปโหลดแต่หน้าในเครื่อง (file:// / localhost dev)
+// จึงไม่มีหน้าเว็บข้าม origin มาใช้ตัวจับเวลาความละเอียดสูงจาก SAB · ต้องตั้งก่อน app ready
+app.commandLine.appendSwitch("enable-features", "SharedArrayBuffer");
 // บางเครื่อง (GPU/driver บางรุ่น) พอกล้องเปิดพร้อม hardware-accelerated rendering
 // จะทำให้ display driver ค้าง/รีสตาร์ทตัวเอง จนทั้งเครื่องต้อง restart — ปิด GPU accel
 // กันไว้ก่อนเป็นค่า default (ตั้ง MV_GPU=1 เพื่อเปิดกลับถ้าเครื่องไม่มีปัญหาและอยากได้ perf เพิ่ม)

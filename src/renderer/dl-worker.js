@@ -212,7 +212,11 @@ async function handleMessage(m, myGen) {
   if (m.type === "load") {
     try {
       ort.env.wasm.wasmPaths = m.wasmBase;
-      ort.env.wasm.numThreads = 1; // เลี่ยง SharedArrayBuffer
+      // หลาย thread ได้เมื่อมี SharedArrayBuffer (main.js เปิดสวิตช์ให้) — ใช้ราวจำนวนคอร์จริง (ครึ่งของ logical) ไม่เกิน 8
+      // ไม่มี SAB (เช่น เปิดในเบราว์เซอร์ธรรมดา) → 1 thread เหมือนเดิม · ort อ่านค่านี้ครั้งเดียวตอน init wasm ครั้งแรก
+      ort.env.wasm.numThreads = typeof SharedArrayBuffer !== "undefined"
+        ? Math.min(8, Math.max(1, Math.floor((self.navigator?.hardwareConcurrency || 2) / 2)))
+        : 1;
       session = await ort.InferenceSession.create(m.bytes, { executionProviders: ["wasm"] });
       inputName = session.inputNames[0];
       outputNames = session.outputNames.slice();
@@ -236,7 +240,7 @@ async function handleMessage(m, myGen) {
         inputSize = typeof m.imgsz === "number" && m.imgsz > 0 ? m.imgsz : 640;
       }
       isSeg = kind === "yoloseg";
-      self.postMessage({ type: "loaded", inputSize, seg: isSeg, kind });
+      self.postMessage({ type: "loaded", inputSize, seg: isSeg, kind, threads: ort.env.wasm.numThreads || 1 });
     } catch (err) {
       self.postMessage({ type: "loaded", error: err.message });
     }

@@ -82,3 +82,13 @@ test('worker handles one message at a time (8 tile requests must not run session
   assert.match(w, /if \(!session \|\| myGen !== gen\)/);
   assert.doesNotMatch(w, /self\.onmessage = async/);
 });
+
+test('multi-thread ORT: Electron enables SharedArrayBuffer, worker uses threads only when SAB exists', async () => {
+  const main = await readFile(new URL('../electron/main.js', import.meta.url), 'utf8');
+  assert.match(main, /app\.commandLine\.appendSwitch\("enable-features", "SharedArrayBuffer"\)/);
+  // the switch must be set at module top level (before app ready), not inside whenReady
+  assert.ok(main.indexOf('appendSwitch("enable-features"') < main.indexOf('whenReady'));
+  const w = await readFile(new URL('../src/renderer/dl-worker.js', import.meta.url), 'utf8');
+  assert.match(w, /ort\.env\.wasm\.numThreads = typeof SharedArrayBuffer !== "undefined"\s*\? Math\.min\(8, Math\.max\(1, Math\.floor\(\(self\.navigator\?\.hardwareConcurrency \|\| 2\) \/ 2\)\)\)\s*: 1;/);
+  assert.doesNotMatch(w, /ort\.env\.wasm\.numThreads = 1;/);
+});

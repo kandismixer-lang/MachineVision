@@ -123,7 +123,7 @@ export function loadModel(bytes) {
     inputSize = m.inputSize;
     segModel = !!m.seg;
     modelKind = m.kind || "yolo";
-    return { inputSize, names, seg: segModel, kind: modelKind };
+    return { inputSize, names, seg: segModel, kind: modelKind, threads: m.threads || 1 };
   };
   const result = loadChain.then(task, task); // ต่อคิว: โหลดก่อนหน้าเสร็จค่อยเริ่มตัวถัดไป
   loadChain = result.catch(() => {}); // กัน chain ขาดถ้าตัวก่อนหน้า error
