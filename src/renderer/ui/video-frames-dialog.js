@@ -8,6 +8,21 @@ const HARD_MAX = 1000; // เพดานเฟรม (safety) — ย่อภ�
 const WARN_FRAMES = 500; // เกินนี้เตือนเรื่องหน่วยความจำ
 const MAX_SIDE = 1280; // ย่อด้านยาวกัน OOM
 
+// จำนวนเฟรมที่เวลา i*interval < duration (i = 0,1,2,…) — ใช้ทั้งตัวเลขที่โชว์และตอนแยกจริงให้ตรงกัน
+// dur/iv ที่ลงตัว (เช่นพิมพ์ "120 ภาพ" → iv = dur/120) อาจเพี้ยนทศนิยมเป็น 120.0000001 → ปัดเป็นจำนวนเต็มนั้นก่อน
+export function frameCount(duration, interval) {
+  if (!(duration > 0) || !(interval > 0)) return 0;
+  const k = duration / interval;
+  const r = Math.round(k);
+  return Math.max(1, Math.abs(k - r) < 1e-6 ? r : Math.ceil(k));
+}
+
+// เวลาของแต่ละเฟรม (คูณจาก index ไม่บวกสะสม กันทศนิยมสะสม)
+export function frameTimes(duration, interval, max = HARD_MAX) {
+  const n = Math.min(frameCount(duration, interval), max);
+  return Array.from({ length: n }, (_, i) => i * interval);
+}
+
 export function openVideoFrames(file, onDone) {
   const overlay = document.createElement("div");
   overlay.className = "modal-overlay";
@@ -84,7 +99,7 @@ export function openVideoFrames(file, onDone) {
     const ivOf = (pos) => MIN_INTERVAL * Math.pow(maxIv() / MIN_INTERVAL, pos / 1000);
     const estN = (iv) => {
       const dur = video.duration || 0;
-      return Math.min(Math.floor(dur / iv) + 1, HARD_MAX, Math.floor(dur * 60) + 1);
+      return Math.min(frameCount(dur, iv), HARD_MAX, frameCount(dur, MIN_INTERVAL));
     };
 
     let ready = false;
@@ -174,8 +189,7 @@ export function openVideoFrames(file, onDone) {
     const fw = Math.max(1, Math.round(video.videoWidth * scale));
     const fh = Math.max(1, Math.round(video.videoHeight * scale));
     const base = (file.name.replace(/\.[^.]+$/, "") || "video").replace(/[\\/:*?"<>|]+/g, "_");
-    const times = [];
-    for (let t = 0; t < video.duration && times.length < maxFrames; t += interval) times.push(t);
+    const times = frameTimes(video.duration, interval, maxFrames);
     const width = String(times.length).length;
     const frames = [];
     try {

@@ -762,6 +762,7 @@ export function createAnnotateCanvas({
     // ลูกศร ← → เลื่อนภาพก่อนหน้า/ถัดไป (ไม่ทำถ้ากำลังวาด/ลากค้าง) — ใช้ตอน fullscreen ที่ batch nav หาย
     if ((e.key === "ArrowLeft" || e.key === "ArrowRight") && !polyDraft && !drag && onNavImage) {
       e.preventDefault();
+      e.stopPropagation(); // ไม่งั้นคีย์ลัด ◀/▶ ของแอป (document keydown) เลื่อนภาพซ้ำ → ข้ามทีละ 2 ภาพ
       onNavImage(e.key === "ArrowLeft" ? -1 : 1);
       return;
     }
