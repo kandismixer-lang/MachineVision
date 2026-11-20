@@ -23,6 +23,51 @@ for (const framework of ['yolo', 'rfdetr']) {
   });
 }
 
+// เลือกอุปกรณ์ตอนรัน (2026-11-20): เดิมบังคับ device = 0 → ลืมเปิด GPU บน Colab แล้วพัง และเลือก CPU ไม่ได้
+let python = false;
+try { (await import('node:child_process')).execFileSync('python', ['-c', 'print(1)'], { stdio: 'pipe' }); python = true; } catch {}
+const cellsOf = (framework) => JSON.parse(buildNotebook({ ...opts, framework })).cells.map((c) => c.source.join(''));
+
+test('yolo: DEVICE dropdown (auto/gpu/cpu) feeds model.train, no hard-coded device = 0', () => {
+  const train = cellsOf('yolo').find((c) => c.includes('model.train('));
+  assert.ok(train.includes('DEVICE = "auto"  #@param ["auto", "gpu", "cpu"]'));
+  assert.match(train, /device = device\n\)/);
+  assert.doesNotMatch(train, /device = 0\b/);
+  assert.ok(train.indexOf('DEVICE = "auto"') < train.indexOf('model = YOLO('));
+});
+
+test('rfdetr: DEVICE dropdown hides the GPU before torch/rfdetr import when "cpu"', () => {
+  const train = cellsOf('rfdetr').find((c) => c.includes('model.train('));
+  assert.ok(train.includes('DEVICE = "auto"  #@param ["auto", "gpu", "cpu"]'));
+  const hide = train.indexOf('os.environ["CUDA_VISIBLE_DEVICES"] = ""');
+  assert.ok(hide > 0 && hide < train.indexOf('import torch') && hide < train.indexOf('from rfdetr import'));
+});
+
+test('yolo: the device-selection lines pick 0 / "cpu" / raise exactly as documented (real Python, stub torch)', { skip: !python }, async () => {
+  const { execFileSync } = await import('node:child_process');
+  const train = cellsOf('yolo').find((c) => c.includes('model.train('));
+  const sel = train.slice(0, train.indexOf('model = YOLO('));
+  const run = (choice, cuda) => {
+    const script = [
+      'import sys, types',
+      `t = types.ModuleType("torch"); t.cuda = types.SimpleNamespace(is_available=lambda: ${cuda ? 'True' : 'False'}, get_device_name=lambda i: "Tesla T4")`,
+      'sys.modules["torch"] = t',
+      'sys.stdout.reconfigure(encoding="utf-8")',
+      'try:',
+      ...sel.replace(/^DEVICE = "auto"/m, `DEVICE = "${choice}"`).split('\n').map((l) => '    ' + l),
+      '    print("RESULT", repr(device))',
+      'except RuntimeError as e:',
+      '    print("RAISED")',
+    ].join('\n');
+    return execFileSync('python', ['-c', script], { encoding: 'utf8', env: { ...process.env, PYTHONIOENCODING: 'utf8' } }).trim().split('\n').pop();
+  };
+  assert.equal(run('auto', true), 'RESULT 0');
+  assert.equal(run('auto', false), "RESULT 'cpu'");
+  assert.equal(run('gpu', true), 'RESULT 0');
+  assert.equal(run('gpu', false), 'RAISED');
+  assert.equal(run('cpu', true), "RESULT 'cpu'");
+});
+
 test('copy-paste code installs its framework before importing it', () => {
   for (const framework of ['yolo', 'rfdetr']) {
     const code = buildTrainingCode({ ...opts, framework });

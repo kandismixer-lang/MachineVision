@@ -294,3 +294,58 @@ print(json.dumps(detect(img)))`, { path: modelPath, d }, '');
       `score ${py[0].score} ต้อง = mean ช่อง R ${meanR}`);
   } finally { fs.rmSync(dir, { recursive: true, force: true }); }
 });
+
+// ---------- เลือก CPU / GPU ตอนรัน (2026-11-20) ----------
+test('dc-14 มีตัวเลือก DEVICE = "auto" พร้อมวิธีลง onnxruntime รุ่น GPU', () => {
+  const code = gen();
+  assert.match(code, /^DEVICE = "auto"   # "auto" = GPU ถ้ามี/m);
+  assert.match(code, /onnxruntime-directml/);
+  assert.doesNotMatch(code, /providers=\["CPUExecutionProvider"\]\)/, 'ห้ามล็อก CPU อย่างเดียวแบบเดิม');
+});
+
+// onnxruntime ปลอม: บอกว่ามี provider อะไร แล้วจดว่า InferenceSession ถูกเรียกด้วย provider/option อะไร
+const FAKE_ORT = (avail) => `
+import sys, types
+ort = types.ModuleType("onnxruntime")
+ort.get_available_providers = lambda: ${JSON.stringify(avail)}
+class _SO: pass
+ort.SessionOptions = _SO
+ort.ExecutionMode = types.SimpleNamespace(ORT_SEQUENTIAL="SEQ")
+CALLS = []
+class _IO:
+    def __init__(s, n, sh): s.name, s.shape = n, sh
+class _Sess:
+    def __init__(s, data, so=None, providers=None):
+        CALLS.append({"providers": providers, "mem": getattr(so, "enable_mem_pattern", None), "mode": getattr(so, "execution_mode", None)})
+        s._p = providers
+    def get_inputs(s): return [_IO("images", [1, 3, 640, 640])]
+    def get_outputs(s): return [_IO("output0", [1, 7, 8400])]
+    def get_providers(s): return s._p
+ort.InferenceSession = _Sess
+sys.modules["onnxruntime"] = ort
+`;
+function device(choice, avail, cv2dnn = false) {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'dl-dev-'));
+  try {
+    const modelPath = path.join(dir, 'm.onnx');
+    fs.writeFileSync(modelPath, 'x');
+    const code = gen({ modelPath }).replace(/^DEVICE = "auto"/m, `DEVICE = "${choice}"`);
+    return runPy(code, `
+try:
+    m = load_model()
+    print(json.dumps({"engine": m["engine"], "calls": CALLS if "CALLS" in globals() else []}))
+except RuntimeError as e:
+    print(json.dumps({"raised": str(e)}))`, null, cv2dnn ? "sys.modules['onnxruntime'] = None\nCALLS = []" : FAKE_ORT(avail));
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+}
+test('dc-15 DEVICE: auto ใช้ GPU ถ้ามี (DirectML ตั้ง option ถูก) · cpu บังคับ CPU · gpu ไม่มี GPU = แจ้งชัด', { skip: !python }, () => {
+  const DML = ['DmlExecutionProvider', 'CPUExecutionProvider'], CPU = ['CPUExecutionProvider'];
+  const auto = device('auto', DML).calls[0];
+  assert.deepEqual(auto.providers, ['DmlExecutionProvider', 'CPUExecutionProvider']);
+  assert.equal(auto.mem, false); assert.equal(auto.mode, 'SEQ');
+  assert.deepEqual(device('auto', CPU).calls[0].providers, CPU);
+  assert.deepEqual(device('cpu', DML).calls[0].providers, CPU);
+  assert.deepEqual(device('gpu', ['CUDAExecutionProvider', 'DmlExecutionProvider', 'CPUExecutionProvider']).calls[0].providers, ['CUDAExecutionProvider', 'CPUExecutionProvider']);
+  assert.match(device('gpu', CPU).raised, /ไม่มี GPU/);
+  assert.match(device('gpu', null, true).raised, /cv2\.dnn รันบน CPU เท่านั้น/);
+});

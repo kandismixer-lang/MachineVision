@@ -37,6 +37,9 @@ function settingsLines(dl) {
     `TILE_ON = ${tile.on ? "True" : "False"}   # ตรวจแบบแบ่ง tile (เปิด/ปิดในกล่อง Model Detect)`,
     `TILE_SIZE = ${tileSize}`,
     `TILE_OVERLAP = ${pyNum(Math.min(0.9, Math.max(0, overlap)), 0.2)}   # สัดส่วนเหลื่อมกันของ tile (${pyNum(tile.overlap, 20)}%)`,
+    'DEVICE = "auto"   # "auto" = GPU ถ้ามี ไม่มีใช้ CPU · "gpu" = บังคับ GPU · "cpu" = บังคับ CPU',
+    "# GPU ต้องลง onnxruntime รุ่น GPU แทนตัวธรรมดา: pip uninstall onnxruntime แล้ว pip install onnxruntime-directml (การ์ดทุกยี่ห้อบน Windows)",
+    "#   หรือ onnxruntime-gpu (NVIDIA + CUDA) · cv2.dnn ใช้ CPU เสมอ",
   );
   return lines;
 }
@@ -73,8 +76,19 @@ def load_model(path=None):
         import onnxruntime as ort
     except ImportError:
         ort = None
+    if DEVICE not in ("auto", "gpu", "cpu"):
+        raise ValueError('DEVICE ต้องเป็น "auto", "gpu" หรือ "cpu"')
     if ort is not None:
-        sess = ort.InferenceSession(data.tobytes(), providers=["CPUExecutionProvider"])
+        avail = ort.get_available_providers()
+        gpu = [p for p in ("CUDAExecutionProvider", "DmlExecutionProvider") if p in avail]
+        if DEVICE == "gpu" and not gpu:
+            raise RuntimeError("ไม่มี GPU ให้ใช้ — ลง onnxruntime-directml หรือ onnxruntime-gpu แทน onnxruntime ก่อน")
+        providers = (gpu[:1] if DEVICE != "cpu" else []) + ["CPUExecutionProvider"]
+        so = ort.SessionOptions()
+        if "DmlExecutionProvider" in providers:
+            so.enable_mem_pattern = False   # DirectML ต้องปิดสองค่านี้
+            so.execution_mode = ort.ExecutionMode.ORT_SEQUENTIAL
+        sess = ort.InferenceSession(data.tobytes(), so, providers=providers)
         inp = sess.get_inputs()[0]
         shape = inp.shape
         size = shape[2] if len(shape) == 4 and isinstance(shape[2], int) and shape[2] > 0 else INPUT_SIZE
@@ -83,8 +97,12 @@ def load_model(path=None):
         def run(blob):
             return dict(zip(names, sess.run(names, {inp.name: blob})))
         engine = "onnxruntime"
+        used = sess.get_providers()[0]
+        print("model runs on:", "GPU (" + used + ")" if used != "CPUExecutionProvider" else "CPU")
     else:
-        print("onnxruntime not installed - using cv2.dnn (pip install onnxruntime for YOLO26 / RF-DETR / seg models)")
+        if DEVICE == "gpu":
+            raise RuntimeError("ไม่มี GPU ให้ใช้ — cv2.dnn รันบน CPU เท่านั้น ลง onnxruntime-directml หรือ onnxruntime-gpu ก่อน")
+        print("onnxruntime not installed - using cv2.dnn on CPU (pip install onnxruntime for YOLO26 / RF-DETR / seg models)")
         net = cv2.dnn.readNetFromONNX(data)
         names = list(net.getUnconnectedOutLayersNames())
         size = INPUT_SIZE

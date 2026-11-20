@@ -471,18 +471,31 @@ const UNZIP_BLOCK = `ZIP = ""
 // ทำให้จับวัตถุ/defect เล็กไม่เจอตอนใช้งานจริงในแอป
 const DEFAULT_IMG_SIZE = 640;
 
+// เลือกอุปกรณ์ตอนรัน (2026-11-20): เดิมบังคับ device = 0 → ลืมเปิด GPU บน Colab แล้วพัง และเลือก CPU ไม่ได้
+// "#@param" ทำให้ Colab แสดงเป็น dropdown ให้เลือก (นอก Colab เป็นแค่คอมเมนต์) · auto = GPU ถ้ามี ไม่มีใช้ CPU
+const DEVICE_PARAM = `# ── เลือกอุปกรณ์ที่ใช้เทรน ── "auto" = GPU ถ้ามี (ไม่มีใช้ CPU) · "gpu" = บังคับ GPU · "cpu" = บังคับ CPU (ช้ามาก)
+DEVICE = "auto"  #@param ["auto", "gpu", "cpu"]`;
+const NO_GPU_MSG = "ไม่เจอ GPU — บน Colab ไปที่ Runtime > Change runtime type > T4 GPU แล้วรันใหม่";
+
 function trainBlock({ epochs, batch, dataPath, imgsz, model }) {
   const sz = imgsz || DEFAULT_IMG_SIZE;
   const base = model || "yolo11n";
   const modelFile = base + ".pt";
   const data = JSON.stringify(dataPath || "/content/dataset/data.yaml");
-  return `model = YOLO("${modelFile}")
+  return `${DEVICE_PARAM}
+import torch
+if DEVICE == "gpu" and not torch.cuda.is_available():
+    raise RuntimeError("${NO_GPU_MSG}")
+device = "cpu" if DEVICE == "cpu" or not torch.cuda.is_available() else 0
+print("เทรนบน:", "GPU " + torch.cuda.get_device_name(0) if device == 0 else "CPU")
+
+model = YOLO("${modelFile}")
 results = model.train(
     data= ${data},
     epochs= ${epochs},
     batch = ${batch},
     imgsz= ${sz},
-    device = 0
+    device = device
 )`;
 }
 
@@ -514,8 +527,17 @@ function rfdetrTrainBlock({ epochs, batch, dataPath, rfModel, numClasses }) {
   // แทนคลาสของผู้ใช้ ทำให้จับผิด/index เพี้ยน. ถ้าไม่รู้จำนวนคลาส (dialog เปิดได้อิสระ) ให้ปล่อย default ของ rfdetr ไป
   const nc = Number.isInteger(numClasses) && numClasses >= 1 ? numClasses : null;
   const ctor = nc ? `${cls}(num_classes=${nc})` : `${cls}()`;
-  return `import os
+  // RF-DETR เลือก cuda เองถ้ามี — บังคับ CPU ด้วยการซ่อน GPU ก่อน import torch (ไม่พึ่ง argument device ที่ต่างกันตามเวอร์ชัน)
+  return `${DEVICE_PARAM}
+# เปลี่ยนค่าแล้วต้อง Runtime > Restart session ก่อนรันใหม่ (torch จำ GPU ไว้ตั้งแต่ import ครั้งแรก)
+import os
+if DEVICE == "cpu":
+    os.environ["CUDA_VISIBLE_DEVICES"] = ""
 os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
+import torch
+if DEVICE == "gpu" and not torch.cuda.is_available():
+    raise RuntimeError("${NO_GPU_MSG}")
+print("เทรนบน:", "GPU " + torch.cuda.get_device_name(0) if torch.cuda.is_available() else "CPU")
 from rfdetr import ${cls}
 
 model = ${ctor}
