@@ -122,7 +122,7 @@ export function decode(dims, d, r, dx, dy, conf, iou) {
 //   proto [1, 32, mh, mw] = แม่แบบ mask 32 แผ่น (ความละเอียด ~ inputSize/4)
 // mask ของแต่ละกล่อง = sigmoid(Σ coeff_k · proto_k) แล้ว threshold 0.5 · ครอปเฉพาะในกรอบ (ลดข้อมูลที่ส่งกลับ)
 // คืน box พิกัดภาพจริง + mask ครอป (ความละเอียด proto) เพื่อให้ main วาดทับได้เลย
-export function decodeSeg(detDims, det, protoDims, proto, r, dx, dy, conf, iou) {
+export function decodeSeg(detDims, det, protoDims, proto, r, dx, dy, conf, iou, inputSize) {
   const C = detDims[1], N = detDims[2];
   const NM = 32; // จำนวน mask prototype (คงที่ใน ultralytics)
   const nc = C - 4 - NM;
@@ -201,7 +201,7 @@ export function decodeOutputs(kind, outputNames, out, m, inputSize) {
       else if (o.dims.length === 3) detO = o;
     }
     if (!detO || !protoO) return [];
-    return decodeSeg(detO.dims, detO.data, protoO.dims, protoO.data, m.r, m.dx, m.dy, m.conf, m.iou);
+    return decodeSeg(detO.dims, detO.data, protoO.dims, protoO.data, m.r, m.dx, m.dy, m.conf, m.iou, inputSize);
   }
   const o = out[outputNames[0]];
   return decode(o.dims, o.data, m.r, m.dx, m.dy, m.conf, m.iou);

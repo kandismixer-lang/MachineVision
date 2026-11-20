@@ -4415,7 +4415,7 @@ export function normalizeSource5S(source) {
   return { kind: "image", maxSide, paths, missing: list.length - paths.length };
 }
 
-function runSection5S(src, twoImage) {
+export function runSection5S(src, twoImage) {
   const call = twoImage ? "process_images(img, img.copy())" : "process_image(img)";
   const out = [
     "# ── ส่วนรันโปรแกรม (สร้างตามแหล่งภาพที่เปิดอยู่ในโปรแกรมตอนกดสร้างโค้ด) ──",

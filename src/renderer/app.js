@@ -22,6 +22,7 @@ import { FILTERS, isParamVisible, orderParamsControllersFirst } from "./filters/
 // เปลี่ยนเป็น true เพื่อเปิดกลับ — โค้ดใน mediapipe-pose.js ยังอยู่ครบ
 const POSE_ENABLED = false;
 import { buildPythonCode } from "./codegen.js";
+import { buildDLPythonCode } from "./codegen-dl.js";
 import { showCodeDialog } from "./ui/code-dialog.js";
 import { openSettings } from "./ui/settings-dialog.js";
 import { openVideoFrames } from "./ui/video-frames-dialog.js";
@@ -254,6 +255,7 @@ const state = {
   labels: COCO, // ชื่อคลาสของโมเดล DL (ค่าเริ่ม = COCO)
   detConf: 0.25, // ความไวการจับของ YOLO Detect (0.05–0.90) — single source, ใช้ทั้งกล้องสดและภาพนิ่ง
   detTile: loadDetTile(), // ตรวจแบบแบ่ง tile ใน Model Detect: { on, size (px), overlap (%) } — จำไว้ใน localStorage
+  dlModel: { path: null, name: null, kind: null, inputSize: 640 }, // โมเดลที่โหลดล่าสุด (ใช้ตอนสร้างโค้ด Python)
   images: [], // ชุดภาพนำเข้า (batch): [{ canvas, w, h, name }]
   imageIndex: 0, // ภาพที่กำลังดูอยู่ในชุด
   procLevel: "balanced", // ระดับความละเอียดประมวลผล (ดู PROC_LEVELS)
@@ -613,7 +615,18 @@ const editor = createGraphEditor(graphCanvasEl, {
       sel.onGenCode = () => {
         const dp = state.pipelines.find((d) => d.displayId === sel.id);
         const name = dp ? displayChip(dp) : "ผลลัพธ์";
-        const code = buildPythonCode(dp ? dp.pipeline : [], { displayName: name, source: codegenSource() });
+        // กล่องที่ต่อผ่าน Model Detect: แอปรันโมเดลบนภาพต้นฉบับ (ไม่ใช่ filter ในสาย) → โค้ดต้องมีโมเดลด้วย
+        const code = dp && dp.dl
+          ? buildDLPythonCode(dp.pipeline, {
+            displayName: name,
+            source: codegenSource(),
+            dl: {
+              modelPath: state.dlModel.path, modelName: state.dlModel.name, loaded: dlLoaded(),
+              kind: state.dlModel.kind, inputSize: state.dlModel.inputSize, labels: state.labels,
+              conf: state.detConf, tile: { ...state.detTile },
+            },
+          })
+          : buildPythonCode(dp ? dp.pipeline : [], { displayName: name, source: codegenSource() });
         showCodeDialog(code, { title: `🐍 โค้ด Python — ${name}`, filename: "image_processing.py" });
       };
       state.selectedDisplay = sel;
@@ -2627,6 +2640,7 @@ modelInput.addEventListener("change", async () => {
   if (!file) return;
   try {
     let bytes;
+    let onnxPath = null, onnxName = file.name; // ไฟล์ .onnx ที่รันจริง — จำไว้ใส่ในโค้ด Python
     if (/\.pt$/i.test(file.name)) {
       // .pt รันตรง ๆ ไม่ได้ — แปลงเป็น .onnx ด้วย ultralytics ในเครื่องก่อน
       if (!window.mvDL?.available) {
@@ -2646,11 +2660,15 @@ modelInput.addEventListener("change", async () => {
         return;
       }
       bytes = res.bytes instanceof Uint8Array ? res.bytes : new Uint8Array(res.bytes);
+      onnxPath = res.onnxPath || null; // main.js เขียน .onnx ไว้ข้าง .pt
+      onnxName = onnxPath ? onnxPath.split(/[\\/]/).pop() : file.name.replace(/\.pt$/i, ".onnx");
     } else {
       bytes = new Uint8Array(await file.arrayBuffer());
+      onnxPath = filePathOf(file);
     }
     statusEl.textContent = `กำลังโหลดโมเดล ${file.name} … (ครั้งแรกอาจใช้เวลาสักครู่)`;
     const { inputSize, names, seg, kind: modelKind, engine } = await dlLoadModel(bytes);
+    state.dlModel = { path: onnxPath, name: onnxName, kind: modelKind, inputSize };
     // ชื่อคลาส: จากในโมเดลก่อน (YOLO ฝังให้) · ถ้าไม่มี (เช่น RF-DETR/.onnx เปล่า) ใช้คลาสของ dataset
     // ที่ผู้ใช้สร้างไว้ในแอป (เช่น "Defect") · สุดท้ายค่อย fallback COCO — จะได้ไม่ต้องโหลดไฟล์ชื่อคลาสเอง
     const datasetNames = datasetGetClasses().map((c) => c.name);
