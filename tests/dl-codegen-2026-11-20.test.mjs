@@ -349,3 +349,11 @@ test('dc-15 DEVICE: auto ใช้ GPU ถ้ามี (DirectML ตั้ง op
   assert.match(device('gpu', CPU).raised, /ไม่มี GPU/);
   assert.match(device('gpu', null, true).raised, /cv2\.dnn รันบน CPU เท่านั้น/);
 });
+
+test('dc-16 Device ที่เลือกในกล่อง Model Detect = ค่าเริ่มของ DEVICE (ค่าแปลก → auto)', () => {
+  for (const [given, want] of [['cpu', 'cpu'], ['gpu', 'gpu'], ['auto', 'auto'], [undefined, 'auto'], ['GPU"\nimport os', 'auto']]) {
+    const m = gen({ device: given }).match(/^DEVICE = "([^"]*)"   #/m);
+    assert.ok(m, `no DEVICE line for ${JSON.stringify(given)}`);
+    assert.equal(m[1], want);
+  }
+});

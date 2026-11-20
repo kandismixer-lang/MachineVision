@@ -1,7 +1,8 @@
 // ตัวรันโมเดล Model Detect แบบ native (onnxruntime-node) ใน main process — เร็วกว่า WASM ใน renderer มาก
 // (RF-DETR nano 384, RTX 3050: WASM 8 thread ~0.4 วิ/รอบ · native CPU ~0.09 · DirectML GPU ~0.02)
 // ลำดับตัวรัน: DirectML (GPU) → CPU · ถ้าโหลด onnxruntime-node ไม่ได้เลย renderer จะถอยไปใช้ WASM worker เดิม
-// บังคับตัวรันได้ด้วย env MV_DL_EP=cpu | dml | wasm (wasm = ปิด native ทั้งหมด)
+// บังคับตัวรันได้ด้วย env MV_DL_EP=cpu | dml | wasm (wasm = ปิด native ทั้งหมด) — env ชนะตัวเลือกในแอปเสมอ
+// ตัวเลือกในกล่อง Model Detect (device): auto = DirectML → CPU · gpu = DirectML อย่างเดียว · cpu = CPU อย่างเดียว
 let ort = null;
 let ortError = null;
 let session = null;
@@ -46,7 +47,16 @@ function enqueue(job) {
   return p;
 }
 
-export function nativeLoad(bytes, imgsz) {
+// ลำดับตัวรันตาม env (ถ้าตั้ง) ไม่งั้นตามตัวเลือก device ในแอป
+export function epOrder(device, env = forced) {
+  if (env === "cpu") return ["cpu"];
+  if (env === "dml") return ["dml"];
+  if (device === "cpu") return ["cpu"];
+  if (device === "gpu") return ["dml"];
+  return ["dml", "cpu"];
+}
+
+export function nativeLoad(bytes, imgsz, device = "auto") {
   gen += 1;
   return enqueue(async () => {
     const o = await loadOrt();
@@ -56,7 +66,7 @@ export function nativeLoad(bytes, imgsz) {
       session = null;
     }
     const buf = Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength);
-    const order = forced === "cpu" ? ["cpu"] : forced === "dml" ? ["dml"] : ["dml", "cpu"];
+    const order = epOrder(device);
     const errors = [];
     for (const name of order) {
       try {

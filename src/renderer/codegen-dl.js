@@ -28,6 +28,7 @@ function settingsLines(dl) {
   const conf = Number.isFinite(Number(dl.conf)) ? Number(dl.conf) : 0.25;
   const tileSize = Number.isFinite(Number(tile.size)) && Number(tile.size) > 0 ? Math.round(Number(tile.size)) : 640;
   const overlap = Number.isFinite(Number(tile.overlap)) ? Number(tile.overlap) / 100 : 0.2;
+  const device = ["auto", "gpu", "cpu"].includes(dl.device) ? dl.device : "auto"; // อุปกรณ์ที่เลือกในกล่อง Model Detect
   lines.push(
     `MODEL_KIND = ${kind}   # yolo | yoloseg | rfdetr (ชนิดที่โปรแกรมตรวจได้ตอนโหลดโมเดล) · None = เดาจาก output ของโมเดล`,
     `INPUT_SIZE = ${size}   # ขนาด input ของโมเดล (ใช้เมื่ออ่านจากไฟล์โมเดลไม่ได้)`,
@@ -37,7 +38,7 @@ function settingsLines(dl) {
     `TILE_ON = ${tile.on ? "True" : "False"}   # ตรวจแบบแบ่ง tile (เปิด/ปิดในกล่อง Model Detect)`,
     `TILE_SIZE = ${tileSize}`,
     `TILE_OVERLAP = ${pyNum(Math.min(0.9, Math.max(0, overlap)), 0.2)}   # สัดส่วนเหลื่อมกันของ tile (${pyNum(tile.overlap, 20)}%)`,
-    'DEVICE = "auto"   # "auto" = GPU ถ้ามี ไม่มีใช้ CPU · "gpu" = บังคับ GPU · "cpu" = บังคับ CPU',
+    `DEVICE = "${device}"   # "auto" = GPU ถ้ามี ไม่มีใช้ CPU · "gpu" = บังคับ GPU · "cpu" = บังคับ CPU (ตั้งจากกล่อง Model Detect)`,
     "# GPU ต้องลง onnxruntime รุ่น GPU แทนตัวธรรมดา: pip uninstall onnxruntime แล้ว pip install onnxruntime-directml (การ์ดทุกยี่ห้อบน Windows)",
     "#   หรือ onnxruntime-gpu (NVIDIA + CUDA) · cv2.dnn ใช้ CPU เสมอ",
   );

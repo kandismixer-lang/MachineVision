@@ -179,7 +179,7 @@ function runCmd(cmd, args, cwd, timeoutMs = 180000) {
 }
 
 // Model Detect แบบ native — ดู dl-native.js
-ipcMain.handle("dl:nativeLoad", (_e, { bytes, imgsz } = {}) => nativeLoad(bytes, imgsz));
+ipcMain.handle("dl:nativeLoad", (_e, { bytes, imgsz, device } = {}) => nativeLoad(bytes, imgsz, device));
 ipcMain.handle("dl:nativeRun", (_e, { data, size } = {}) => nativeRun(data, size));
 
 ipcMain.handle("dl:convertPt", async (_e, ptPath) => {

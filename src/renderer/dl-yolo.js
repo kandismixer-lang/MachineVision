@@ -112,7 +112,9 @@ function ensureWorker() {
 // serialize โหลดทีละไฟล์: worker ใช้ session global ตัวเดียว + reply มาไม่ตรงลำดับ postMessage
 // ได้ (async) → ถ้าโหลดซ้อนต้องเข้าคิว ไม่งั้นผลจับคู่ผิดไฟล์
 let loadChain = Promise.resolve();
-export function loadModel(bytes) {
+// opts.device = ตัวเลือกในกล่อง Model Detect: "auto" (GPU ถ้ามี) · "gpu" (GPU เท่านั้น) · "cpu"
+// gpu ใช้ไม่ได้ → โยน error (ไม่แอบถอยไป CPU) · WASM worker = CPU เสมอ
+export function loadModel(bytes, { device = "auto" } = {}) {
   ensureWorker();
   const names = extractOnnxNames(bytes); // ดึงชื่อคลาสก่อน transfer buffer
   const imgsz = extractOnnxImgsz(bytes); // ดึง input size จริง (เช่น 1280) ก่อน transfer buffer
@@ -120,7 +122,8 @@ export function loadModel(bytes) {
     // ลอง native ก่อน (มีเฉพาะในแอป Electron) — ไม่สำเร็จ (ไม่มีแพ็กเกจ / GPU+CPU โหลดไม่ได้) ค่อยใช้ WASM worker
     if (typeof window !== "undefined" && window.mvDL?.nativeLoad) {
       let r;
-      try { r = await window.mvDL.nativeLoad(bytes, imgsz); } catch (e) { r = { ok: false, error: e?.message || String(e) }; }
+      try { r = await window.mvDL.nativeLoad(bytes, imgsz, device); } catch (e) { r = { ok: false, error: e?.message || String(e) }; }
+      if (r && r.ok && device === "gpu" && r.ep !== "dml") r = { ok: false, error: `ได้ตัวรัน ${r.ep} แทน GPU` };
       if (r && r.ok) {
         backend = "native";
         nativeOutputNames = r.outputNames;
@@ -130,7 +133,10 @@ export function loadModel(bytes) {
         ready = true;
         return { inputSize, names, seg: segModel, kind: modelKind, threads: 0, engine: r.ep === "dml" ? "GPU (DirectML)" : "CPU native" };
       }
+      if (device === "gpu") throw new Error("ใช้ GPU ไม่ได้ (" + (r?.error || "ไม่ทราบสาเหตุ") + ") — เลือก Auto หรือ CPU แทน");
       console.warn("[Model Detect] native ใช้ไม่ได้ → ใช้ WASM:", r?.error);
+    } else if (device === "gpu") {
+      throw new Error("GPU ใช้ได้เฉพาะในแอป FrameLab — เลือก Auto หรือ CPU แทน");
     }
     backend = "worker";
     const wasmBase = new URL("./onnx/", location.href).href; // path wasm (absolute — worker ใช้ได้)

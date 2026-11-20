@@ -670,6 +670,7 @@ export function createDetailPanel(container, cb) {
     mk("📂 เลือกโมเดล (best.pt / yolo / .onnx)", () => info.onBrowseModel(), true);
     mk("🏷️ โหลดชื่อคลาส (data.yaml / classes.txt / .json)", () => info.onBrowseLabels(), false);
 
+    if (info.getDevice && info.onDevice) container.appendChild(dlDevice(info));
     if (info.getConf && info.onConf) {
       container.appendChild(dlSlider("ความมั่นใจขั้นต่ำ (conf)", 0.05, 0.9, 0.05, 0.25, info.getConf(), (v) => info.onConf(v)));
     }
@@ -680,6 +681,49 @@ export function createDetailPanel(container, cb) {
     hint.style.marginTop = "10px";
     hint.textContent = "ต่อสาย: แหล่งภาพ → กล่องนี้ → ผลลัพธ์ แล้วกล่องผลลัพธ์จะโชว์การตรวจจับ";
     container.appendChild(hint);
+  }
+
+  // อุปกรณ์ที่รันโมเดล (Auto / GPU / CPU) — segmented control แบบเดียวกับ select สั้น ๆ ของ filter
+  // เปลี่ยนแล้วแอปโหลดโมเดลใหม่บนตัวรันนั้น · ค่าเดียวกันติดไปเป็น DEVICE ในโค้ด Python ที่ gen
+  const DL_DEVICE_OPTS = [
+    { value: "auto", label: "Auto", hint: "ใช้ GPU ถ้ามี ไม่มีใช้ CPU" },
+    { value: "gpu", label: "GPU", hint: "ใช้การ์ดจอเท่านั้น (DirectML)" },
+    { value: "cpu", label: "CPU", hint: "ใช้ CPU เท่านั้น" },
+  ];
+  function dlDevice(info) {
+    const wrap = document.createElement("div");
+    wrap.className = "param dl-device";
+    wrap.style.marginTop = "12px";
+    const lab = document.createElement("div");
+    lab.className = "param-label";
+    lab.innerHTML = "<span>อุปกรณ์ที่รันโมเดล</span>";
+    wrap.appendChild(lab);
+    const value = info.getDevice();
+    const busy = info.isDeviceBusy ? info.isDeviceBusy() : false;
+    const seg = document.createElement("div");
+    seg.className = "seg-control";
+    seg.setAttribute("role", "group");
+    seg.setAttribute("aria-label", "อุปกรณ์ที่รันโมเดล");
+    for (const opt of DL_DEVICE_OPTS) {
+      const b = document.createElement("button");
+      b.type = "button";
+      b.className = "seg-btn" + (opt.value === value ? " active" : "");
+      b.setAttribute("aria-pressed", opt.value === value ? "true" : "false");
+      b.dataset.device = opt.value;
+      b.textContent = opt.label;
+      b.title = opt.hint;
+      b.disabled = busy;
+      b.addEventListener("click", () => { if (opt.value !== value) info.onDevice(opt.value); });
+      seg.appendChild(b);
+    }
+    wrap.appendChild(seg);
+    const hint = document.createElement("div");
+    hint.className = "param-hint";
+    hint.textContent = busy
+      ? "กำลังโหลดโมเดลใหม่ …"
+      : `${DL_DEVICE_OPTS.find((o) => o.value === value)?.hint || ""} · ค่านี้ติดไปในโค้ด Python ด้วย`;
+    wrap.appendChild(hint);
+    return wrap;
   }
 
   // สไลเดอร์ของกล่อง Model Detect (หน้าตาเดียวกับ param ตัวเลขของ filter แต่ไม่ผูกกับ step/notifyParam)

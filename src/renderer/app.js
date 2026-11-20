@@ -241,6 +241,15 @@ function loadDetTile() {
   } catch { /* localStorage ใช้ไม่ได้ → ค่าเริ่มต้น */ }
   return { ...DET_TILE_DEFAULT };
 }
+// อุปกรณ์ที่รันโมเดล (Model Detect) — ค่าแปลก/อ่านไม่ได้ = "auto"
+const DL_DEVICES = ["auto", "gpu", "cpu"];
+function loadDlDevice() {
+  try { const v = localStorage.getItem("mv-dl-device"); if (DL_DEVICES.includes(v)) return v; } catch { /* ignore */ }
+  return "auto";
+}
+function saveDlDevice() {
+  try { localStorage.setItem("mv-dl-device", state.dlDevice); } catch { /* ignore */ }
+}
 function saveDetTile() {
   try { localStorage.setItem("mv-det-tile", JSON.stringify(state.detTile)); } catch { /* ignore */ }
 }
@@ -256,6 +265,8 @@ const state = {
   detConf: 0.25, // ความไวการจับของ YOLO Detect (0.05–0.90) — single source, ใช้ทั้งกล้องสดและภาพนิ่ง
   detTile: loadDetTile(), // ตรวจแบบแบ่ง tile ใน Model Detect: { on, size (px), overlap (%) } — จำไว้ใน localStorage
   dlModel: { path: null, name: null, kind: null, inputSize: 640 }, // โมเดลที่โหลดล่าสุด (ใช้ตอนสร้างโค้ด Python)
+  dlDevice: loadDlDevice(), // อุปกรณ์ที่รันโมเดลใน Model Detect: "auto" | "gpu" | "cpu" — จำไว้ใน localStorage และติดไปในโค้ด Python
+  dlEngine: "", // ตัวรันที่ใช้จริงตอนนี้ (เช่น "GPU (DirectML)", "CPU native", "WASM 8 thread")
   images: [], // ชุดภาพนำเข้า (batch): [{ canvas, w, h, name }]
   imageIndex: 0, // ภาพที่กำลังดูอยู่ในชุด
   procLevel: "balanced", // ระดับความละเอียดประมวลผล (ดู PROC_LEVELS)
@@ -623,7 +634,7 @@ const editor = createGraphEditor(graphCanvasEl, {
             dl: {
               modelPath: state.dlModel.path, modelName: state.dlModel.name, loaded: dlLoaded(),
               kind: state.dlModel.kind, inputSize: state.dlModel.inputSize, labels: state.labels,
-              conf: state.detConf, tile: { ...state.detTile },
+              conf: state.detConf, tile: { ...state.detTile }, device: state.dlDevice,
             },
           })
           : buildPythonCode(dp ? dp.pipeline : [], { displayName: name, source: codegenSource() });
@@ -1703,7 +1714,7 @@ function renderDetail() {
     detailPanel.renderDL({
       getStatus: () =>
         dlLoaded()
-          ? `โมเดลพร้อม · ${state.labels.length} คลาส`
+          ? `โมเดลพร้อม · ${state.labels.length} คลาส${state.dlEngine ? " · " + state.dlEngine : ""}`
           : "ยังไม่ได้โหลดโมเดล — กดเลือกไฟล์ด้านล่าง",
       onBrowseModel: () => modelInput.click(),
       onBrowseLabels: () => labelsInput.click(),
@@ -1714,6 +1725,9 @@ function renderDetail() {
         // (renderDLDisplays เรียกทุกเฟรม) ส่วนภาพนิ่งต้องสั่ง requestProcess() เพื่อรันซ้ำทันที
         if (state.source === "image") requestProcess();
       },
+      getDevice: () => state.dlDevice,
+      isDeviceBusy: () => dlDeviceBusy,
+      onDevice: (d) => setDlDevice(d),
       getTile: () => ({ ...state.detTile }),
       // ขนาดภาพปัจจุบัน (ไว้บอกว่าจะแบ่งได้กี่ชิ้น) — ภาพนิ่ง = ภาพที่เลือก · กล้อง = ขนาดเฟรมวิดีโอ
       countTiles: (size, overlap) => {
@@ -2667,8 +2681,11 @@ modelInput.addEventListener("change", async () => {
       onnxPath = filePathOf(file);
     }
     statusEl.textContent = `กำลังโหลดโมเดล ${file.name} … (ครั้งแรกอาจใช้เวลาสักครู่)`;
-    const { inputSize, names, seg, kind: modelKind, engine } = await dlLoadModel(bytes);
+    const keep = bytes.slice(); // สำเนาไว้โหลดใหม่ตอนเปลี่ยน Device (worker รับ buffer แบบ transfer ไปแล้วใช้ซ้ำไม่ได้)
+    const { inputSize, names, seg, kind: modelKind, engine } = await dlLoadModel(bytes, { device: state.dlDevice });
     state.dlModel = { path: onnxPath, name: onnxName, kind: modelKind, inputSize };
+    lastModelBytes = keep;
+    state.dlEngine = engine;
     // ชื่อคลาส: จากในโมเดลก่อน (YOLO ฝังให้) · ถ้าไม่มี (เช่น RF-DETR/.onnx เปล่า) ใช้คลาสของ dataset
     // ที่ผู้ใช้สร้างไว้ในแอป (เช่น "Defect") · สุดท้ายค่อย fallback COCO — จะได้ไม่ต้องโหลดไฟล์ชื่อคลาสเอง
     const datasetNames = datasetGetClasses().map((c) => c.name);
@@ -2684,6 +2701,34 @@ modelInput.addEventListener("change", async () => {
     statusEl.textContent = "โหลดโมเดลไม่สำเร็จ: " + err.message;
   }
 });
+
+// เปลี่ยนอุปกรณ์ที่รันโมเดล → โหลดโมเดลเดิมใหม่ด้วยตัวรันใหม่ (session ผูกกับ GPU/CPU ตั้งแต่ตอนโหลด)
+// ใช้ GPU ไม่ได้ → แจ้งเหตุผล แล้วกลับไปใช้อุปกรณ์เดิม (โหลดใหม่ เพราะ native ปล่อย session เก่าไปแล้ว)
+let lastModelBytes = null;
+let dlDeviceBusy = false;
+async function setDlDevice(device) {
+  if (!DL_DEVICES.includes(device) || device === state.dlDevice || dlDeviceBusy) return;
+  const prev = state.dlDevice;
+  state.dlDevice = device;
+  if (!lastModelBytes || !dlLoaded()) { saveDlDevice(); if (state.selectedDL) renderDetail(); return; }
+  dlDeviceBusy = true;
+  if (state.selectedDL) renderDetail(); // ปุ่มเป็นสีเทา + "กำลังโหลดโมเดลใหม่" ระหว่างรอ
+  statusEl.textContent = `กำลังโหลดโมเดลใหม่บน ${device.toUpperCase()} …`;
+  try {
+    const r = await dlLoadModel(lastModelBytes.slice(), { device });
+    state.dlEngine = r.engine;
+    saveDlDevice();
+    statusEl.textContent = `Model Detect รันบน ${r.engine} แล้ว`;
+  } catch (err) {
+    state.dlDevice = prev;
+    try { state.dlEngine = (await dlLoadModel(lastModelBytes.slice(), { device: prev })).engine; } catch { /* ignore */ }
+    statusEl.textContent = "เปลี่ยนอุปกรณ์ไม่สำเร็จ: " + err.message;
+  } finally {
+    dlDeviceBusy = false;
+    if (state.selectedDL) renderDetail();
+    if (state.source === "image") requestProcess();
+  }
+}
 
 // เลือกไฟล์ labels → ตั้งชื่อคลาส
 labelsInput.addEventListener("change", async () => {

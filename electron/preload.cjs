@@ -34,7 +34,7 @@ contextBridge.exposeInMainWorld("mvDL", {
   available: true,
   convertPt: (ptPath) => ipcRenderer.invoke("dl:convertPt", ptPath),
   // Model Detect แบบ native (onnxruntime-node ใน main: GPU DirectML → CPU) — ล้มเหลวแล้ว renderer ใช้ WASM เอง
-  nativeLoad: (bytes, imgsz) => ipcRenderer.invoke("dl:nativeLoad", { bytes, imgsz }),
+  nativeLoad: (bytes, imgsz, device) => ipcRenderer.invoke("dl:nativeLoad", { bytes, imgsz, device }),
   nativeRun: (data, size) => ipcRenderer.invoke("dl:nativeRun", { data, size }),
 });
 

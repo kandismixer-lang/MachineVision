@@ -35,7 +35,7 @@ test('worker and native share one decoder (dl-decode.js), worker no longer has i
 
 test('native backend: GPU (DirectML) first then CPU, env override, skipped runs after a new load', async () => {
   const n = await readFile(new URL('../electron/dl-native.js', import.meta.url), 'utf8');
-  assert.match(n, /: \["dml", "cpu"\];/);
+  assert.match(n, /return \["dml", "cpu"\];/);
   assert.match(n, /MV_DL_EP/);
   assert.match(n, /if \(!session \|\| myGen !== gen\) return \{ skipped: true \};/);
   const main = await readFile(new URL('../electron/main.js', import.meta.url), 'utf8');
@@ -49,4 +49,35 @@ test('packaging keeps only the win32/x64 native ORT binaries in the Windows buil
   const pkg = JSON.parse(await readFile(new URL('../package.json', import.meta.url), 'utf8'));
   assert.ok(pkg.dependencies['onnxruntime-node']);
   for (const pat of ['linux', 'darwin', 'win32/arm64']) assert.ok(pkg.build.files.some((f) => f.startsWith('!') && f.includes(pat)), pat);
+});
+
+// เลือกอุปกรณ์ในกล่อง Model Detect (2026-11-20): auto = DirectML → CPU · gpu = DirectML เท่านั้น · cpu = CPU เท่านั้น · env ชนะเสมอ
+test('epOrder: device choice from the Model Detect box, env MV_DL_EP still wins', async () => {
+  const { epOrder } = await import('../electron/dl-native.js');
+  assert.deepEqual(epOrder('auto', ''), ['dml', 'cpu']);
+  assert.deepEqual(epOrder(undefined, ''), ['dml', 'cpu']);
+  assert.deepEqual(epOrder('weird', ''), ['dml', 'cpu']);
+  assert.deepEqual(epOrder('gpu', ''), ['dml']);
+  assert.deepEqual(epOrder('cpu', ''), ['cpu']);
+  assert.deepEqual(epOrder('gpu', 'cpu'), ['cpu']);
+  assert.deepEqual(epOrder('cpu', 'dml'), ['dml']);
+});
+
+test('device flows: IPC + preload carry it, renderer honours "gpu" without silent CPU fallback, app reloads on change', async () => {
+  const main = await readFile(new URL('../electron/main.js', import.meta.url), 'utf8');
+  assert.match(main, /\{ bytes, imgsz, device \} = \{\}\) => nativeLoad\(bytes, imgsz, device\)/);
+  const pre = await readFile(new URL('../electron/preload.cjs', import.meta.url), 'utf8');
+  assert.match(pre, /nativeLoad: \(bytes, imgsz, device\) => ipcRenderer\.invoke\("dl:nativeLoad", \{ bytes, imgsz, device \}\)/);
+  const y = await readFile(new URL('../src/renderer/dl-yolo.js', import.meta.url), 'utf8');
+  assert.match(y, /export function loadModel\(bytes, \{ device = "auto" \} = \{\}\)/);
+  assert.match(y, /window\.mvDL\.nativeLoad\(bytes, imgsz, device\)/);
+  assert.match(y, /if \(device === "gpu"\) throw new Error\("ใช้ GPU ไม่ได้/);
+  assert.match(y, /else if \(device === "gpu"\) \{\s*throw new Error\("GPU ใช้ได้เฉพาะในแอป/);
+  const app = await readFile(new URL('../src/renderer/app.js', import.meta.url), 'utf8');
+  assert.match(app, /await dlLoadModel\(bytes, \{ device: state\.dlDevice \}\)/);
+  assert.match(app, /async function setDlDevice\(device\)/);
+  assert.match(app, /state\.dlDevice = prev;/, 'GPU ใช้ไม่ได้ต้องกลับไปอุปกรณ์เดิม');
+  assert.match(app, /tile: \{ \.\.\.state\.detTile \}, device: state\.dlDevice,/, 'ค่าที่เลือกต้องติดไปในโค้ด Python');
+  const panel = await readFile(new URL('../src/renderer/ui/detail-panel.js', import.meta.url), 'utf8');
+  assert.match(panel, /if \(info\.getDevice && info\.onDevice\) container\.appendChild\(dlDevice\(info\)\);/);
 });
