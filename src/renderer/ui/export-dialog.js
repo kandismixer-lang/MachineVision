@@ -17,6 +17,12 @@ export function createExportDialog() {
     { v: "yolo12n", label: "YOLO12", hint: "ใหม่" },
     { v: "yolo26n", label: "YOLO26", hint: "ล่าสุด" },
   ];
+  // อุปกรณ์ที่ใช้เทรน — เป็นค่าเริ่มของ dropdown DEVICE ใน notebook (บน Colab ยังเปลี่ยนได้)
+  const DEVICES = [
+    { v: "auto", label: "Auto", hint: "GPU ถ้ามี", summary: "Auto (GPU ถ้ามี)" },
+    { v: "gpu", label: "GPU", hint: "บังคับ", summary: "GPU" },
+    { v: "cpu", label: "CPU", hint: "ช้ามาก", summary: "CPU" },
+  ];
 
   function open(onConfirm, readiness = {}) {
     const overlay = document.createElement("div");
@@ -284,6 +290,34 @@ export function createExportDialog() {
     iField.appendChild(imgGrid);
     setupPane.appendChild(iField);
 
+    // ===== อุปกรณ์ที่ใช้เทรน (Auto / GPU / CPU) — ใช้ทั้ง YOLO และ RF-DETR =====
+    const dField = document.createElement("div");
+    dField.className = "setup-field";
+    const dLabel = document.createElement("div");
+    dLabel.className = "setup-label";
+    dLabel.innerHTML = "<span>อุปกรณ์ที่ใช้เทรน</span><span class='setup-hint'>Auto = ใช้ GPU ถ้ามี ไม่มีใช้ CPU · เปลี่ยนทีหลังใน Colab ได้</span>";
+    dField.appendChild(dLabel);
+    const devGrid = document.createElement("div");
+    devGrid.className = "batch-grid device-grid";
+    let device = "auto";
+    const devCards = [];
+    for (const d of DEVICES) {
+      const card = document.createElement("button");
+      card.type = "button";
+      card.className = "batch-card" + (d.v === device ? " active" : "");
+      card.dataset.device = d.v;
+      card.innerHTML = `${d.label} <span class="setup-hint">(${d.hint})</span>`;
+      card.addEventListener("click", () => {
+        device = d.v;
+        devCards.forEach((c) => c.classList.toggle("active", c.dataset.device === device));
+        updateSummary();
+      });
+      devCards.push(card);
+      devGrid.appendChild(card);
+    }
+    dField.appendChild(devGrid);
+    setupPane.appendChild(dField);
+
 
     // ===== สรุปค่าที่จะใช้ใน Notebook =====
     const summaryTitle = document.createElement("h3");
@@ -295,6 +329,7 @@ export function createExportDialog() {
       ["epochs", "↻", "Epochs"],
       ["batch", "⌘", "Batch"],
       ["image", "▧", "Image"],
+      ["device", "⚙", "Device"],
       ["output", "▤", "Output"],
     ];
     for (const [key, icon, label] of summaryRows) {
@@ -326,6 +361,7 @@ export function createExportDialog() {
       // resolution ของ RF-DETR ต่างตามรุ่น (Nano 384 / Small 512 / Base 560)
       const rfRes = rfModel === "RFDETRNano" ? 384 : rfModel === "RFDETRSmall" ? 512 : 560;
       summaryValues.image.textContent = isYolo ? `${imgsz} px` : `${rfRes} px`;
+      summaryValues.device.textContent = DEVICES.find((d) => d.v === device)?.summary || device;
       summaryValues.output.textContent = isYolo ? "train_yolo.ipynb" : "train_rfdetr.ipynb";
     }
     updateSummary();
@@ -356,7 +392,7 @@ export function createExportDialog() {
       clampEp();
       const epochs = Math.max(1, Math.round(Number(epInput.value) || 50));
       // seg = มี polygon ใน dataset ไหม → เลือกโมเดล -seg ให้ตรงตั้งแต่ตอน gen โค้ด (ไม่ต้อง auto-detect บน Colab)
-      const opts = { epochs, batch, imgsz, model, rfModel, framework, dataPath: "", numClasses: getClasses().length };
+      const opts = { epochs, batch, imgsz, model, rfModel, framework, device, dataPath: "", numClasses: getClasses().length };
       showCodeView(modal, opts, close);
       onConfirm(opts); // ให้ app จัดการ export ภาพ dataset ต่อ
     });
@@ -473,16 +509,20 @@ const DEFAULT_IMG_SIZE = 640;
 
 // เลือกอุปกรณ์ตอนรัน (2026-11-20): เดิมบังคับ device = 0 → ลืมเปิด GPU บน Colab แล้วพัง และเลือก CPU ไม่ได้
 // "#@param" ทำให้ Colab แสดงเป็น dropdown ให้เลือก (นอก Colab เป็นแค่คอมเมนต์) · auto = GPU ถ้ามี ไม่มีใช้ CPU
-const DEVICE_PARAM = `# ── เลือกอุปกรณ์ที่ใช้เทรน ── "auto" = GPU ถ้ามี (ไม่มีใช้ CPU) · "gpu" = บังคับ GPU · "cpu" = บังคับ CPU (ช้ามาก)
-DEVICE = "auto"  #@param ["auto", "gpu", "cpu"]`;
+// ค่าเริ่มของ dropdown = อุปกรณ์ที่เลือกในหน้าต่าง Export Code (ค่าแปลก/ไม่ส่งมา = "auto")
+const devParam = (device) => {
+  const d = ["auto", "gpu", "cpu"].includes(device) ? device : "auto";
+  return `# ── เลือกอุปกรณ์ที่ใช้เทรน ── "auto" = GPU ถ้ามี (ไม่มีใช้ CPU) · "gpu" = บังคับ GPU · "cpu" = บังคับ CPU (ช้ามาก)
+DEVICE = "${d}"  #@param ["auto", "gpu", "cpu"]`;
+};
 const NO_GPU_MSG = "ไม่เจอ GPU — บน Colab ไปที่ Runtime > Change runtime type > T4 GPU แล้วรันใหม่";
 
-function trainBlock({ epochs, batch, dataPath, imgsz, model }) {
+function trainBlock({ epochs, batch, dataPath, imgsz, model, device }) {
   const sz = imgsz || DEFAULT_IMG_SIZE;
   const base = model || "yolo11n";
   const modelFile = base + ".pt";
   const data = JSON.stringify(dataPath || "/content/dataset/data.yaml");
-  return `${DEVICE_PARAM}
+  return `${devParam(device)}
 import torch
 if DEVICE == "gpu" and not torch.cuda.is_available():
     raise RuntimeError("${NO_GPU_MSG}")
@@ -519,7 +559,7 @@ if not os.path.isdir("/content/dataset/valid"):
     print("ไม่มี valid split — ใช้ภาพ train เป็น valid แทน (ควรแบ่ง valid ในแอปเพื่อวัดผลจริง)")
     shutil.copytree("/content/dataset/train", "/content/dataset/valid")`;
 
-function rfdetrTrainBlock({ epochs, batch, dataPath, rfModel, numClasses }) {
+function rfdetrTrainBlock({ epochs, batch, dataPath, rfModel, numClasses, device }) {
   const dir = JSON.stringify(dataPath || "/content/dataset");
   const cls = rfModel || "RFDETRNano";
   const bs = batch || 4; // batch จริง (เล็กกัน VRAM บน T4) — ไม่ใช้ grad accum แล้ว
@@ -528,7 +568,7 @@ function rfdetrTrainBlock({ epochs, batch, dataPath, rfModel, numClasses }) {
   const nc = Number.isInteger(numClasses) && numClasses >= 1 ? numClasses : null;
   const ctor = nc ? `${cls}(num_classes=${nc})` : `${cls}()`;
   // RF-DETR เลือก cuda เองถ้ามี — บังคับ CPU ด้วยการซ่อน GPU ก่อน import torch (ไม่พึ่ง argument device ที่ต่างกันตามเวอร์ชัน)
-  return `${DEVICE_PARAM}
+  return `${devParam(device)}
 # เปลี่ยนค่าแล้วต้อง Runtime > Restart session ก่อนรันใหม่ (torch จำ GPU ไว้ตั้งแต่ import ครั้งแรก)
 import os
 if DEVICE == "cpu":

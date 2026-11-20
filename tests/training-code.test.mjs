@@ -68,6 +68,27 @@ test('yolo: the device-selection lines pick 0 / "cpu" / raise exactly as documen
   assert.equal(run('cpu', true), "RESULT 'cpu'");
 });
 
+test('device picked in the Export Code dialog becomes the DEVICE default (both frameworks, notebook + copy code)', () => {
+  for (const framework of ['yolo', 'rfdetr']) {
+    for (const [given, want] of [['cpu', 'cpu'], ['gpu', 'gpu'], ['auto', 'auto'], [undefined, 'auto'], ['0', 'auto'], ['GPU"; import os', 'auto']]) {
+      const nb = JSON.parse(buildNotebook({ ...opts, framework, device: given })).cells.map((c) => c.source.join('')).join('\n');
+      const copy = buildTrainingCode({ ...opts, framework, device: given });
+      for (const code of [nb, copy]) {
+        const m = code.match(/^DEVICE = "([^"]*)"  #@param \["auto", "gpu", "cpu"\]$/m);
+        assert.ok(m, `${framework} ${given}: no DEVICE line`);
+        assert.equal(m[1], want, `${framework} ${given}`);
+      }
+    }
+  }
+});
+
+test('Export Code dialog: Auto / GPU / CPU cards, Device summary row, device passed to the notebook options', async () => {
+  const src = await readFile(new URL('../src/renderer/ui/export-dialog.js', import.meta.url), 'utf8');
+  assert.match(src, /\{ v: "auto", label: "Auto"[^}]*\},\s*\{ v: "gpu", label: "GPU"[^}]*\},\s*\{ v: "cpu", label: "CPU"/);
+  assert.match(src, /\["device", "⚙", "Device"\]/);
+  assert.match(src, /const opts = \{[^}]*\bdevice\b[^}]*\};/);
+});
+
 test('copy-paste code installs its framework before importing it', () => {
   for (const framework of ['yolo', 'rfdetr']) {
     const code = buildTrainingCode({ ...opts, framework });

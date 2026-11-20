@@ -4575,6 +4575,12 @@ body.stage-fullscreen-open { overflow: hidden; }
   box-shadow: inset 0 0 0 1px #26d5f3;
   color: var(--th-fg-eaffff);
 }
+/* อุปกรณ์ที่ใช้เทรน (Auto/GPU/CPU) — โทนเหลืองอำพันเดียวกับแถว Device ใน summary */
+.export-yolo-modal .device-grid .batch-card.active {
+  background: rgba(245, 158, 11, .2);
+  box-shadow: inset 0 0 0 1px #f5b84a;
+  color: var(--th-fg-f5c875);
+}
 .export-yolo-modal .image-size-grid .batch-card.active {
   background: rgba(20, 184, 166, .24);
   box-shadow: inset 0 0 0 1px #2dd4bf;
@@ -4601,6 +4607,8 @@ body.stage-fullscreen-open { overflow: hidden; }
 .yolo-summary-batch strong { color: var(--th-fg-28d9f2); }
 .yolo-summary-image .yolo-summary-icon { color: var(--th-fg-45dfbd); }
 .yolo-summary-output .yolo-summary-icon { color: var(--th-fg-c26bff); }
+.yolo-summary-device .yolo-summary-icon,
+.yolo-summary-device strong { color: var(--th-fg-f5c875); }
 .yolo-summary-note {
   margin-top: 12px;
   padding: 11px;
