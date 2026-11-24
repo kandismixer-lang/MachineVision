@@ -15,6 +15,7 @@ import { createExportDialog } from "./ui/export-dialog.js";
 import { startCamera, listCameras } from "./camera.js";
 import { startPose, stopPose, pausePose, resumePose, renderStillErgonomics } from "./mediapipe-pose.js";
 import { loadModel as dlLoadModel, isLoaded as dlLoaded, detect as dlDetect, detectTiled as dlDetectTiled, drawDetections as dlDraw, COCO } from "./dl-yolo.js";
+import { parseLabels } from "./dl-labels.js";
 import { tileGrid as dlTileGrid } from "./dl-tiles.js";
 import { FILTERS, isParamVisible, orderParamsControllersFirst } from "./filters/registry.js";
 
@@ -2692,9 +2693,13 @@ modelInput.addEventListener("change", async () => {
     state.labels = names && names.length ? names : datasetNames.length ? datasetNames : COCO;
     const hasDL = connectedDLDisplays().length > 0;
     const kind = modelKind === "rfdetr" ? "RF-DETR" : seg ? "segmentation (วาด mask)" : "detection";
-    statusEl.textContent = hasDL
+    // RF-DETR ไม่ฝังชื่อคลาสในไฟล์ .onnx — ถ้าไม่มี dataset ในแอปด้วย ชื่อที่เห็นจะเป็น COCO (เช่น "person") ไม่ใช่คลาสที่เทรน
+    const namesHint = !(names && names.length) && !datasetNames.length
+      ? " · ⚠️ ไฟล์นี้ไม่มีชื่อคลาส (ตอนนี้ใช้ชื่อ COCO) — กด 🏷️ โหลดชื่อคลาส แล้วเลือก _annotations.coco.json หรือ data.yaml ของ dataset ที่ใช้เทรน"
+      : "";
+    statusEl.textContent = (hasDL
       ? `โมเดล ${kind} พร้อม (${file.name}, ${state.labels.length} คลาส, ${engine}) — ดูผลในกล่องผลลัพธ์ที่ต่อสายผ่านกล่อง DL`
-      : `โมเดล ${kind} พร้อม (${file.name}, ${state.labels.length} คลาส, ${engine}) — ต่อสาย แหล่งภาพ → กล่อง YOLO → ผลลัพธ์`;
+      : `โมเดล ${kind} พร้อม (${file.name}, ${state.labels.length} คลาส, ${engine}) — ต่อสาย แหล่งภาพ → กล่อง YOLO → ผลลัพธ์`) + namesHint;
     if (state.source === "image") requestProcess();
     if (state.selectedDL) renderDetail();
   } catch (err) {
@@ -2745,42 +2750,6 @@ labelsInput.addEventListener("change", async () => {
   }
   if (state.selectedDL) renderDetail();
 });
-
-// แยกชื่อคลาสจากไฟล์ classes.txt/.names (บรรทัดละคลาส) หรือ data.yaml (names:)
-function parseLabels(text, name) {
-  // COCO json (_annotations.coco.json ของ RF-DETR) — อ่านชื่อจาก categories
-  // ตัด supercategory id 0 ("objects"/"none") ทิ้ง แล้วเรียงตาม id → ชื่อคลาสตรง index โมเดล
-  if (/\.json$/i.test(name)) {
-    try {
-      const d = JSON.parse(text);
-      const cats = Array.isArray(d.categories) ? d.categories : [];
-      const real = cats
-        .filter((c) => c && typeof c.name === "string" && !(c.id === 0 && /^(objects|none|background)$/i.test(c.name)))
-        .sort((a, b) => (a.id || 0) - (b.id || 0));
-      return real.map((c) => c.name);
-    } catch {
-      return [];
-    }
-  }
-  if (/\.ya?ml$/i.test(name)) {
-    const idx = text.indexOf("names:");
-    if (idx < 0) return [];
-    const after = text.slice(idx + 6);
-    const inline = after.match(/\[([^\]]*)\]/);
-    if (inline) {
-      return inline[1].split(",").map((s) => s.trim().replace(/^['"]|['"]$/g, "")).filter(Boolean);
-    }
-    const out = [];
-    for (const ln of after.split(/\r?\n/).slice(1)) {
-      if (/^\s*$/.test(ln)) continue;
-      if (/^\S/.test(ln)) break; // ถึง key ถัดไป (ไม่เยื้อง)
-      const m = ln.match(/^\s*(?:-\s*|\d+\s*:\s*)?['"]?(.+?)['"]?\s*$/);
-      if (m && m[1]) out.push(m[1].trim());
-    }
-    return out;
-  }
-  return text.split(/\r?\n/).map((s) => s.trim()).filter(Boolean);
-}
 
 // ---------- image import (เดี่ยว/หลายไฟล์/โฟลเดอร์) ----------
 // โหลดไฟล์ภาพหนึ่งไฟล์ → { canvas, w, h, name } (ย่อต้นฉบับกันหน่วยความจำ)
