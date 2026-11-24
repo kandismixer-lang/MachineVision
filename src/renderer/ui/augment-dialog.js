@@ -77,14 +77,14 @@ function solo(def, local) {
 }
 
 export const DATASET_FORMATS = [
-  ["yolo", "YOLO (YOLO / RF-DETR)"],
-  ["coco", "COCO JSON (RF-DETR / Roboflow / เครื่องมืออื่น)"],
+  { value: "yolo", title: "YOLO", desc: "ไฟล์ .txt ต่อภาพ + data.yaml · ใช้เทรน YOLO หรือ RF-DETR" },
+  { value: "coco", title: "COCO JSON", desc: "_annotations.coco.json ต่อ split (แบบ Roboflow) · ใช้เทรน RF-DETR หรือเครื่องมืออื่นที่รับ COCO" },
 ];
 
 export function createAugmentDialog({ getSampleCanvas, getCounts } = {}) {
   // คืน false = ยกเลิก · { format } = export ต่อด้วยรูปแบบที่เลือก ("yolo" | "coco")
   async function openForExport({ format: initialFormat = "yolo" } = {}) {
-    let format = DATASET_FORMATS.some(([v]) => v === initialFormat) ? initialFormat : "yolo";
+    let format = DATASET_FORMATS.some((f) => f.value === initialFormat) ? initialFormat : "yolo";
     const local = normalizeAugmentConfig(getDatasetAugment());
     const sample = getSampleCanvas ? await getSampleCanvas() : null;
 
@@ -355,25 +355,6 @@ export function createAugmentDialog({ getSampleCanvas, getCounts } = {}) {
         field.append(flabel, select);
         modal.appendChild(field);
 
-        // รูปแบบไฟล์ dataset — RF-DETR เทรนได้ทั้งสองแบบ · COCO ใช้กับเครื่องมืออื่นที่ต้องการ COCO ได้ด้วย
-        const ffield = document.createElement("div");
-        ffield.className = "aug-create-field";
-        const fmtLabel = document.createElement("label");
-        fmtLabel.className = "aug-create-label";
-        fmtLabel.textContent = "Format";
-        const fmtSelect = document.createElement("select");
-        fmtSelect.className = "aug-create-select";
-        for (const [v, t] of DATASET_FORMATS) {
-          const opt = document.createElement("option");
-          opt.value = v;
-          opt.textContent = t;
-          if (v === format) opt.selected = true;
-          fmtSelect.appendChild(opt);
-        }
-        fmtSelect.addEventListener("change", () => { format = fmtSelect.value; });
-        ffield.append(fmtLabel, fmtSelect);
-        modal.appendChild(ffield);
-
         if (!hasAug) {
           const note = document.createElement("div");
           note.className = "aug-empty";
@@ -389,13 +370,67 @@ export function createAugmentDialog({ getSampleCanvas, getCounts } = {}) {
         back.className = "btn";
         back.textContent = "← กลับ";
         back.addEventListener("click", () => renderList());
+        const next = document.createElement("button");
+        next.className = "btn btn-primary";
+        next.textContent = "Next →";
+        next.addEventListener("click", () => {
+          local.copies = Math.max(0, Number(select.value) - 1);
+          renderFormat();
+        });
+        actions.append(back, next);
+        foot.appendChild(actions);
+        modal.appendChild(foot);
+      }
+
+      // ---------- VIEW: format (ขั้นสุดท้าย หลัง Augmentation — แบบปุ่ม Export ของ Roboflow) ----------
+      // Format ไม่มีผลกับภาพ/กรอบที่ augment แล้ว ต่างกันแค่วิธีเขียนไฟล์ → เลือกตอนท้ายใกล้ปุ่ม Export
+      function renderFormat() {
+        modal.innerHTML = "";
+        modal.className = "modal augment-modal";
+        modal.appendChild(header("Export Format", renderList));
+
+        const sub = document.createElement("div");
+        sub.className = "modal-sub";
+        sub.textContent = "เลือกรูปแบบไฟล์ dataset — RF-DETR เทรนได้ทั้งสองแบบ";
+        modal.appendChild(sub);
+
+        const group = document.createElement("div");
+        group.className = "aug-format-group";
+        group.setAttribute("role", "radiogroup");
+        group.setAttribute("aria-label", "Export Format");
+        for (const f of DATASET_FORMATS) {
+          const card = document.createElement("label");
+          card.className = "aug-format-card";
+          const radio = document.createElement("input");
+          radio.type = "radio";
+          radio.name = "aug-format";
+          radio.value = f.value;
+          radio.checked = f.value === format;
+          radio.addEventListener("change", () => { if (radio.checked) format = f.value; });
+          const text = document.createElement("div");
+          text.className = "aug-format-text";
+          const title = document.createElement("strong");
+          title.textContent = f.title;
+          const desc = document.createElement("span");
+          desc.textContent = f.desc;
+          text.append(title, desc);
+          card.append(radio, text);
+          group.appendChild(card);
+        }
+        modal.appendChild(group);
+
+        const foot = document.createElement("div");
+        foot.className = "augment-foot";
+        const actions = document.createElement("div");
+        actions.className = "modal-actions";
+        const back = document.createElement("button");
+        back.className = "btn";
+        back.textContent = "← กลับ";
+        back.addEventListener("click", () => renderCreate());
         const exportBtn = document.createElement("button");
         exportBtn.className = "btn btn-primary";
         exportBtn.textContent = "⇩ Export";
-        exportBtn.addEventListener("click", () => {
-          local.copies = Math.max(0, Number(select.value) - 1);
-          finish(true);
-        });
+        exportBtn.addEventListener("click", () => finish(true));
         actions.append(back, exportBtn);
         foot.appendChild(actions);
         modal.appendChild(foot);
