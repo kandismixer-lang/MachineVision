@@ -4,7 +4,7 @@
 //   picker : เลือก aug ที่จะเพิ่ม (การ์ด thumbnail)
 //   edit   : ตั้งค่า aug ตัวเดียว — preview before/after ใหญ่ + slider
 //
-// openForExport() คืน Promise<boolean> : true = ไปต่อ (export), false = ยกเลิก
+// openForExport({ format }) คืน Promise: { format } = ไปต่อ (export ด้วยรูปแบบที่เลือก), false = ยกเลิก
 // ค่าถูกบันทึกที่ app.js (setDatasetAugment) ทันทีเมื่อกด Apply/ลบ
 import { getDatasetAugment, setDatasetAugment } from "../app.js";
 import {
@@ -76,8 +76,15 @@ function solo(def, local) {
   return cfg;
 }
 
+export const DATASET_FORMATS = [
+  ["yolo", "YOLO (YOLO / RF-DETR)"],
+  ["coco", "COCO JSON (RF-DETR / Roboflow / เครื่องมืออื่น)"],
+];
+
 export function createAugmentDialog({ getSampleCanvas, getCounts } = {}) {
-  async function openForExport() {
+  // คืน false = ยกเลิก · { format } = export ต่อด้วยรูปแบบที่เลือก ("yolo" | "coco")
+  async function openForExport({ format: initialFormat = "yolo" } = {}) {
+    let format = DATASET_FORMATS.some(([v]) => v === initialFormat) ? initialFormat : "yolo";
     const local = normalizeAugmentConfig(getDatasetAugment());
     const sample = getSampleCanvas ? await getSampleCanvas() : null;
 
@@ -95,7 +102,7 @@ export function createAugmentDialog({ getSampleCanvas, getCounts } = {}) {
         if (ok) setDatasetAugment(local); // บันทึกเฉพาะเมื่อ Export จริง — ยกเลิก/Escape ไม่แตะ config เดิม
         overlay.remove();
         document.removeEventListener("keydown", onKey);
-        resolve(ok);
+        resolve(ok ? { format } : false);
       }
       function onKey(e) { if (e.key === "Escape") finish(false); }
       document.addEventListener("keydown", onKey);
@@ -347,6 +354,25 @@ export function createAugmentDialog({ getSampleCanvas, getCounts } = {}) {
         }
         field.append(flabel, select);
         modal.appendChild(field);
+
+        // รูปแบบไฟล์ dataset — RF-DETR เทรนได้ทั้งสองแบบ · COCO ใช้กับเครื่องมืออื่นที่ต้องการ COCO ได้ด้วย
+        const ffield = document.createElement("div");
+        ffield.className = "aug-create-field";
+        const fmtLabel = document.createElement("label");
+        fmtLabel.className = "aug-create-label";
+        fmtLabel.textContent = "Format";
+        const fmtSelect = document.createElement("select");
+        fmtSelect.className = "aug-create-select";
+        for (const [v, t] of DATASET_FORMATS) {
+          const opt = document.createElement("option");
+          opt.value = v;
+          opt.textContent = t;
+          if (v === format) opt.selected = true;
+          fmtSelect.appendChild(opt);
+        }
+        fmtSelect.addEventListener("change", () => { format = fmtSelect.value; });
+        ffield.append(fmtLabel, fmtSelect);
+        modal.appendChild(ffield);
 
         if (!hasAug) {
           const note = document.createElement("div");

@@ -33,6 +33,33 @@ export function cocoClassNames(data) {
   return (kept.length ? kept : ordered).map((c) => c.name);
 }
 
+// ชื่อคลาสจาก metadata "names" ในไฟล์ .onnx = str(dict) ของ Python เช่น {0: 'person', 1: "it's"}
+// ultralytics ฝังให้เอง · RF-DETR ฝังโดยเซลล์ใน notebook ของแอป (RFDETR_NAMES_BLOCK) · ถอด UTF-8 (ชื่อไทยไม่เพี้ยน)
+// ใน protobuf ค่าอยู่ติดคีย์: "names" + tag + ความยาว (1–3 ไบต์) + "{" → รับเฉพาะ "{" ที่อยู่ห่างไม่เกิน 8 ตัวอักษร
+// ไล่ทุกจุดที่เจอคำว่า names จนกว่าจะอ่านเป็น dict ได้ (กันคำว่า names ที่บังเอิญอยู่ในกราฟก่อน metadata)
+export function extractOnnxNames(bytes) {
+  try {
+    const s = new TextDecoder("utf-8").decode(bytes);
+    const re = /\s*(\d+)\s*:\s*(['"])((?:\\.|(?!\2)[^\\])*)\2\s*([,}])/y;
+    for (let i = s.indexOf("names"); i >= 0; i = s.indexOf("names", i + 5)) {
+      const brace = s.indexOf("{", i + 5);
+      if (brace < 0) return null;
+      if (brace - (i + 5) > 8) continue;
+      re.lastIndex = brace + 1;
+      const names = [];
+      let m, closed = false;
+      while ((m = re.exec(s))) {
+        names[Number(m[1])] = m[3].replace(/\\(.)/g, "$1");
+        if (m[4] === "}") { closed = true; break; }
+      }
+      if (closed && names.length) return Array.from(names, (n) => n ?? "");
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
 export function parseLabels(text, name) {
   if (/\.json$/i.test(name)) {
     try {

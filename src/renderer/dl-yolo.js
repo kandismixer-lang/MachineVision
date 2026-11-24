@@ -2,6 +2,7 @@
 // main thread: letterbox (เบา) + วาดกล่อง · worker: session.run + decode + NMS (หนัก)
 import { tileGrid, mergeTileBoxes } from "./dl-tiles.js";
 import { decodeOutputs, kindFromOutputRanks, guessKind } from "./dl-decode.js";
+import { extractOnnxNames } from "./dl-labels.js";
 let worker = null;
 let ready = false;
 let inputSize = 640;
@@ -29,29 +30,6 @@ export const COCO = [
   "hair drier", "toothbrush",
 ];
 
-// ดึงชื่อคลาสจาก metadata ที่ ultralytics ฝังในไฟล์ .onnx (ใช้ภายในไฟล์นี้)
-// metadata เป็น str(dict) ของ Python เก็บแบบ UTF-8 → ต้องถอด utf-8 (latin1 ทำชื่อไทยเพี้ยนเป็น "à¸£à¸...")
-// Python ใส่ ' หรือ " แล้วแต่ชื่อ (เช่น "it's") → อ่านทีละคู่ key: 'value' ตาม index จริง
-function extractOnnxNames(bytes) {
-  try {
-    const s = new TextDecoder("utf-8").decode(bytes);
-    const i = s.indexOf("names");
-    if (i < 0) return null;
-    const brace = s.indexOf("{", i);
-    if (brace < 0) return null;
-    const re = /\s*(\d+)\s*:\s*(['"])((?:\\.|(?!\2)[^\\])*)\2\s*([,}])/y;
-    re.lastIndex = brace + 1;
-    const names = [];
-    let m;
-    while ((m = re.exec(s))) {
-      names[Number(m[1])] = m[3].replace(/\\(.)/g, "$1");
-      if (m[4] === "}") break;
-    }
-    return names.length ? Array.from(names, (n) => n ?? "") : null;
-  } catch {
-    return null;
-  }
-}
 
 // ดึง imgsz จาก metadata ที่ ultralytics ฝังในไฟล์ .onnx (เช่น "imgsz": [1280, 1280])
 // จำเป็นเพราะ session.inputMetadata ไม่มีใน onnxruntime-web (undefined เสมอ) — อ่านจากไบต์แทน

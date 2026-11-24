@@ -546,7 +546,7 @@ function exportBlock(imgsz) {
   return `model.export(format="onnx", imgsz=${sz})`;
 }
 
-// ===== RF-DETR — ใช้ dataset.zip แบบ YOLO ตัวเดียวกัน (rfdetr>=1.8 อ่าน YOLO ได้เอง) =====
+// ===== RF-DETR — ใช้ dataset.zip ได้ทั้งแบบ YOLO และ COCO (rfdetr>=1.8 ดูเอง: มี train/_annotations.coco.json = COCO) =====
 // rfdetr ตรวจรูปแบบ YOLO จาก data.yaml + <split>/images + <split>/labels และอ่านชื่อคลาสจาก names: ใน data.yaml
 // คลาสเป็น 0-indexed ตรงกับแอป (ไม่มี supercategory แบบ COCO ของ Roboflow มาเลื่อน index)
 // ต้อง [train,loggers] ไม่งั้นขาด pytorch_lightning ตอน model.train()
@@ -592,6 +592,53 @@ model.train(
 const RFDETR_EXPORT_BLOCK = `!pip install onnx onnxruntime onnxsim
 model.export()`;
 
+// RF-DETR ไม่ฝังชื่อคลาสใน .onnx (YOLO ฝังให้) → เซลล์นี้ฝังเอง เป็น metadata "names" = {0: 'ชื่อ', …} รูปแบบเดียวกับ
+// ultralytics — แอปอ่านได้ทันทีตอนโหลดโมเดล ไม่ต้องโหลดไฟล์ชื่อคลาสแยก · ชื่อมาจาก dataset ที่ใช้เทรน:
+// COCO (train/_annotations.coco.json จากแอปหรือ Roboflow) ใช้กติกาเดียวกับ rfdetr (เรียงตาม id, ตัดหมวดแม่ที่ไม่มี annotation)
+// YOLO ใช้ names ใน data.yaml · เทียบจำนวนกับช่องคลาสของโมเดลจริงอีกชั้น (ช่องสุดท้าย = "ไม่มีวัตถุ") กันชื่อเลื่อน
+export const RFDETR_NAMES_BLOCK = `# ── ฝังชื่อคลาสลงไฟล์ .onnx (แอปอ่านชื่อเองตอนโหลดโมเดล) ──
+import glob, json, os, onnx
+DATASET = "/content/dataset"
+
+def coco_class_names(path):
+    d = json.load(open(path, encoding="utf-8"))
+    cats = sorted(d.get("categories", []), key=lambda c: int(c["id"]))
+    used = {int(a["category_id"]) for a in d.get("annotations", [])}
+    sup = lambda c: c.get("supercategory", "none")
+    parents = {sup(c) for c in cats if sup(c) not in ("", "none", "null", None) and sup(c) != c["name"]}
+    kept = [c for c in cats if not (c["name"] in parents and int(c["id"]) not in used)] or cats
+    return [c["name"] for c in kept], [c["name"] for c in cats]
+
+def yolo_class_names(path):
+    import yaml
+    n = yaml.safe_load(open(path, encoding="utf-8")).get("names", [])
+    n = [n[k] for k in sorted(n)] if isinstance(n, dict) else list(n)
+    return n, n
+
+coco_file = os.path.join(DATASET, "train", "_annotations.coco.json")
+names, all_names = coco_class_names(coco_file) if os.path.exists(coco_file) else yolo_class_names(os.path.join(DATASET, "data.yaml"))
+
+onnx_path = sorted(glob.glob("output/**/*.onnx", recursive=True) + glob.glob("*.onnx"), key=os.path.getmtime)[-1]
+m = onnx.load(onnx_path)
+dims = {o.name: [d.dim_value for d in o.type.tensor_type.shape.dim] for o in m.graph.output}
+logit = dims.get("labels") or next((v for v in dims.values() if len(v) == 3 and v[-1] not in (0, 4)), None)
+slots = logit[-1] - 1 if logit and logit[-1] > 1 else None
+if slots is not None and slots != len(names) and slots == len(all_names):
+    names = all_names
+if slots is not None and slots != len(names):
+    print(f"⚠️ โมเดลมี {slots} คลาส แต่ dataset มี {len(names)} ชื่อ — ตรวจ num_classes ตอนเทรน")
+    names = (names + [f"class_{i}" for i in range(len(names), slots)])[:slots]
+for p in [p for p in m.metadata_props if p.key == "names"]:
+    m.metadata_props.remove(p)
+m.metadata_props.add(key="names", value=repr({i: n for i, n in enumerate(names)}))
+onnx.save(m, onnx_path)
+print("ฝังชื่อคลาสแล้ว:", onnx_path, names)
+try:
+    from google.colab import files
+    files.download(onnx_path)
+except ImportError:
+    pass`;
+
 // สร้างไฟล์ Jupyter Notebook (.ipynb) — เปิดใน Colab แล้ว Run ได้เลย
 export function buildNotebook(opts) {
   const rf = opts.framework === "rfdetr";
@@ -601,6 +648,7 @@ export function buildNotebook(opts) {
         codeCell(RFDETR_UNZIP_BLOCK),
         codeCell(rfdetrTrainBlock(opts)),
         codeCell(RFDETR_EXPORT_BLOCK),
+        codeCell(RFDETR_NAMES_BLOCK),
       ]
     : [
         codeCell(INSTALL_BLOCK),
@@ -624,7 +672,7 @@ export function buildNotebook(opts) {
 // โค้ดรวม (สำหรับปุ่มคัดลอก / แสดงในหน้าต่าง)
 export function buildTrainingCode(opts) {
   if (opts.framework === "rfdetr") {
-    return `${RFDETR_INSTALL_BLOCK}\n\n${RFDETR_UNZIP_BLOCK}\n\n${rfdetrTrainBlock(opts)}\n${RFDETR_EXPORT_BLOCK}\n`;
+    return `${RFDETR_INSTALL_BLOCK}\n\n${RFDETR_UNZIP_BLOCK}\n\n${rfdetrTrainBlock(opts)}\n${RFDETR_EXPORT_BLOCK}\n\n${RFDETR_NAMES_BLOCK}\n`;
   }
   // Colab ไม่มี ultralytics ติดมา — วางโค้ดนี้เซลล์เดียวต้องติดตั้งก่อน import (เหมือน notebook)
   return `${INSTALL_BLOCK}\n\n${IMPORTS_BLOCK}\n\n${UNZIP_BLOCK}\n\n${trainBlock(opts)}\n\n${exportBlock(opts.imgsz)}\n`;

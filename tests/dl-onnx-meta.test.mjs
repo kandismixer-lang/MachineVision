@@ -5,7 +5,8 @@ import { readFile } from 'node:fs/promises';
 // dl-yolo.js needs a DOM at import time; pull the metadata helpers out verbatim.
 const source = await readFile(new URL('../src/renderer/dl-yolo.js', import.meta.url), 'utf8');
 const grab = (name) => new Function(`${source.match(new RegExp(`function ${name}\\(bytes\\) \\{[\\s\\S]*?\\n\\}`))[0]}; return ${name};`)();
-const extractOnnxNames = grab('extractOnnxNames');
+// extractOnnxNames ย้ายไป dl-labels.js (โมดูลไม่มี DOM) แล้ว — import ตรงได้
+const { extractOnnxNames } = await import('../src/renderer/dl-labels.js');
 const extractOnnxImgsz = grab('extractOnnxImgsz');
 
 // Mimic an ultralytics .onnx: binary graph bytes, then UTF-8 metadata props written as str(dict).

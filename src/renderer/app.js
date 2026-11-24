@@ -39,6 +39,7 @@ import {
   onChange as datasetOnChange,
 } from "./dataset/annotations.js";
 import { exportYoloDataset } from "./dataset/export-yolo.js";
+import { exportCocoDataset } from "./dataset/export-coco.js";
 import { importYoloDataset } from "./dataset/import-yolo.js";
 import { defaultAugmentConfig, normalizeAugmentConfig } from "./dataset/augment.js";
 import { createAugmentDialog } from "./ui/augment-dialog.js";
@@ -247,6 +248,13 @@ const DL_DEVICES = ["auto", "gpu", "cpu"];
 function loadDlDevice() {
   try { const v = localStorage.getItem("mv-dl-device"); if (DL_DEVICES.includes(v)) return v; } catch { /* ignore */ }
   return "auto";
+}
+// รูปแบบ dataset ที่เลือกล่าสุดในหน้า Create ของ Export Dataset ("yolo" | "coco")
+function loadDatasetFormat() {
+  try { return localStorage.getItem("mv-dataset-format") === "coco" ? "coco" : "yolo"; } catch { return "yolo"; }
+}
+function saveDatasetFormat(v) {
+  try { localStorage.setItem("mv-dataset-format", v); } catch { /* ignore */ }
 }
 function saveDlDevice() {
   try { localStorage.setItem("mv-dl-device", state.dlDevice); } catch { /* ignore */ }
@@ -1608,12 +1616,14 @@ async function runDatasetExport() {
 
   const annotatedKeys = state.images.map((im) => im.name).filter(hasTrainableLabel);
 
-  // บังคับขั้นตอน Augmentation ก่อน (แบบ Roboflow) — Cancel = ยกเลิก export
-  const proceed = await augmentDialog.openForExport();
+  // บังคับขั้นตอน Augmentation ก่อน (แบบ Roboflow) — Cancel = ยกเลิก export · หน้า Create เลือกรูปแบบ YOLO / COCO
+  const proceed = await augmentDialog.openForExport({ format: loadDatasetFormat() });
   if (!proceed) {
     statusEl.textContent = "ยกเลิกการ export dataset";
     return;
   }
+  const format = proceed.format === "coco" ? "coco" : "yolo";
+  saveDatasetFormat(format);
 
   let dir = null;
   if (canExportFolder) {
@@ -1662,7 +1672,7 @@ async function runDatasetExport() {
   const exportDatasetRevision = datasetRevision;
 
   try {
-    const exporter = exportYoloDataset;
+    const exporter = format === "coco" ? exportCocoDataset : exportYoloDataset;
     const { blob, stats } = await exporter(entries, {
       augment: datasetAugment,
       onProgress: (done, total) => {
@@ -1675,7 +1685,7 @@ async function runDatasetExport() {
     } else {
       downloadBlob(blob, "dataset.zip");
     }
-    const kind = stats.task === "segment" ? "YOLO segmentation" : "YOLO detect";
+    const kind = format === "coco" ? "COCO" : stats.task === "segment" ? "YOLO segmentation" : "YOLO detect";
     statusEl.textContent =
       `Export ${kind} dataset เสร็จ — ` +
       `${stats.exported} ภาพ (ข้าม ${stats.skipped} ภาพไม่มีกรอบ), ` +
