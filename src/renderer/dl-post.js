@@ -22,6 +22,7 @@ export const COUNT_DEFAULTS = Object.freeze({
   maxDist: 12, // ระยะจับคู่ชิ้นเดิมข้ามเฟรม (% ของเส้นทแยงภาพ)
   maxMissed: 10, // ชิ้นหายจากการตรวจได้กี่ครั้งก่อนลืม
   fontPct: 100, // ขนาดตัวหนังสือบนภาพ (ป้ายยอดนับ + เลข #id) — ไม่มีผลกับการนับ
+  splitClass: false, // แสดงยอดแยกตามคลาสใต้ป้ายยอดรวม (นับแยกคลาสอยู่แล้วเสมอ — ค่านี้แค่แสดงผล)
 });
 
 export const FRAME_DT = 1 / 30; // ช่วงเวลาอ้างอิงของ maxDist (1 เฟรมที่ 30 fps)
@@ -31,10 +32,10 @@ const clamp = (v, lo, hi) => Math.min(hi, Math.max(lo, v));
 
 const fontPctOf = (p) => Math.round(clamp(num(p.fontPct, 100), FONT_PCT_MIN, FONT_PCT_MAX));
 
-// ค่าที่มีผลกับการนับ (ไม่รวมขนาดตัวหนังสือ) — เปลี่ยนค่าพวกนี้ = เริ่มนับใหม่
+// ค่าที่มีผลกับการนับ (ไม่รวมค่าที่แค่แสดงผล) — เปลี่ยนค่าพวกนี้ = เริ่มนับใหม่
 export function countKey(params) {
-  const { fontPct, ...rest } = normCount(params);
-  void fontPct;
+  const { fontPct, splitClass, ...rest } = normCount(params);
+  void fontPct; void splitClass;
   return JSON.stringify(rest);
 }
 
@@ -58,6 +59,7 @@ export function normCount(p = {}) {
     maxDist: clamp(num(p.maxDist, d.maxDist), 1, 100),
     maxMissed: Math.round(clamp(num(p.maxMissed, d.maxMissed), 0, 300)),
     fontPct: fontPctOf(p),
+    splitClass: p.splitClass === true,
   };
 }
 
@@ -159,6 +161,21 @@ export function computeCentroids(boxes, params, W, H, readRGBA) {
 
 // ---------- tracker ----------
 
+const labelKey = (p) => p.label ?? String(p.cls);
+
+// คลาสของชิ้นงาน = คลาสที่โมเดลทายบ่อยที่สุดตลอดช่วงที่ติดตาม (โมเดลทายสลับบางเฟรม → ไม่นับผิดคลาส)
+// เท่ากัน → เอาคลาสของเฟรมล่าสุด ถ้าไม่อยู่ในกลุ่มที่เท่ากัน → ชื่อที่เรียงก่อน (Python ทำแบบเดียวกัน)
+export function trackLabel(t) {
+  const cur = labelKey(t);
+  const votes = t.votes || {};
+  let best = cur, n = votes[cur] || 0;
+  for (const k of Object.keys(votes)) {
+    const c = votes[k];
+    if (c > n || (c === n && best !== cur && k < best)) { best = k; n = c; }
+  }
+  return best;
+}
+
 export function createTracker() {
   let tracks = [];
   let nextId = 1;
@@ -192,6 +209,8 @@ export function createTracker() {
         }
         t.x = p.x; t.y = p.y; t.cls = p.cls; t.label = p.label;
         t.missed = 0; t.since = 0; t.hits++;
+        const k = labelKey(p);
+        t.votes[k] = (t.votes[k] || 0) + 1;
       }
       const kept = [];
       tracks.forEach((t, ti) => {
@@ -200,7 +219,7 @@ export function createTracker() {
       });
       pts.forEach((p, pi) => {
         if (usedP.has(pi)) return;
-        kept.push({ id: nextId++, x: p.x, y: p.y, vx: 0, vy: 0, since: 0, cls: p.cls, label: p.label, missed: 0, hits: 1 });
+        kept.push({ id: nextId++, x: p.x, y: p.y, vx: 0, vy: 0, since: 0, cls: p.cls, label: p.label, missed: 0, hits: 1, votes: { [labelKey(p)]: 1 } });
       });
       tracks = kept;
       return tracks;
@@ -244,22 +263,27 @@ export function createCounter() {
       st.events = [];
       const diag = Math.hypot(W, H);
       const tracks = tracker.update(pts, (p.maxDist / 100) * diag, p.maxMissed, dt);
-      const want = (t) => !p.cls || t.label === p.cls;
+      const want = (t) => !p.cls || trackLabel(t) === p.cls;
+      const slot = (k) => (st.byClass[k] ||= { in: 0, out: 0, total: 0, now: 0 });
       const bump = (t, key) => {
         st[key]++;
         st.total++;
-        const k = t.label ?? String(t.cls);
-        st.byClass[k] = (st.byClass[k] || 0) + 1;
-        st.events.push({ id: t.id, label: k, kind: key });
+        const k = trackLabel(t);
+        const b = slot(k);
+        b[key]++;
+        b.total++;
+        st.events.push({ id: t.id, label: k, kind: key, x: t.x, y: t.y });
       };
       if (p.mode === "zone") {
         const zx = (p.zx / 100) * W, zy = (p.zy / 100) * H, zx2 = zx + (p.zw / 100) * W, zy2 = zy + (p.zh / 100) * H;
         let now = 0;
+        for (const b of Object.values(st.byClass)) b.now = 0;
         for (const t of tracks) {
           if (t.missed !== 0 || !want(t)) continue;
           if (t.x < zx || t.x > zx2 || t.y < zy || t.y > zy2) continue;
           now++;
           if (!st.counted.has(t.id)) { st.counted.add(t.id); bump(t, "in"); }
+          slot(trackLabel(t)).now++;
         }
         st.now = now;
       } else {
@@ -294,6 +318,26 @@ export function counterText(name, params, st) {
   if (p.dir === "in") return `${name}: IN ${st.in}`;
   if (p.dir === "out") return `${name}: OUT ${st.out}`;
   return `${name}: ${st.total}  (IN ${st.in} / OUT ${st.out})`;
+}
+
+// แถวยอดแยกคลาส (เรียงชื่อคลาส) — ใช้ทั้งบนภาพ (splitClass) และในแผงขวา
+export function counterClassRows(params, st) {
+  const p = normCount(params);
+  const by = st.byClass || {};
+  return Object.keys(by).sort((a, b) => (a < b ? -1 : a > b ? 1 : 0)).map((k) => {
+    const b = by[k];
+    if (p.mode === "zone") return `${k}: NOW ${b.now}  TOTAL ${b.total}`;
+    if (p.dir === "in") return `${k}: IN ${b.in}`;
+    if (p.dir === "out") return `${k}: OUT ${b.out}`;
+    return `${k}: ${b.total}  (IN ${b.in} / OUT ${b.out})`;
+  });
+}
+
+// ก๊อปสถานะไว้แสดงผล (byClass เป็น object ซ้อน — ต้องก๊อปลึก ไม่งั้นเฟรมถัดไปแก้ค่าที่วาดอยู่)
+export function snapshotCounterState(st) {
+  const byClass = {};
+  for (const [k, b] of Object.entries(st.byClass || {})) byClass[k] = { ...b };
+  return { in: st.in, out: st.out, total: st.total, now: st.now, byClass };
 }
 
 // ชื่อบนป้าย: "Line 1" · กล่องที่กรองคลาส = "Line 2 [L]" (นับแยกชนิดหลายกล่องแล้วอ่านออกว่าแถวไหนของชนิดไหน)
@@ -409,14 +453,18 @@ export function drawCounters(ctx, counters, W, H, scale = 1) {
     const p = normCount(c.params);
     const ts = scale * (p.fontPct / 100);
     const rowH = 20 * ts;
-    ctx.font = `bold ${13 * ts}px sans-serif`;
-    const text = counterText(c.name, c.params, c.state);
-    const tw = ctx.measureText(text).width + 12 * ts;
-    ctx.fillStyle = POST_COLORS.panel;
-    ctx.fillRect(6 * scale, y, tw, rowH);
-    ctx.fillStyle = p.mode === "zone" ? POST_COLORS.zone : POST_COLORS.line;
-    ctx.fillText(text, 6 * scale + 6 * ts, y + rowH - 6 * ts);
-    y += rowH + 4 * ts;
+    const color = p.mode === "zone" ? POST_COLORS.zone : POST_COLORS.line;
+    const rows = [[counterText(c.name, c.params, c.state), 0]];
+    if (p.splitClass) for (const r of counterClassRows(p, c.state)) rows.push([r, 12 * ts]); // แถวคลาส เยื้องเข้า
+    for (const [text, indent] of rows) {
+      ctx.font = `bold ${13 * ts}px sans-serif`;
+      const tw = ctx.measureText(text).width + 12 * ts;
+      ctx.fillStyle = POST_COLORS.panel;
+      ctx.fillRect(6 * scale + indent, y, tw, rowH);
+      ctx.fillStyle = indent ? POST_COLORS.text : color;
+      ctx.fillText(text, 6 * scale + indent + 6 * ts, y + rowH - 6 * ts);
+      y += rowH + (indent ? 2 : 4) * ts;
+    }
   }
   ctx.restore();
 }

@@ -520,6 +520,7 @@ class Tracker:
                 else:
                     t["vx"], t["vy"] = vx, vy
             t.update(x=p["x"], y=p["y"], cls=p["cls"], label=p["label"], missed=0, since=0.0, hits=t["hits"] + 1)
+            t["votes"][p["label"]] = t["votes"].get(p["label"], 0) + 1
         kept = []
         for ti, t in enumerate(self.tracks):
             if ti not in used_t:
@@ -530,10 +531,22 @@ class Tracker:
         for pi, p in enumerate(pts):
             if pi not in used_p:
                 kept.append({"id": self.next_id, "x": p["x"], "y": p["y"], "vx": 0.0, "vy": 0.0, "since": 0.0,
-                             "cls": p["cls"], "label": p["label"], "missed": 0, "hits": 1})
+                             "cls": p["cls"], "label": p["label"], "missed": 0, "hits": 1, "votes": {p["label"]: 1}})
                 self.next_id += 1
         self.tracks = kept
         return kept
+
+
+def track_label(t):
+    # คลาสของชิ้นงาน = คลาสที่โมเดลทายบ่อยสุดตลอดช่วงที่ติดตาม (ทายสลับบางเฟรม → ไม่นับผิดคลาส)
+    # เท่ากัน → คลาสของเฟรมล่าสุด ถ้าไม่อยู่ในกลุ่มที่เท่ากัน → ชื่อที่เรียงก่อน
+    cur = t["label"]
+    votes = t.get("votes", {})
+    best, n = cur, votes.get(cur, 0)
+    for k, c in votes.items():
+        if c > n or (c == n and best != cur and k < best):
+            best, n = k, c
+    return best
 
 
 def side_of(ax, ay, bx, by, x, y):
@@ -559,14 +572,21 @@ class Counter:
         self.n_in = self.n_out = self.total = self.now = 0
         self.by_class, self.counted, self.ref, self.events = {}, set(), {}, []
 
+    def _slot(self, label):
+        return self.by_class.setdefault(label, {"in": 0, "out": 0, "total": 0, "now": 0})
+
     def _bump(self, t, key):
         if key == "in":
             self.n_in += 1
         else:
             self.n_out += 1
         self.total += 1
-        self.by_class[t["label"]] = self.by_class.get(t["label"], 0) + 1
-        self.events.append((t["id"], t["label"], key))
+        label = track_label(t)
+        b = self._slot(label)
+        b[key] += 1
+        b["total"] += 1
+        self.events.append({"counter": self.cfg["name"], "id": t["id"], "label": label, "kind": key,
+                            "x": float(t["x"]), "y": float(t["y"]), "total": self.total, "class_total": b["total"]})
 
     def update(self, pts, W, H, still=False, dt=FRAME_DT):
         c = self.cfg
@@ -576,11 +596,13 @@ class Counter:
         tracks = self.tracker.update(pts, c["max_dist"] / 100.0 * math.hypot(W, H), c["max_missed"], dt)
 
         def want(t):
-            return not c["cls"] or t["label"] == c["cls"]
+            return not c["cls"] or track_label(t) == c["cls"]
         if c["mode"] == "zone":
             zx, zy = c["zx"] / 100.0 * W, c["zy"] / 100.0 * H
             zx2, zy2 = zx + c["zw"] / 100.0 * W, zy + c["zh"] / 100.0 * H
             now = 0
+            for b in self.by_class.values():
+                b["now"] = 0
             for t in tracks:
                 if t["missed"] != 0 or not want(t):
                     continue
@@ -590,6 +612,7 @@ class Counter:
                 if t["id"] not in self.counted:
                     self.counted.add(t["id"])
                     self._bump(t, "in")
+                self._slot(track_label(t))["now"] += 1
             self.now = now
         else:
             ax, ay = c["x1"] / 100.0 * W, c["y1"] / 100.0 * H
@@ -625,6 +648,21 @@ class Counter:
         if c["dir"] == "out":
             return "%s: OUT %d" % (name, self.n_out)
         return "%s: %d  (IN %d / OUT %d)" % (name, self.total, self.n_in, self.n_out)
+
+    def class_rows(self):
+        # ยอดแยกคลาส (เรียงชื่อคลาส) — แถวละคลาส
+        c, rows = self.cfg, []
+        for k in sorted(self.by_class):
+            b = self.by_class[k]
+            if c["mode"] == "zone":
+                rows.append("%s: NOW %d  TOTAL %d" % (k, b["now"], b["total"]))
+            elif c["dir"] == "in":
+                rows.append("%s: IN %d" % (k, b["in"]))
+            elif c["dir"] == "out":
+                rows.append("%s: OUT %d" % (k, b["out"]))
+            else:
+                rows.append("%s: %d  (IN %d / OUT %d)" % (k, b["total"], b["in"], b["out"]))
+        return rows
 
 
 COUNTER_OBJS = [Counter(c) for c in COUNTERS]
@@ -679,22 +717,39 @@ def draw_counters(img, scale):
                 cv2.putText(img, "#%d" % t["id"], org, cv2.FONT_HERSHEY_SIMPLEX, 0.4 * ts, (0, 0, 0), 3, cv2.LINE_AA)
                 cv2.putText(img, "#%d" % t["id"], org, cv2.FONT_HERSHEY_SIMPLEX, 0.4 * ts, LINE_BGR, 1, cv2.LINE_AA)
     y = js_round(6 * scale)
-    for k in COUNTER_OBJS:   # ป้ายยอดนับมุมซ้ายบน (ขนาดตาม "font" ของแต่ละกล่อง)
+    for k in COUNTER_OBJS:   # ป้ายยอดนับมุมซ้ายบน (ขนาดตาม "font" ของแต่ละกล่อง) + แถวแยกคลาส (split_class)
         ts = scale * k.cfg.get("font", 1.0)
         row = max(6, js_round(20 * ts))
-        text = k.text()
         fs = 0.45 * ts
-        tw = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, fs, 1)[0][0] + js_round(12 * ts)
-        over = img.copy()
-        cv2.rectangle(over, (js_round(6 * scale), y), (js_round(6 * scale) + tw, y + row), (0, 0, 0), -1)
-        cv2.addWeighted(over, 0.6, img, 0.4, 0, img)
         color = ZONE_BGR if k.cfg["mode"] == "zone" else LINE_BGR
-        cv2.putText(img, text, (js_round(6 * scale + 6 * ts), y + row - js_round(6 * ts)),
-                    cv2.FONT_HERSHEY_SIMPLEX, fs, color, 1, cv2.LINE_AA)
-        y += row + js_round(4 * ts)
+        rows = [(k.text(), 0)]
+        if k.cfg.get("split_class"):
+            rows += [(r, js_round(12 * ts)) for r in k.class_rows()]
+        for text, indent in rows:
+            x0 = js_round(6 * scale) + indent
+            tw = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, fs, 1)[0][0] + js_round(12 * ts)
+            over = img.copy()
+            cv2.rectangle(over, (x0, y), (x0 + tw, y + row), (0, 0, 0), -1)
+            cv2.addWeighted(over, 0.6, img, 0.4, 0, img)
+            cv2.putText(img, text, (x0 + js_round(6 * ts), y + row - js_round(6 * ts)),
+                        cv2.FONT_HERSHEY_SIMPLEX, fs, (255, 255, 255) if indent else color, 1, cv2.LINE_AA)
+            y += row + js_round((2 if indent else 4) * ts)
 
 
 _FRAME = [0]
+
+
+def on_count(event):
+    # ★ เรียกทุกครั้งที่นับได้ 1 ชิ้น — ใส่โค้ดสั่งงานต่อตรงนี้ (ส่ง Serial ไป Dobot / Modbus ไป PLC / เขียน CSV ...)
+    # event = {"frame": 310, "counter": "Line 1", "id": 12, "label": "Triangle", "kind": "in",
+    #          "x": 412.5, "y": 230.1, "total": 10, "class_total": 4}
+    #   label = คลาสของชิ้น (ที่โมเดลทายบ่อยสุดตลอดช่วงที่ติดตาม) · kind = "in" / "out" (โซน = "in" เสมอ)
+    #   x, y = พิกัดจุดของชิ้นตอนนับ (พิกเซลบนภาพ) · total / class_total = ยอดรวม / ยอดของคลาสนี้ หลังนับชิ้นนี้
+    # ยอดทั้งหมดอ่านได้ตลอดจาก COUNTER_OBJS[i].total / .n_in / .n_out / .now / .by_class["Triangle"]["total"]
+    # ตัวอย่าง:
+    #   if event["label"] == "Triangle":
+    #       robot.move_to(event["x"], event["y"])
+    pass
 
 
 def process_image(img):
@@ -707,8 +762,10 @@ def process_image(img):
     pts = compute_centroids(img, boxes) if CENTROID_ON else box_centers(boxes)
     for k in COUNTER_OBJS:
         k.update(pts, W, H, STILL)
-        for tid, label, key in k.events:
-            print("[frame %d] %s: +1 %s (#%d, %s) -> %s" % (_FRAME[0], k.cfg["name"], label, tid, key.upper(), k.text()))
+        for ev in k.events:
+            ev["frame"] = _FRAME[0]
+            print("[frame %d] %s: +1 %s (#%d, %s) -> %s" % (ev["frame"], ev["counter"], ev["label"], ev["id"], ev["kind"].upper(), k.text()))
+            on_count(ev)
     if CENTROID_ON:
         draw_centroids(out, pts, scale)
         if STILL or not COUNTER_OBJS:
@@ -721,8 +778,7 @@ def process_image(img):
 def print_summary():
     # สรุปยอดตอนจบโปรแกรม (ปิดหน้าต่าง / วิดีโอจบ)
     for k in COUNTER_OBJS:
-        detail = ", ".join("%s=%d" % kv for kv in sorted(k.by_class.items())) or "-"
-        print("SUMMARY %s | by class: %s" % (k.text(), detail))
+        print("SUMMARY %s | by class: %s" % (k.text(), " · ".join(k.class_rows()) or "-"))
 
 
 atexit.register(print_summary)
@@ -753,7 +809,7 @@ function postSettingsLines(post, still) {
       `     "x1": ${p.x1}, "y1": ${p.y1}, "x2": ${p.x2}, "y2": ${p.y2}, "dir": ${pyStr(p.dir)},   # เส้น A(x1,y1) → B(x2,y2) · dir = "both" | "in" | "out"`,
       `     "zx": ${p.zx}, "zy": ${p.zy}, "zw": ${p.zw}, "zh": ${p.zh},   # โซน: มุมซ้ายบน + กว้าง/สูง`,
       `     "cls": ${pyStr(p.cls)}, "max_dist": ${p.maxDist}, "max_missed": ${p.maxMissed},   # cls "" = ทุกคลาส`,
-      `     "font": ${p.fontPct / 100}},   # ขนาดตัวหนังสือป้ายยอดนับ + เลข # (1 = ปกติ · 0.5 = ครึ่งหนึ่ง)`,
+      `     "font": ${p.fontPct / 100}, "split_class": ${p.splitClass ? "True" : "False"}},   # font = ขนาดตัวหนังสือป้ายยอดนับ + เลข # (1 = ปกติ) · split_class = แสดงแถวยอดแยกคลาสบนภาพ`,
     );
   }
   lines.push("]");

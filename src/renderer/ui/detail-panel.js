@@ -764,13 +764,7 @@ export function createDetailPanel(container, cb) {
       b.addEventListener("click", onClick);
       return b;
     };
-
-    if (!isCount) {
-      container.appendChild(seg("วิธีหาจุดศูนย์กลาง", [
-        { value: "shape", label: "รูปทรงชิ้นงาน", hint: "จุดศูนย์ถ่วงของเนื้อชิ้นงานในกรอบ (mask ของโมเดล seg หรือแยกชิ้นงานจากพื้นด้วย Otsu) — ตรงกับชิ้นงานรูปทรงไม่สมมาตร เช่นตัว L" },
-        { value: "box", label: "กึ่งกลางกรอบ", hint: "จุดกลางกรอบที่โมเดลตีให้ — เร็ว แต่ชิ้นงานรูปทรงไม่สมมาตรจะเยื้องจากเนื้อจริง" },
-      ], p.method === "box" ? "box" : "shape", (v) => set("method", v, true)));
-      const on = p.showCoords !== false;
+    const toggle = (label, k, on) => {
       const row = document.createElement("button");
       row.type = "button";
       row.className = "param-toggle" + (on ? " on" : "");
@@ -779,7 +773,7 @@ export function createDetailPanel(container, cb) {
       row.setAttribute("aria-checked", on ? "true" : "false");
       const rl = document.createElement("span");
       rl.className = "pt-label";
-      rl.textContent = "เขียนพิกัด (x, y) ข้างจุด";
+      rl.textContent = label;
       const rs = document.createElement("span");
       rs.className = "pt-state";
       rs.textContent = on ? "ON" : "OFF";
@@ -787,8 +781,16 @@ export function createDetailPanel(container, cb) {
       sw.className = "pt-switch";
       sw.innerHTML = '<span class="pt-knob"></span>';
       row.append(rl, rs, sw);
-      row.addEventListener("click", () => set("showCoords", !on, true));
-      container.appendChild(row);
+      row.addEventListener("click", () => set(k, !on, true));
+      return row;
+    };
+
+    if (!isCount) {
+      container.appendChild(seg("วิธีหาจุดศูนย์กลาง", [
+        { value: "shape", label: "รูปทรงชิ้นงาน", hint: "จุดศูนย์ถ่วงของเนื้อชิ้นงานในกรอบ (mask ของโมเดล seg หรือแยกชิ้นงานจากพื้นด้วย Otsu) — ตรงกับชิ้นงานรูปทรงไม่สมมาตร เช่นตัว L" },
+        { value: "box", label: "กึ่งกลางกรอบ", hint: "จุดกลางกรอบที่โมเดลตีให้ — เร็ว แต่ชิ้นงานรูปทรงไม่สมมาตรจะเยื้องจากเนื้อจริง" },
+      ], p.method === "box" ? "box" : "shape", (v) => set("method", v, true)));
+      container.appendChild(toggle("เขียนพิกัด (x, y) ข้างจุด", "showCoords", p.showCoords !== false));
       container.appendChild(dlSlider("ขนาดตัวหนังสือบนภาพ (%)", 30, 200, 10, 100, p.fontPct ?? 100, (v) => set("fontPct", v)));
     } else {
       const mode = p.mode === "zone" ? "zone" : "line";
@@ -845,6 +847,11 @@ export function createDetailPanel(container, cb) {
       sel.addEventListener("change", () => set("cls", sel.value));
       cw.append(cl, sel);
       container.appendChild(cw);
+      container.appendChild(toggle("แสดงยอดแยกตามคลาสบนภาพ", "splitClass", p.splitClass === true));
+      const sh = document.createElement("div");
+      sh.className = "param-hint";
+      sh.textContent = "นับแยกคลาสอยู่แล้วเสมอ (ดูในผลสดด้านล่าง) — สวิตช์นี้แค่เพิ่มแถวยอดของแต่ละคลาสใต้ป้ายยอดรวม · คลาสของชิ้นงาน = คลาสที่โมเดลทายบ่อยสุดตลอดช่วงที่ติดตาม";
+      container.appendChild(sh);
       container.appendChild(dlSlider("ระยะติดตามชิ้นเดิม (% ของเส้นทแยงภาพ)", 1, 50, 1, 12, p.maxDist ?? 12, (v) => set("maxDist", v)));
       container.appendChild(dlSlider("หายจากการตรวจได้ (ครั้ง) ก่อนลืมชิ้นนั้น", 0, 60, 1, 10, p.maxMissed ?? 10, (v) => set("maxMissed", v)));
       const th = document.createElement("div");

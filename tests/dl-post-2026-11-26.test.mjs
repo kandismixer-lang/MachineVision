@@ -17,6 +17,7 @@ import { execFileSync } from 'node:child_process';
 import { buildDLPythonCode } from '../src/renderer/codegen-dl.js';
 import {
   createCounter, createTracker, computeCentroids, shapeCentroidRGBA, otsuThreshold, normCount, countKey, counterName, counterText,
+  counterClassRows, trackLabel,
 } from '../src/renderer/dl-post.js';
 
 let python = false;
@@ -68,7 +69,7 @@ test('dp-4 เส้นนับ: ข้ามเส้นตรงแต่น�
   assert.equal(runPath(short, [pt(150, 30), pt(170, 30)]).total, 1);
   assert.equal(runPath({ ...VLINE, cls: 'L' }, [pt(150, 90, 'box'), pt(170, 90, 'box')]).total, 0);
   const st = runPath({ ...VLINE, cls: 'L' }, [pt(150, 90, 'L', 0), pt(170, 90, 'L', 0)]);
-  assert.deepEqual(st.byClass, { L: 1 });
+  assert.deepEqual(st.byClass, { L: { in: 1, out: 0, total: 1, now: 0 } });
 });
 
 test('dp-5 โซนนับ: NOW = ชิ้นในกรอบตอนนี้ · TOTAL = ชิ้นที่เคยเข้า (ชิ้นละครั้ง)', () => {
@@ -84,7 +85,7 @@ test('dp-5 โซนนับ: NOW = ชิ้นในกรอบตอนน�
   const nows = seq.map((s) => c.update(s, zone, W, H).now);
   assert.deepEqual(nows, [0, 1, 2, 2, 1]);
   assert.equal(c.state.total, 2);
-  assert.deepEqual(c.state.byClass, { box: 1, L: 1 });
+  assert.deepEqual(c.state.byClass, { box: { in: 1, out: 0, total: 1, now: 0 }, L: { in: 1, out: 0, total: 1, now: 1 } });
   assert.equal(counterText('Zone 1', zone, c.state), 'Zone 1: NOW 1  TOTAL 2');
 });
 
@@ -209,7 +210,9 @@ test('dp-8 Counter ของ Python = createCounter ของแอป ทุก
       if (k < 0) continue;
       const x = o.x + o.vx * k + (r() - 0.5) * 3, y = o.y + o.vy * k + (r() - 0.5) * 3;
       if (x < -20 || x > 340 || r() < 0.08) continue; // นอกภาพ / ตรวจหลุด
-      pts.push({ x, y, cls: o.cls, label: o.label });
+      const flip = r() < 0.2; // โมเดลทายคลาสสลับบางเฟรม → ต้องนับเป็นคลาสที่ทายบ่อยสุดเหมือนกันทั้งสองฝั่ง
+      const li = flip ? (o.cls + 1 + Math.floor(r() * 2)) % 3 : o.cls;
+      pts.push({ x, y, cls: li, label: ['L', 'Triangle', 'box'][li] });
     }
     frames.push(pts);
   }
@@ -224,7 +227,7 @@ test('dp-8 Counter ของ Python = createCounter ของแอป ทุก
   const js = counters.map(() => createCounter());
   const jsOut = seq.map(({ pts, dt }) => js.map((c, i) => {
     const st = c.update(pts.map((p) => ({ ...p })), counters[i], W, H, false, dt);
-    return [st.in, st.out, st.total, st.now, st.events.map((e) => e.id)];
+    return [st.in, st.out, st.total, st.now, st.events.map((e) => [e.id, e.label, e.kind]), st.byClass];
   }));
   const pyOut = runPy(genCode(post, { kind: 'video', maxSide: 0, path: 'v.mp4' }), [
     'res = []',
@@ -233,7 +236,7 @@ test('dp-8 Counter ของ Python = createCounter ของแอป ทุก
     '    row = []',
     '    for k in COUNTER_OBJS:',
     '        k.update([dict(p) for p in pts], 320, 180, False, fr["dt"])',
-    '        row.append([k.n_in, k.n_out, k.total, k.now, [e[0] for e in k.events]])',
+    '        row.append([k.n_in, k.n_out, k.total, k.now, [[e["id"], e["label"], e["kind"]] for e in k.events], k.by_class])',
     '    res.append(row)',
     'print(json.dumps(res))',
   ].join('\n'), seq);
@@ -312,7 +315,7 @@ test('dp-11 ขนาดตัวหนังสือ: เปลี่ยนแ
     { type: 'count', params: { ...VLINE, fontPct: 50 }, nodeId: 2 },
   ], { kind: 'video', maxSide: 0, path: 'v.mp4' });
   assert.match(code, /CENTROID_FONT = 0\.6/);
-  assert.match(code, /"font": 0\.5\}/);
+  assert.match(code, /"font": 0\.5, "split_class": False\}/);
   // วาดได้จริงทั้งขนาดเล็กสุด/ใหญ่สุด (ไม่ error ใน cv2.putText)
   const out = runPy(code, [
     'img = np.zeros((180, 320, 3), np.uint8)',
@@ -325,4 +328,43 @@ test('dp-11 ขนาดตัวหนังสือ: เปลี่ยนแ
     'print(json.dumps(int(img.sum() > 0)))',
   ].join('\n'));
   assert.equal(out, 1);
+});
+
+test('dp-12 นับแยกคลาสในกล่องเดียว: คลาส = ที่ทายบ่อยสุด · แถวแยกคลาส · splitClass ไม่เริ่มนับใหม่ · on_count ได้ event', { skip: !python }, () => {
+  // ชิ้นเดียววิ่งข้ามเส้น โมเดลทาย Triangle 3 เฟรม box 1 เฟรม (เฟรมที่ข้ามเส้นพอดีทายเป็น box) → นับเป็น Triangle
+  const path = [pt(120, 90, 'Triangle', 1), pt(135, 90, 'Triangle', 1), pt(150, 90, 'Triangle', 1), pt(170, 90, 'box', 2)];
+  const st = runPath(VLINE, path);
+  assert.deepEqual(Object.keys(st.byClass), ['Triangle']);
+  assert.equal(trackLabel({ label: 'b', votes: { a: 2, b: 1, c: 2 } }), 'a'); // เท่ากัน + ล่าสุดไม่อยู่ในกลุ่ม → ชื่อเรียงก่อน
+  assert.equal(trackLabel({ label: 'c', votes: { a: 2, c: 2 } }), 'c'); // เท่ากัน → ล่าสุดชนะ
+  // แถวแยกคลาส (เรียงชื่อ) ตามทิศที่นับ
+  const s2 = { in: 3, out: 1, total: 4, now: 0, byClass: { box: { in: 1, out: 1, total: 2, now: 0 }, L: { in: 2, out: 0, total: 2, now: 0 } } };
+  assert.deepEqual(counterClassRows(VLINE, s2), ['L: 2  (IN 2 / OUT 0)', 'box: 2  (IN 1 / OUT 1)']);
+  assert.deepEqual(counterClassRows({ ...VLINE, dir: 'in' }, s2), ['L: IN 2', 'box: IN 1']);
+  assert.equal(countKey({ ...VLINE, splitClass: true }), countKey(VLINE));
+  assert.equal(normCount({ splitClass: 'yes' }).splitClass, false);
+  // Python: ผลเดียวกัน + on_count ถูกเรียกพร้อม event ครบ + วาดแถวแยกคลาสได้
+  const code = genCode([{ type: 'count', params: { ...VLINE, splitClass: true }, nodeId: 2 }], { kind: 'video', maxSide: 0, path: 'v.mp4' });
+  assert.match(code, /"split_class": True\}/);
+  assert.match(code, /def on_count\(event\):/);
+  const out = runPy(code, [
+    'got = []',
+    'globals()["on_count"] = lambda ev: got.append(ev)',
+    'img = np.zeros((180, 320, 3), np.uint8)',
+    'k = COUNTER_OBJS[0]',
+    'for p in IN:',
+    '    k.update([dict(p)], 320, 180)',
+    '    for ev in k.events:',
+    '        ev["frame"] = 0',
+    '        on_count(ev)',
+    'draw_counters(img, 1.0)',
+    'print(json.dumps({"by": k.by_class, "rows": k.class_rows(), "ev": got, "drawn": int(img.sum() > 0)}))',
+  ].join('\n'), path);
+  assert.deepEqual(out.by, st.byClass);
+  assert.deepEqual(out.rows, counterClassRows(VLINE, st));
+  assert.equal(out.ev.length, 1);
+  assert.deepEqual(
+    [out.ev[0].counter, out.ev[0].id, out.ev[0].label, out.ev[0].kind, out.ev[0].x, out.ev[0].y, out.ev[0].total, out.ev[0].class_total],
+    ['Line 1', 1, 'Triangle', 'in', 170, 90, 1, 1]);
+  assert.equal(out.drawn, 1);
 });

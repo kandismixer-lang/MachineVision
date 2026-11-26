@@ -15,7 +15,7 @@ import { createExportDialog } from "./ui/export-dialog.js";
 import { startCamera, listCameras } from "./camera.js";
 import { startPose, stopPose, pausePose, resumePose, renderStillErgonomics } from "./mediapipe-pose.js";
 import { loadModel as dlLoadModel, isLoaded as dlLoaded, detect as dlDetect, detectTiled as dlDetectTiled, drawDetections as dlDraw, COCO } from "./dl-yolo.js";
-import { computeCentroids, createCounter, normCount, countKey, counterName, drawCentroids, drawCounters } from "./dl-post.js";
+import { computeCentroids, createCounter, normCount, countKey, counterName, counterClassRows, snapshotCounterState, drawCentroids, drawCounters } from "./dl-post.js";
 import { parseLabels } from "./dl-labels.js";
 import { tileGrid as dlTileGrid } from "./dl-tiles.js";
 import { FILTERS, isParamVisible, orderParamsControllersFirst } from "./filters/registry.js";
@@ -2760,7 +2760,7 @@ function runPost(frame, boxes, w, h, frameTime) {
       const p = normCount(s.params);
       counters.push({
         nodeId: s.nodeId, name: counterName(p, ++idx[p.mode]), params: s.params,
-        state: { in: st.in, out: st.out, total: st.total, now: st.now, byClass: { ...st.byClass } },
+        state: snapshotCounterState(st),
         tracks: e.counter.tracks.map((t) => ({ id: t.id, x: t.x, y: t.y, missed: t.missed })),
         flashUntil: st.events.length ? performance.now() + 300 : prev?.flashUntil || 0,
       });
@@ -2816,8 +2816,8 @@ function postLiveLines(nodeId, postType) {
   const lines = p.mode === "zone"
     ? [`${c.name}`, `ในโซนตอนนี้: ${st.now} ชิ้น`, `เข้าโซนรวม: ${st.total} ชิ้น`]
     : [`${c.name}`, `นับรวม: ${st.total} ชิ้น`, `IN: ${st.in} · OUT: ${st.out}`];
-  const by = Object.entries(st.byClass).sort((a, b) => a[0].localeCompare(b[0]));
-  if (by.length) lines.push("แยกคลาส: " + by.map(([k, n]) => `${k} ${n}`).join(" · "));
+  const by = counterClassRows(p, st);
+  if (by.length) lines.push("แยกคลาส:", ...by.map((r) => "  " + r));
   if (state.source === "image") lines.push(p.mode === "line" ? "ภาพนิ่ง: เส้นนับต้องใช้วิดีโอ/กล้อง (ชิ้นงานต้องวิ่งข้ามเส้น)" : "ภาพนิ่ง: นับใหม่ทุกภาพ");
   return lines;
 }
