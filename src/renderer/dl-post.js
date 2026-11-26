@@ -283,8 +283,10 @@ export function counterText(name, params, st) {
   return `${name}: ${st.total}  (IN ${st.in} / OUT ${st.out})`;
 }
 
+// ชื่อบนป้าย: "Line 1" · กล่องที่กรองคลาส = "Line 2 [L]" (นับแยกชนิดหลายกล่องแล้วอ่านออกว่าแถวไหนของชนิดไหน)
 export function counterName(params, index) {
-  return `${NAMES_DEF[normCount(params).mode]} ${index}`;
+  const p = normCount(params);
+  return `${NAMES_DEF[p.mode]} ${index}${p.cls ? ` [${p.cls}]` : ""}`;
 }
 
 // ---------- วาด ----------

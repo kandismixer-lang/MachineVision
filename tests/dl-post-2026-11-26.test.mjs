@@ -290,7 +290,7 @@ test('dp-10 โค้ดที่ gen: ตั้งค่าตรงกล่�
   assert.match(code, /CENTROID_METHOD = "box"/);
   assert.match(code, /SHOW_COORDS = False/);
   assert.match(code, /STILL = False/);
-  assert.match(code, /"name": "Zone 1", "mode": "zone"/);
+  assert.match(code, /"name": "Zone 1 \[L\]", "mode": "zone"/); // กรองคลาส → ชื่อมีชนิดต่อท้าย
   assert.match(code, /"zx": 10, "zy": 11, "zw": 12, "zh": 13/);
   assert.match(code, /"cls": "L"/);
   assert.match(code, /"name": "Line 1", "mode": "line"/);
