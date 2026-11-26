@@ -139,9 +139,14 @@ export function createPalettePanel(container, cb) {
       recentBlock.wrap.hidden = n === 0; // ว่าง/ไม่ตรงคำค้น → ไม่เหลือหัวข้อโดดเดี่ยว
     }
     if (aiRow) {
-      const m = toolMatches(aiRow.name, "model detect yolo", query);
-      aiRow.wrap.hidden = !m;
-      if (m) total++;
+      // แต่ละแถวในหมวด AI ค้นแยกกัน · หมวดซ่อนเมื่อไม่มีแถวไหนตรง
+      let any = false;
+      for (const r of aiRow.rows) {
+        const m = toolMatches(r.name, r.keys, query);
+        r.el.hidden = !m;
+        if (m) { any = true; total++; }
+      }
+      aiRow.wrap.hidden = !any;
     }
     if (emptyEl) emptyEl.hidden = !(searching && total === 0);
   }
@@ -413,8 +418,18 @@ export function createPalettePanel(container, cb) {
       const row = makeToolRow("Model Detect", "🧠", "#f472b6",
         "วางกล่อง YOLO Detect ลงกราฟ แล้วคลิกกล่องเพื่อโหลดไฟล์โมเดล (.onnx) และเริ่มตรวจจับ", () => cb.onAddDL());
       wrap.append(t, row);
+      const rows = [{ el: row, name: "Model Detect", keys: "model detect yolo ai" }];
+      if (cb.onAddPost) {
+        const cen = makeToolRow("Centroid", "📍", "#f472b6",
+          "หาจุดศูนย์กลาง (centroid) ของชิ้นงานแต่ละชิ้นที่ Model Detect เจอ — ต่อหลังกล่อง Model Detect", () => cb.onAddPost("centroid"));
+        const cnt = makeToolRow("Object Count", "🔢", "#f472b6",
+          "นับชิ้นงาน: ลากเส้น (นับเมื่อวิ่งข้ามเส้น) หรือตีกรอบโซน (นับชิ้นในกรอบ) — ต่อหลัง Model Detect / Centroid", () => cb.onAddPost("count"));
+        wrap.append(cen, cnt);
+        rows.push({ el: cen, name: "Centroid", keys: "centroid center จุดศูนย์กลาง ai" },
+          { el: cnt, name: "Object Count", keys: "count counter line zone นับ เส้น โซน ai" });
+      }
       container.appendChild(wrap);
-      aiRow = { wrap, el: row, name: "Model Detect" };
+      aiRow = { wrap, el: row, name: "Model Detect", rows };
     }
 
     TOOL_SECTIONS.forEach((section) => {

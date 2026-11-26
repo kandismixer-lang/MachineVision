@@ -6,6 +6,7 @@
 // แอปตรวจบน "ภาพต้นฉบับขนาดจริง" (renderDLDisplays ส่ง src เต็ม, Box อื่นบนสาย DL ไม่ถูกรัน) → สคริปต์ทำเหมือนกัน
 import { FILTERS } from "./filters/registry.js";
 import { normalizeSource5S, runSection5S } from "./codegen.js";
+import { normCentroid, normCount, counterName } from "./dl-post.js";
 
 const KINDS = new Set(["yolo", "yoloseg", "rfdetr"]);
 const pyStr = (s) => JSON.stringify(String(s)); // สตริง JSON = สตริง Python ที่ถูกต้อง (escape \ " อักขระควบคุมแล้ว)
@@ -390,12 +391,16 @@ def draw_detections(img, boxes):
     return img
 
 
+`;
+
+const PROCESS_PLAIN = String.raw`
 def process_image(img):
     # ตรวจด้วยโมเดลบนภาพนี้ แล้ววาดกรอบ + ชื่อคลาส เหมือนจอผลลัพธ์ในโปรแกรม
     boxes = detect_tiled(img) if TILE_ON else detect(img)
     return draw_detections(img.copy(), boxes)
+`;
 
-
+const PROCESS_TAIL = String.raw`
 def process(path):
     img = cv2.imread(path)  # อ่านภาพ (BGR)
     if img is None:
@@ -403,11 +408,358 @@ def process(path):
     return process_image(img)
 `;
 
+// กล่อง 📍 Centroid + 🔢 Object Count — ตรงกับ dl-post.js ทีละขั้น
+const POST_CORE = String.raw`
+def otsu_threshold(hist, total):
+    # เกณฑ์ Otsu (ค่าที่ > เกณฑ์ = กลุ่มสว่าง) · เท่ากันเอาเกณฑ์ตัวแรก — เหมือนในโปรแกรม
+    sum_all = float(np.dot(np.arange(256), hist))
+    w_b, sum_b, best, thr = 0.0, 0.0, -1.0, 0
+    for t in range(256):
+        w_b += hist[t]
+        if w_b == 0:
+            continue
+        w_f = total - w_b
+        if w_f == 0:
+            break
+        sum_b += t * hist[t]
+        m_b, m_f = sum_b / w_b, (sum_all - sum_b) / w_f
+        between = w_b * w_f * (m_b - m_f) ** 2
+        if between > best:
+            best, thr = between, t
+    return thr
+
+
+def shape_centroid(roi):
+    # จุดศูนย์ถ่วงของชิ้นงานในกรอบ (พิกัดในกรอบ): gray → Otsu → กลุ่มที่แตะขอบกรอบน้อยกว่า = ชิ้นงาน → moments
+    h, w = roi.shape[:2]
+    if w < 2 or h < 2:
+        return None
+    b, g, r = (roi[:, :, i].astype(np.int64) for i in range(3))
+    gray = (299 * r + 587 * g + 114 * b + 500) // 1000
+    hist = np.bincount(gray.ravel(), minlength=256).astype(np.float64)
+    t = otsu_threshold(hist, float(w * h))
+    bright = gray > t
+    border = np.concatenate([bright[0, :], bright[-1, :], bright[1:-1, 0], bright[1:-1, -1]])
+    fg = bright if border.sum() * 2 <= border.size else ~bright
+    m00 = int(fg.sum())
+    if m00 == 0 or m00 == w * h:
+        return None
+    ys, xs = np.nonzero(fg)
+    return float(xs.mean()) + 0.5, float(ys.mean()) + 0.5
+
+
+def mask_centroid_frac(mask):
+    # mask ของโมเดล seg (ครอปในกรอบ) → จุดศูนย์ถ่วงเป็นสัดส่วน 0..1 ของกรอบ
+    if mask is None or mask.size == 0:
+        return None
+    ys, xs = np.nonzero(mask >= 128)
+    if xs.size == 0:
+        return None
+    mh, mw = mask.shape[:2]
+    return float((xs + 0.5).mean()) / mw, float((ys + 0.5).mean()) / mh
+
+
+def box_centers(boxes):
+    return [{"x": float(b["x"] + b["w"] / 2), "y": float(b["y"] + b["h"] / 2), "cls": b["cls"], "label": b.get("label", str(b["cls"]))}
+            for b in boxes]
+
+
+def compute_centroids(img, boxes):
+    # จุดของแต่ละชิ้น: "shape" = mask (ถ้ามี) หรือ Otsu ในกรอบ · "box" หรือหาไม่ได้ = กึ่งกลางกรอบ
+    H, W = img.shape[:2]
+    pts = box_centers(boxes)
+    if CENTROID_METHOD != "shape":
+        return pts
+    for p, b in zip(pts, boxes):
+        m = mask_centroid_frac(b.get("mask"))
+        if m is not None:
+            p["x"], p["y"] = b["x"] + m[0] * b["w"], b["y"] + m[1] * b["h"]
+            continue
+        x0, y0 = min(W, max(0, math.floor(b["x"]))), min(H, max(0, math.floor(b["y"])))
+        x1, y1 = min(W, max(0, math.ceil(b["x"] + b["w"]))), min(H, max(0, math.ceil(b["y"] + b["h"])))
+        c = shape_centroid(img[y0:y1, x0:x1]) if x1 - x0 >= 2 and y1 - y0 >= 2 else None
+        if c is not None:
+            p["x"], p["y"] = x0 + c[0], y0 + c[1]
+    return pts
+
+
+FRAME_DT = 1.0 / 30   # ช่วงเวลาอ้างอิงของ max_dist (1 เฟรมที่ 30 fps) · สคริปต์นี้ตรวจทุกเฟรม = ห่างกันเฟรมละ FRAME_DT
+MAX_GATE_SCALE = 4    # ตรวจห่างมาก → ขยายระยะจับคู่ได้ไม่เกินกี่เท่า
+
+
+class Tracker:
+    # จับคู่จุดของเฟรมนี้กับตำแหน่งที่ทำนายของชิ้นเดิม (ล่าสุด + ความเร็ว × เวลา) คู่ที่ใกล้สุดก่อน (ไม่เกินระยะ)
+    # ชิ้นที่หายเกิน max_missed ครั้ง = ลืม
+    def __init__(self):
+        self.tracks, self.next_id = [], 1
+
+    def update(self, pts, max_dist, max_missed, dt=FRAME_DT):
+        step = dt if dt and dt > 0 else 0.0
+        pairs = []
+        for ti, t in enumerate(self.tracks):
+            since = t["since"] + step
+            ex, ey = t["x"] + t["vx"] * since, t["y"] + t["vy"] * since
+            gate = max_dist * min(MAX_GATE_SCALE, max(1.0, since / FRAME_DT))
+            for pi, p in enumerate(pts):
+                d = math.hypot(p["x"] - ex, p["y"] - ey)
+                if d <= gate:
+                    pairs.append((d, ti, pi))
+        pairs.sort()
+        used_t, used_p = set(), set()
+        for _, ti, pi in pairs:
+            if ti in used_t or pi in used_p:
+                continue
+            used_t.add(ti)
+            used_p.add(pi)
+            t, p = self.tracks[ti], pts[pi]
+            since = t["since"] + step
+            if since > 0:   # ความเร็ว (px/วินาที) เฉลี่ยกับค่าเดิมครึ่งต่อครึ่ง
+                vx, vy = (p["x"] - t["x"]) / since, (p["y"] - t["y"]) / since
+                if t["hits"] > 1:
+                    t["vx"], t["vy"] = (t["vx"] + vx) / 2, (t["vy"] + vy) / 2
+                else:
+                    t["vx"], t["vy"] = vx, vy
+            t.update(x=p["x"], y=p["y"], cls=p["cls"], label=p["label"], missed=0, since=0.0, hits=t["hits"] + 1)
+        kept = []
+        for ti, t in enumerate(self.tracks):
+            if ti not in used_t:
+                t["missed"] += 1
+                t["since"] += step
+            if t["missed"] <= max_missed:
+                kept.append(t)
+        for pi, p in enumerate(pts):
+            if pi not in used_p:
+                kept.append({"id": self.next_id, "x": p["x"], "y": p["y"], "vx": 0.0, "vy": 0.0, "since": 0.0,
+                             "cls": p["cls"], "label": p["label"], "missed": 0, "hits": 1})
+                self.next_id += 1
+        self.tracks = kept
+        return kept
+
+
+def side_of(ax, ay, bx, by, x, y):
+    v = float((bx - ax) * (y - ay) - (by - ay) * (x - ax))
+    return (v > 0) - (v < 0)
+
+
+def crosses_segment(ax, ay, bx, by, x0, y0, x1, y1):
+    s0 = side_of(x0, y0, x1, y1, ax, ay)
+    s1 = side_of(x0, y0, x1, y1, bx, by)
+    return s0 == 0 or s1 == 0 or s0 != s1
+
+
+class Counter:
+    # line: นับเมื่อชิ้นงานข้ามเส้น A→B (ชิ้นละครั้ง) · จากฝั่ง + ไปฝั่ง − = IN (ทิศลูกศรบนภาพ)
+    # zone: NOW = ชิ้นในกรอบตอนนี้ · TOTAL = ชิ้นที่เคยเข้ากรอบ (ชิ้นละครั้ง)
+    def __init__(self, cfg):
+        self.cfg = cfg
+        self.reset()
+
+    def reset(self):
+        self.tracker = Tracker()
+        self.n_in = self.n_out = self.total = self.now = 0
+        self.by_class, self.counted, self.ref, self.events = {}, set(), {}, []
+
+    def _bump(self, t, key):
+        if key == "in":
+            self.n_in += 1
+        else:
+            self.n_out += 1
+        self.total += 1
+        self.by_class[t["label"]] = self.by_class.get(t["label"], 0) + 1
+        self.events.append((t["id"], t["label"], key))
+
+    def update(self, pts, W, H, still=False, dt=FRAME_DT):
+        c = self.cfg
+        if still:
+            self.reset()
+        self.events = []
+        tracks = self.tracker.update(pts, c["max_dist"] / 100.0 * math.hypot(W, H), c["max_missed"], dt)
+
+        def want(t):
+            return not c["cls"] or t["label"] == c["cls"]
+        if c["mode"] == "zone":
+            zx, zy = c["zx"] / 100.0 * W, c["zy"] / 100.0 * H
+            zx2, zy2 = zx + c["zw"] / 100.0 * W, zy + c["zh"] / 100.0 * H
+            now = 0
+            for t in tracks:
+                if t["missed"] != 0 or not want(t):
+                    continue
+                if t["x"] < zx or t["x"] > zx2 or t["y"] < zy or t["y"] > zy2:
+                    continue
+                now += 1
+                if t["id"] not in self.counted:
+                    self.counted.add(t["id"])
+                    self._bump(t, "in")
+            self.now = now
+        else:
+            ax, ay = c["x1"] / 100.0 * W, c["y1"] / 100.0 * H
+            bx, by = c["x2"] / 100.0 * W, c["y2"] / 100.0 * H
+            alive = set()
+            for t in tracks:
+                alive.add(t["id"])
+                if t["missed"] != 0:
+                    continue
+                s = side_of(ax, ay, bx, by, t["x"], t["y"])
+                if s == 0:
+                    continue
+                r = self.ref.get(t["id"])
+                self.ref[t["id"]] = (s, t["x"], t["y"])
+                if r is None or r[0] == s or t["id"] in self.counted or not want(t):
+                    continue
+                if not crosses_segment(ax, ay, bx, by, r[1], r[2], t["x"], t["y"]):
+                    continue
+                key = "in" if r[0] > 0 else "out"
+                if c["dir"] != "both" and c["dir"] != key:
+                    continue
+                self.counted.add(t["id"])
+                self._bump(t, key)
+            self.ref = {k: v for k, v in self.ref.items() if k in alive}
+            self.now = 0
+
+    def text(self):
+        c, name = self.cfg, self.cfg["name"]
+        if c["mode"] == "zone":
+            return "%s: NOW %d  TOTAL %d" % (name, self.now, self.total)
+        if c["dir"] == "in":
+            return "%s: IN %d" % (name, self.n_in)
+        if c["dir"] == "out":
+            return "%s: OUT %d" % (name, self.n_out)
+        return "%s: %d  (IN %d / OUT %d)" % (name, self.total, self.n_in, self.n_out)
+
+
+COUNTER_OBJS = [Counter(c) for c in COUNTERS]
+LINE_BGR, ZONE_BGR, CENTROID_BGR = (10, 214, 255), (153, 211, 52), (92, 59, 255)
+
+
+def draw_centroids(img, pts, scale):
+    for p in pts:
+        x, y = js_round(p["x"]), js_round(p["y"])
+        cv2.circle(img, (x, y), max(2, js_round(4 * scale)), CENTROID_BGR, -1, cv2.LINE_AA)
+        cv2.circle(img, (x, y), max(2, js_round(4 * scale)), (255, 255, 255), 1, cv2.LINE_AA)
+        if SHOW_COORDS:
+            text = "(%d, %d)" % (x, y)
+            tw = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, 0.4 * scale, 1)[0][0]
+            tx = p["x"] + 6 * scale
+            if tx + tw > img.shape[1]:   # ชิดขอบขวา → เขียนทางซ้ายของจุด
+                tx = p["x"] - 6 * scale - tw
+            org = (js_round(tx), js_round(p["y"] - 6 * scale))
+            cv2.putText(img, text, org, cv2.FONT_HERSHEY_SIMPLEX, 0.4 * scale, (0, 0, 0), 3, cv2.LINE_AA)
+            cv2.putText(img, text, org, cv2.FONT_HERSHEY_SIMPLEX, 0.4 * scale, (255, 255, 255), 1, cv2.LINE_AA)
+
+
+def draw_counters(img, scale):
+    H, W = img.shape[:2]
+    for k in COUNTER_OBJS:
+        c = k.cfg
+        flash = bool(k.events)
+        if c["mode"] == "zone":
+            p0 = (js_round(c["zx"] / 100.0 * W), js_round(c["zy"] / 100.0 * H))
+            p1 = (js_round((c["zx"] + c["zw"]) / 100.0 * W), js_round((c["zy"] + c["zh"]) / 100.0 * H))
+            over = img.copy()
+            cv2.rectangle(over, p0, p1, ZONE_BGR, -1)
+            cv2.addWeighted(over, 0.35 if flash else 0.15, img, 0.65 if flash else 0.85, 0, img)
+            cv2.rectangle(img, p0, p1, ZONE_BGR, max(1, js_round(2 * scale)))
+        else:
+            a = (js_round(c["x1"] / 100.0 * W), js_round(c["y1"] / 100.0 * H))
+            b = (js_round(c["x2"] / 100.0 * W), js_round(c["y2"] / 100.0 * H))
+            cv2.line(img, a, b, (136, 255, 34) if flash else LINE_BGR, max(1, js_round((4 if flash else 2.5) * scale)), cv2.LINE_AA)
+            L = math.hypot(b[0] - a[0], b[1] - a[1])
+            if L > 1:   # ลูกศรทิศ IN (ตั้งฉากกับเส้น ชี้ไปฝั่ง −)
+                nx, ny = (b[1] - a[1]) / L, -(b[0] - a[0]) / L
+                mx, my = (a[0] + b[0]) / 2, (a[1] + b[1]) / 2
+                tail = (js_round(mx - nx * 8 * scale), js_round(my - ny * 8 * scale))
+                head = (js_round(mx + nx * 16 * scale), js_round(my + ny * 16 * scale))
+                cv2.arrowedLine(img, tail, head, LINE_BGR, max(1, js_round(2 * scale)), cv2.LINE_AA, tipLength=0.35)
+    if COUNTER_OBJS:   # เลข id ของชิ้นที่ติดตามอยู่ (ของกล่องนับกล่องแรก)
+        for t in COUNTER_OBJS[0].tracker.tracks:
+            if t["missed"] == 0:
+                org = (js_round(t["x"] + 6 * scale), js_round(t["y"] + 14 * scale))
+                cv2.putText(img, "#%d" % t["id"], org, cv2.FONT_HERSHEY_SIMPLEX, 0.4 * scale, (0, 0, 0), 3, cv2.LINE_AA)
+                cv2.putText(img, "#%d" % t["id"], org, cv2.FONT_HERSHEY_SIMPLEX, 0.4 * scale, LINE_BGR, 1, cv2.LINE_AA)
+    y = js_round(6 * scale)
+    row = js_round(20 * scale)
+    for k in COUNTER_OBJS:
+        text = k.text()
+        fs = 0.45 * scale
+        tw = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, fs, 1)[0][0] + js_round(12 * scale)
+        over = img.copy()
+        cv2.rectangle(over, (js_round(6 * scale), y), (js_round(6 * scale) + tw, y + row), (0, 0, 0), -1)
+        cv2.addWeighted(over, 0.6, img, 0.4, 0, img)
+        color = ZONE_BGR if k.cfg["mode"] == "zone" else LINE_BGR
+        cv2.putText(img, text, (js_round(12 * scale), y + row - js_round(6 * scale)), cv2.FONT_HERSHEY_SIMPLEX, fs, color, 1, cv2.LINE_AA)
+        y += row + js_round(4 * scale)
+
+
+_FRAME = [0]
+
+
+def process_image(img):
+    # ตรวจด้วยโมเดล → วาดกรอบ → หา centroid → อัปเดตตัวนับ → วาดเส้น/โซน + ยอดนับ (เหมือนจอผลลัพธ์ในโปรแกรม)
+    _FRAME[0] += 1
+    boxes = detect_tiled(img) if TILE_ON else detect(img)
+    out = draw_detections(img.copy(), boxes)
+    H, W = img.shape[:2]
+    scale = max(1.0, W / 640.0)
+    pts = compute_centroids(img, boxes) if CENTROID_ON else box_centers(boxes)
+    for k in COUNTER_OBJS:
+        k.update(pts, W, H, STILL)
+        for tid, label, key in k.events:
+            print("[frame %d] %s: +1 %s (#%d, %s) -> %s" % (_FRAME[0], k.cfg["name"], label, tid, key.upper(), k.text()))
+    if CENTROID_ON:
+        draw_centroids(out, pts, scale)
+        if STILL or not COUNTER_OBJS:
+            for p in pts:
+                print("centroid %s: (%.1f, %.1f)" % (p["label"], p["x"], p["y"]))
+    draw_counters(out, scale)
+    return out
+
+
+def print_summary():
+    # สรุปยอดตอนจบโปรแกรม (ปิดหน้าต่าง / วิดีโอจบ)
+    for k in COUNTER_OBJS:
+        detail = ", ".join("%s=%d" % kv for kv in sorted(k.by_class.items())) or "-"
+        print("SUMMARY %s | by class: %s" % (k.text(), detail))
+
+
+atexit.register(print_summary)
+`;
+
+// post = [{ type: "centroid" | "count", params }] ตามลำดับบนสาย (ต้นน้ำ → ปลายน้ำ)
+function postSettingsLines(post, still) {
+  const cen = post.find((s) => s.type === "centroid");
+  const cp = normCentroid(cen?.params);
+  const counters = post.filter((s) => s.type === "count");
+  const idx = { line: 0, zone: 0 };
+  const lines = [
+    "",
+    "# ── ตั้งค่า 📍 Centroid + 🔢 Object Count (ดึงจากกล่องในโปรแกรม) ──",
+    `CENTROID_ON = ${cen ? "True" : "False"}   # มีกล่อง Centroid บนสาย (ไม่มี = นับด้วยจุดกึ่งกลางกรอบ)`,
+    `CENTROID_METHOD = ${pyStr(cp.method)}   # "shape" = จุดศูนย์ถ่วงของรูปทรงชิ้นงานในกรอบ · "box" = กึ่งกลางกรอบ`,
+    `SHOW_COORDS = ${cp.showCoords ? "True" : "False"}   # เขียนพิกัด (x, y) ข้างจุด`,
+    `STILL = ${still ? "True" : "False"}   # True = ภาพนิ่ง (นับใหม่ทุกภาพ ไม่ติดตามข้ามภาพ) · วิดีโอ/กล้อง = False`,
+    "# พิกัดเส้น/โซนเป็น % ของกว้าง/สูงภาพ · max_dist = ระยะจับคู่ชิ้นเดิมข้ามเฟรม (% ของเส้นทแยงภาพ)",
+    "COUNTERS = [",
+  ];
+  for (const s of counters) {
+    const p = normCount(s.params);
+    const name = counterName(p, ++idx[p.mode]);
+    lines.push(
+      `    {"name": ${pyStr(name)}, "mode": ${pyStr(p.mode)},   # ${p.mode === "zone" ? "โซนนับ" : "เส้นนับ"}`,
+      `     "x1": ${p.x1}, "y1": ${p.y1}, "x2": ${p.x2}, "y2": ${p.y2}, "dir": ${pyStr(p.dir)},   # เส้น A(x1,y1) → B(x2,y2) · dir = "both" | "in" | "out"`,
+      `     "zx": ${p.zx}, "zy": ${p.zy}, "zw": ${p.zw}, "zh": ${p.zh},   # โซน: มุมซ้ายบน + กว้าง/สูง`,
+      `     "cls": ${pyStr(p.cls)}, "max_dist": ${p.maxDist}, "max_missed": ${p.maxMissed}},   # cls "" = ทุกคลาส`,
+    );
+  }
+  lines.push("]");
+  return lines;
+}
+
 export function buildDLPythonCode(pipeline, opts = {}) {
   const name = opts.displayName || "ผลลัพธ์";
   const dl = opts.dl || {};
   const src = normalizeSource5S(opts.source);
   const ignored = (pipeline || []).filter((st) => st && st.enabled !== false);
+  const post = (opts.post || []).filter((s) => s && (s.type === "centroid" || s.type === "count"));
 
   const out = [
     "# -*- coding: utf-8 -*-",
@@ -420,6 +772,7 @@ export function buildDLPythonCode(pipeline, opts = {}) {
     "import os",
     "import math",
     "import re",
+    ...(post.length ? ["import atexit"] : []),
     "",
     "# บังคับให้ข้อความที่ print() ออกมาเป็น UTF-8 เสมอ — บนวินโดวส์ เวลาส่งผลไปเก็บในไฟล์",
     "# (เช่น python code.py > log.txt) ระบบจะใช้รหัสอักขระเดิมของเครื่อง ซึ่งเขียนภาษาไทยหรือ",
@@ -429,6 +782,7 @@ export function buildDLPythonCode(pipeline, opts = {}) {
     "",
     "# ── ตั้งค่า (ดึงจากกล่อง Model Detect ตอนกดสร้างโค้ด) ──",
     ...settingsLines(dl),
+    ...(post.length ? postSettingsLines(post, !src || src.kind === "image") : []),
   ];
   if (ignored.length) {
     const names = ignored.map((st) => FILTERS[st.id]?.name || st.id).join(", ");
@@ -438,7 +792,7 @@ export function buildDLPythonCode(pipeline, opts = {}) {
       'print("NOTE: filter boxes on this Model Detect line are not applied (same as the app)")',
     );
   }
-  out.push("", CORE.trim(), "", "");
+  out.push("", CORE.trim(), "", "", (post.length ? POST_CORE : PROCESS_PLAIN).trim(), "", "", PROCESS_TAIL.trim(), "", "");
   if (src) {
     out.push("# กล่อง Model Detect ในโปรแกรมตรวจบนภาพขนาดจริง (ไม่ย่อ) จึงตั้ง MAX_SIDE = 0");
     out.push(runSection5S({ ...src, maxSide: 0 }, false));

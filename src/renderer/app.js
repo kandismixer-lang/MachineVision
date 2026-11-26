@@ -15,6 +15,7 @@ import { createExportDialog } from "./ui/export-dialog.js";
 import { startCamera, listCameras } from "./camera.js";
 import { startPose, stopPose, pausePose, resumePose, renderStillErgonomics } from "./mediapipe-pose.js";
 import { loadModel as dlLoadModel, isLoaded as dlLoaded, detect as dlDetect, detectTiled as dlDetectTiled, drawDetections as dlDraw, COCO } from "./dl-yolo.js";
+import { computeCentroids, createCounter, normCount, counterName, drawCentroids, drawCounters } from "./dl-post.js";
 import { parseLabels } from "./dl-labels.js";
 import { tileGrid as dlTileGrid } from "./dl-tiles.js";
 import { FILTERS, isParamVisible, orderParamsControllersFirst } from "./filters/registry.js";
@@ -283,6 +284,7 @@ const state = {
   selectedNode: null, // filter node ที่เลือก: { filterId, getParams, setParam }
   selectedDisplay: null, // กล่องผลลัพธ์ที่เลือก: { id, getName, setName }
   selectedDL: false, // เลือกกล่อง YOLO Detect อยู่ไหม
+  selectedPost: null, // กล่อง Centroid / Object Count ที่เลือก: { id, postType, getParams, setParam, setParams }
   captures: [], // ภาพที่แคปไว้: [{ canvas, w, h, name }]
   selectedCapture: -1, // index ภาพแคปที่เลือกในถาด
   paused: false, // หยุดประมวลผลสดชั่วคราว (Run/Pause)
@@ -441,7 +443,8 @@ function ensureGrid(order) {
     root.appendChild(view);
     gridEl.appendChild(root);
     const cell = { root, canvas: cvs, ctx: cvs.getContext("2d"), chip, chain, lastImg: null, insp: null };
-    cell.insp = createTileInspector({ view, canvas: cvs, gridCanvas: gridCv, readout, badge }, { getImage: () => cell.lastImg });
+    cell.insp = createTileInspector({ view, canvas: cvs, gridCanvas: gridCv, readout, badge },
+      { getImage: () => cell.lastImg, draw: postDrawHook(id) });
     cells.set(id, cell);
   }
 }
@@ -606,6 +609,7 @@ const editor = createGraphEditor(graphCanvasEl, {
     }
     updateStatus();
     updateCaptions(); // ชื่อ/สายเปลี่ยน → อัปเดตหัวจอทันที
+    if (postDraw) setPostDrawing(true); // จอ/สายเปลี่ยน → ไล่ติดเคอร์เซอร์วาดใหม่
     // วิธีของกล่องที่เลือกถูกเปลี่ยนนอกแผง (เมนู Properties ของ LiteGraph) → แผงถือ step เก่า ต้องสร้างใหม่
     if (state.selectedNode && !state.selectedDL && !state.selectedDisplay &&
         detailPanel.isViewStale(stepAndNotesOf(state.selectedNode, []).step)) renderDetail();
@@ -626,6 +630,8 @@ const editor = createGraphEditor(graphCanvasEl, {
     state.selectedNode = null;
     state.selectedDisplay = null;
     state.selectedDL = false;
+    if (!(sel && sel.kind === "dlpost" && postDraw && postDraw.nodeId === sel.id)) setPostDrawing(false);
+    state.selectedPost = null;
     if (sel && sel.kind === "filter") state.selectedNode = sel;
     else if (sel && sel.kind === "display") {
       // ให้แผงขวาดึงขั้นตอนล่าสุดของกล่องนี้ + กระโดดไป node ได้
@@ -645,12 +651,17 @@ const editor = createGraphEditor(graphCanvasEl, {
               kind: state.dlModel.kind, inputSize: state.dlModel.inputSize, labels: state.labels,
               conf: state.detConf, tile: { ...state.detTile }, device: state.dlDevice,
             },
+            post: dp.dlPost || [],
           })
           : buildPythonCode(dp ? dp.pipeline : [], { displayName: name, source: codegenSource() });
         showCodeDialog(code, { title: `🐍 โค้ด Python — ${name}`, filename: "image_processing.py" });
       };
       state.selectedDisplay = sel;
     } else if (sel && sel.kind === "dl") state.selectedDL = true;
+    else if (sel && sel.kind === "dlpost") {
+      sel.setParams = (obj) => { for (const [k, v] of Object.entries(obj)) sel.setParam(k, v); };
+      state.selectedPost = sel;
+    }
     if (state.selectedNode) setSelectedPreviewView(defaultSelectedPreviewView(), false);
     renderDetail();
     renderSelectedPreviewState();
@@ -952,6 +963,7 @@ const palettePanel = createPalettePanel(document.getElementById("palette-panel")
   onAdd: (filterId, opId) => editor.addFilterNode(filterId, opId),
   onAddDisplay: () => editor.addDisplayNode(),
   onAddDL: () => editor.addDLNode(),
+  onAddPost: (kind) => editor.addPostNode(kind),
   onTemplates: () => openTemplates(),
   onSaveTemplate: () => saveCurrentAsTemplate(),
 });
@@ -1720,6 +1732,26 @@ initUpdatePopup();
 const detailPanelEl = document.getElementById("detail-panel");
 
 function renderDetail() {
+  // เลือกกล่อง Centroid / Object Count → แผงตั้งค่า + ผลสด
+  if (state.selectedPost) {
+    const sel = state.selectedPost;
+    detailPanel.renderPost({
+      postType: sel.postType,
+      getParams: () => sel.getParams(),
+      setParam: (k, v) => sel.setParam(k, v),
+      setParams: (obj) => sel.setParams(obj),
+      getWarn: () => postWarn(sel.id),
+      getLive: () => postLiveLines(sel.id, sel.postType),
+      labels: state.labels,
+      drawing: () => !!postDraw && postDraw.nodeId === sel.id,
+      onDraw: () => setPostDrawing(!(postDraw && postDraw.nodeId === sel.id)),
+      onReset: () => {
+        resetPostCounters(sel.id);
+        if (postLastFrame) drawDLCells(connectedDLDisplays(), postLastFrame.src, postLastFrame.w, postLastFrame.h);
+      },
+    });
+    return;
+  }
   // เลือกกล่อง YOLO Detect → แสดงปุ่ม browse โมเดล
   if (state.selectedDL) {
     detailPanel.renderDL({
@@ -2567,12 +2599,14 @@ function connectedDLDisplays() {
 // วาดภาพ + กล่อง detect ลงจอผลลัพธ์ (grid cell) + thumbnail ใน node
 function drawDLCells(dls, src, w, h) {
   const scale = Math.max(1, w / 640);
+  postLastFrame = { src, w, h };
   for (const d of dls) {
     const oc = displayCanvasFor(d.displayId);
     if (oc.width !== w || oc.height !== h) { oc.width = w; oc.height = h; } // เช็คทั้งกว้างและสูง: ภาพกว้างเท่ากันแต่สูงต่างกันต้องไม่เหลือแถบภาพเก่า
     const octx = oc.getContext("2d");
     octx.drawImage(src, 0, 0, w, h);
     dlDraw(octx, detBoxesSrc === src ? detBoxes : [], scale);
+    drawPostOverlay(octx, d, src, w, h, scale); // 📍 Centroid / 🔢 Object Count (ถ้ามีบนสายนี้)
     editor.setDisplayImage(d.displayId, oc);
     const cell = cells.get(d.displayId);
     if (cell) {
@@ -2617,6 +2651,7 @@ function renderDLDisplays(src, w, h) {
     frame = detSnap;
   }
   const detOpts = { labels: state.labels, conf: state.detConf };
+  const frameTime = state.source === "video" ? sourceVideoEl.currentTime : NaN; // ใช้รู้ว่าวิดีโอย้อน/ข้ามช่วง (ตัวนับเริ่มใหม่)
   const t = state.detTile;
   // ภาพนิ่ง + แบ่ง tile: ตรวจหลายชิ้นใช้เวลา → บอกความคืบหน้า/ผลในแถบสถานะ (กล้องสดไม่บอก กันข้อความกระพริบทุกเฟรม)
   const still = state.source === "image" && t.on;
@@ -2640,6 +2675,7 @@ function renderDLDisplays(src, w, h) {
       detBoxesSrc = frame;
       // ผู้ใช้เลื่อนไปภาพอื่นระหว่างตรวจ → ไม่วาดภาพเก่าทับ (รอบของภาพใหม่ค้างคิวอยู่ใน detPendingArgs)
       if (!isCurrent()) return;
+      runPost(frame, bs, w, h, frameTime); // centroid + ตัวนับ อัปเดตครั้งเดียวต่อผลตรวจหนึ่งครั้ง
       if (still) statusEl.textContent = `${prefix} · Model Detect: เจอ ${bs.length} จุด (${((performance.now() - t0) / 1000).toFixed(1)} วินาที)`;
       drawDLCells(connectedDLDisplays(), frame, w, h); // วาดกล่องใหม่บนภาพ/เฟรมที่ตรวจจริง
       if (moving) detFrameShown = true;
@@ -2656,6 +2692,198 @@ function renderDLDisplays(src, w, h) {
         renderDLDisplays(ps, pw, ph); // อ่าน state.detConf ล่าสุดตอนรันจริง จึงลงเอยที่ค่าสไลเดอร์ล่าสุดเสมอ
       }
     });
+}
+
+// ---------- 📍 Centroid + 🔢 Object Count (กล่องหลัง Model Detect · 2026-11-26) ----------
+// ตัวนับเก็บแยกต่อ (กล่องผลลัพธ์, กล่องนับ) — ค่าตั้งเปลี่ยน = เริ่มนับใหม่ · วิดีโอย้อนกลับ/ข้ามช่วง = เริ่มนับใหม่ทุกตัว
+const postCounters = new Map(); // `${displayId}:${nodeId}` → { counter, key }
+const postView = new Map(); // displayId → { frame, centroid: { params, pts } | null, counters: [{ nodeId, name, params, state, tracks, flashUntil }] }
+let postLastTime = null; // เวลาในวิดีโอของเฟรมล่าสุดที่นับ (null = ยังไม่เคย / ไม่ใช่วิดีโอ)
+let postLastClock = null; // performance.now() ของผลตรวจล่าสุด (กล้อง)
+let postDraw = null; // { nodeId } = กำลังรอให้ลากวาดเส้น/โซนของกล่องนับนี้บนจอผลลัพธ์
+let postDrag = null; // { nodeId, params } ระหว่างลาก — วาดตัวอย่างโดยยังไม่แตะ node (ปล่อยเมาส์ค่อย commit)
+let postLastFrame = null; // { src, w, h } เฟรมล่าสุดที่วาดลงจอ DL (ใช้วาดตัวอย่างตอนลาก)
+
+function resetPostCounters(nodeId = null) {
+  for (const [k, e] of postCounters) {
+    if (nodeId == null || k.endsWith(":" + nodeId)) e.counter.reset();
+  }
+  for (const v of postView.values()) {
+    for (const c of v.counters) {
+      if (nodeId == null || c.nodeId === nodeId) c.state = { ...c.state, in: 0, out: 0, total: 0, now: 0, byClass: {} };
+    }
+  }
+}
+
+// เรียกตอนผลตรวจของเฟรมใหม่กลับมา (ไม่ใช่ทุกครั้งที่วาดจอ) → อัปเดต centroid + ตัวนับของทุกจอ DL ที่มีกล่องพวกนี้
+function runPost(frame, boxes, w, h, frameTime) {
+  const dls = connectedDLDisplays();
+  const still = state.source === "image";
+  // dt = เวลาจริงระหว่างผลตรวจสองครั้ง (วิดีโอ = เวลาในคลิป · กล้อง = นาฬิกา) — tracker ใช้ทำนายตำแหน่ง/ขยายระยะจับคู่
+  // เมื่อเครื่องตรวจไม่ทันทุกเฟรม (โค้ด Python ตรวจทุกเฟรม = 1/30 วินาที)
+  let dt = 1 / 30;
+  if (state.source === "video" && Number.isFinite(frameTime)) {
+    if (postLastTime != null && (frameTime < postLastTime - 0.001 || frameTime - postLastTime > 1.5)) resetPostCounters();
+    else if (postLastTime != null) dt = frameTime - postLastTime;
+    postLastTime = frameTime;
+    postLastClock = null;
+  } else {
+    postLastTime = null;
+    const now = performance.now();
+    if (postLastClock != null) dt = Math.min(1.5, (now - postLastClock) / 1000);
+    postLastClock = now;
+  }
+  let reader = null;
+  const readRGBA = (r) => {
+    if (!reader) reader = frame.getContext ? frame.getContext("2d", { willReadFrequently: true }) : null;
+    if (!reader) throw new Error("no pixels");
+    return reader.getImageData(r.x0, r.y0, r.w, r.h).data;
+  };
+  const used = new Set();
+  for (const d of dls) {
+    const post = d.dlPost || [];
+    if (!post.length) { postView.delete(d.displayId); continue; }
+    const cen = post.find((s) => s.type === "centroid") || null;
+    const pts = cen ? computeCentroids(boxes, cen.params, w, h, readRGBA) : computeCentroids(boxes, { method: "box" }, w, h, null);
+    const counters = [];
+    const idx = { line: 0, zone: 0 };
+    for (const s of post) {
+      if (s.type !== "count") continue;
+      const key = `${d.displayId}:${s.nodeId}`;
+      used.add(key);
+      const pk = JSON.stringify(normCount(s.params));
+      let e = postCounters.get(key);
+      if (!e) { e = { counter: createCounter(), key: pk }; postCounters.set(key, e); }
+      if (e.key !== pk) { e.counter.reset(); e.key = pk; }
+      const st = e.counter.update(pts, s.params, w, h, still, dt);
+      const prev = postView.get(d.displayId)?.counters.find((c) => c.nodeId === s.nodeId);
+      const p = normCount(s.params);
+      counters.push({
+        nodeId: s.nodeId, name: counterName(p, ++idx[p.mode]), params: s.params,
+        state: { in: st.in, out: st.out, total: st.total, now: st.now, byClass: { ...st.byClass } },
+        tracks: e.counter.tracks.map((t) => ({ id: t.id, x: t.x, y: t.y, missed: t.missed })),
+        flashUntil: st.events.length ? performance.now() + 300 : prev?.flashUntil || 0,
+      });
+    }
+    postView.set(d.displayId, { frame, centroid: cen ? { params: cen.params, pts } : null, pts, counters });
+  }
+  for (const k of postCounters.keys()) if (!used.has(k)) postCounters.delete(k);
+}
+
+// วาดผลของกล่องหลัง Model Detect ลงจอ (หลังวาดกรอบแล้ว) · ระหว่างลากวาดใช้ค่าตัวอย่างแทนค่าใน node
+function drawPostOverlay(ctx, d, src, w, h, scale) {
+  const post = d.dlPost || [];
+  if (!post.length) return;
+  const v = postView.get(d.displayId);
+  const fresh = v && v.frame === src;
+  const now = performance.now();
+  if (fresh && v.centroid) drawCentroids(ctx, v.centroid.pts, v.centroid.params, scale);
+  const idx = { line: 0, zone: 0 };
+  const list = [];
+  for (const s of post) {
+    if (s.type !== "count") continue;
+    const params = postDrag && postDrag.nodeId === s.nodeId ? postDrag.params : s.params;
+    const p = normCount(params);
+    const c = v?.counters.find((x) => x.nodeId === s.nodeId);
+    list.push({
+      name: counterName(p, ++idx[p.mode]), params,
+      state: c?.state || { in: 0, out: 0, total: 0, now: 0, byClass: {} },
+      tracks: fresh ? c?.tracks : null,
+      flash: !!c && c.flashUntil > now,
+    });
+  }
+  if (list.length) drawCounters(ctx, list, w, h, scale);
+}
+
+// ข้อความสดในแผงของกล่อง Centroid/Count ที่เลือก
+function postLiveLines(nodeId, postType) {
+  const d = state.pipelines.find((x) => x.connected && x.dl && (x.dlPost || []).some((s) => s.nodeId === nodeId));
+  if (!d) return [];
+  const v = postView.get(d.displayId);
+  if (!v) return [];
+  if (postType === "centroid") {
+    const pts = v.centroid?.pts || [];
+    if (!pts.length) return ["ไม่เจอชิ้นงานในเฟรมนี้"];
+    const how = { mask: "mask", shape: "รูปทรง", box: "กลางกรอบ" };
+    const out = pts.slice(0, 12).map((c, i) => `${i + 1}. ${c.label ?? c.cls}  (${c.x.toFixed(1)}, ${c.y.toFixed(1)})  ${how[c.method] || ""}`);
+    if (pts.length > 12) out.push(`… อีก ${pts.length - 12} ชิ้น`);
+    return [`เจอ ${pts.length} ชิ้น`, ...out];
+  }
+  const c = v.counters.find((x) => x.nodeId === nodeId);
+  if (!c) return [];
+  const p = normCount(c.params);
+  const st = c.state;
+  const lines = p.mode === "zone"
+    ? [`${c.name}`, `ในโซนตอนนี้: ${st.now} ชิ้น`, `เข้าโซนรวม: ${st.total} ชิ้น`]
+    : [`${c.name}`, `นับรวม: ${st.total} ชิ้น`, `IN: ${st.in} · OUT: ${st.out}`];
+  const by = Object.entries(st.byClass).sort((a, b) => a[0].localeCompare(b[0]));
+  if (by.length) lines.push("แยกคลาส: " + by.map(([k, n]) => `${k} ${n}`).join(" · "));
+  if (state.source === "image") lines.push(p.mode === "line" ? "ภาพนิ่ง: เส้นนับต้องใช้วิดีโอ/กล้อง (ชิ้นงานต้องวิ่งข้ามเส้น)" : "ภาพนิ่ง: นับใหม่ทุกภาพ");
+  return lines;
+}
+
+// คำเตือนการต่อสายของกล่อง Centroid/Count
+function postWarn(nodeId) {
+  const mine = state.pipelines.filter((d) => d.connected && ((d.dlPost || []).some((s) => s.nodeId === nodeId) || d.postOrphan || d.postBeforeDL));
+  if (mine.some((d) => d.postBeforeDL)) return "มีกล่อง Centroid/Object Count อยู่ก่อน Model Detect — ต้องต่อไว้หลัง Model Detect";
+  if (!state.pipelines.some((d) => d.connected && d.dl && (d.dlPost || []).some((s) => s.nodeId === nodeId))) {
+    return "กล่องนี้ยังไม่อยู่บนสาย แหล่งภาพ → Model Detect → … → ผลลัพธ์ (ต้องมี Model Detect ต้นสาย และต่อถึงกล่องผลลัพธ์)";
+  }
+  if (!dlLoaded()) return "ยังไม่ได้โหลดโมเดลในกล่อง Model Detect";
+  return "";
+}
+
+// ลากวาดเส้น/โซนบนจอผลลัพธ์ (hook ของ pixel inspector ต่อจอ)
+function postDrawHook(displayId) {
+  let a = null;
+  const target = () => {
+    if (!postDraw) return null;
+    const d = state.pipelines.find((x) => x.displayId === displayId);
+    return d && d.dl && (d.dlPost || []).some((s) => s.nodeId === postDraw.nodeId) ? d : null;
+  };
+  const pct = (v, n) => Math.round(Math.min(100, Math.max(0, (v / n) * 100)) * 10) / 10;
+  const paramsFor = (raw) => {
+    // ลากเลยขอบภาพ → ตรึงไว้ที่ขอบ (โซน/เส้นไม่ล้นนอกภาพ)
+    const pt = { ...raw, x: Math.min(raw.w, Math.max(0, raw.x)), y: Math.min(raw.h, Math.max(0, raw.y)) };
+    const sel = state.selectedPost;
+    const base = sel && sel.id === postDraw.nodeId ? sel.getParams() : {};
+    if (base.mode === "zone") {
+      const x0 = Math.min(a.x, pt.x), y0 = Math.min(a.y, pt.y), x1 = Math.max(a.x, pt.x), y1 = Math.max(a.y, pt.y);
+      return { ...base, zx: pct(x0, pt.w), zy: pct(y0, pt.h), zw: pct(x1 - x0, pt.w), zh: pct(y1 - y0, pt.h) };
+    }
+    return { ...base, x1: pct(a.x, pt.w), y1: pct(a.y, pt.h), x2: pct(pt.x, pt.w), y2: pct(pt.y, pt.h) };
+  };
+  const redraw = () => { if (postLastFrame) drawDLCells(connectedDLDisplays(), postLastFrame.src, postLastFrame.w, postLastFrame.h); };
+  return {
+    active: () => !!target(),
+    start(pt) {
+      a = { x: Math.min(pt.w, Math.max(0, pt.x)), y: Math.min(pt.h, Math.max(0, pt.y)) };
+      postDrag = { nodeId: postDraw.nodeId, params: paramsFor(pt) };
+      redraw();
+    },
+    move(pt) { if (!a) return; postDrag = { nodeId: postDraw.nodeId, params: paramsFor(pt) }; redraw(); },
+    end(pt) {
+      const drag = pt && a ? paramsFor(pt) : null;
+      const tooSmall = drag && Math.hypot(pt.x - a.x, pt.y - a.y) < 4;
+      a = null;
+      postDrag = null;
+      const sel = state.selectedPost;
+      if (drag && !tooSmall && sel && sel.id === postDraw?.nodeId) {
+        const keys = drag.mode === "zone" ? ["zx", "zy", "zw", "zh"] : ["x1", "y1", "x2", "y2"];
+        sel.setParams(Object.fromEntries(keys.map((k) => [k, drag[k]])));
+        renderDetail();
+      }
+      redraw();
+    },
+  };
+}
+function setPostDrawing(on) {
+  postDraw = on && state.selectedPost ? { nodeId: state.selectedPost.id } : null;
+  for (const [id, cell] of cells) {
+    const d = state.pipelines.find((x) => x.displayId === id);
+    const hit = !!postDraw && !!d && d.dl && (d.dlPost || []).some((s) => s.nodeId === postDraw.nodeId);
+    cell.root.querySelector(".stage-view")?.classList.toggle("post-drawing", hit);
+  }
 }
 
 // เลือกไฟล์โมเดล .onnx → โหลด → เข้าโหมด detect ทันที

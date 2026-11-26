@@ -683,6 +683,201 @@ export function createDetailPanel(container, cb) {
     container.appendChild(hint);
   }
 
+  // แผงกล่อง 📍 Centroid / 🔢 Object Count (หลัง Model Detect)
+  // info = { postType, getParams(), setParam(k, v), getWarn(), getLive() → string[], labels[],
+  //          drawing(), onDraw(), onReset() }
+  function renderPost(info) {
+    curStep = null;
+    curNotes = null;
+    resetValuesView();
+    panelInert = true;
+    container.innerHTML = "";
+    const p = info.getParams();
+    const isCount = info.postType === "count";
+
+    const title = document.createElement("h2");
+    title.className = "detail-title";
+    title.textContent = isCount ? "🔢 Object Count" : "📍 Centroid";
+    container.appendChild(title);
+    const desc = document.createElement("div");
+    desc.className = "detail-desc";
+    desc.textContent = isCount
+      ? "นับชิ้นงานที่ Model Detect เจอ — Line count: นับเมื่อชิ้นงานวิ่งข้ามเส้น · Zone count: นับชิ้นงานในกรอบ (ติดตามชิ้นเดิมข้ามเฟรม นับชิ้นละครั้ง)"
+      : "หาจุดศูนย์กลาง (centroid) ของชิ้นงานแต่ละชิ้นที่ Model Detect เจอ แล้ววาดจุด + พิกัด (x, y) บนภาพ · กล่อง Object Count ที่ต่อถัดไปจะใช้จุดนี้นับ";
+    container.appendChild(desc);
+
+    // คำเตือนการต่อสาย — อัปเดตเองพร้อมผลสด (ต่อ/ถอดสายหลังเปิดแผงแล้วก็หายเอง)
+    const warnEl = document.createElement("div");
+    warnEl.className = "detail-note detail-note-warn";
+    const syncWarn = () => {
+      const warn = info.getWarn ? info.getWarn() : "";
+      warnEl.hidden = !warn;
+      const t = warn ? "⚠️ " + warn : "";
+      if (warnEl.textContent !== t) warnEl.textContent = t;
+    };
+    syncWarn();
+    container.appendChild(warnEl);
+
+    const seg = (label, opts, value, onPick) => {
+      const wrap = document.createElement("div");
+      wrap.className = "param";
+      wrap.style.marginTop = "12px";
+      const lab = document.createElement("div");
+      lab.className = "param-label";
+      const ls = document.createElement("span");
+      ls.textContent = label;
+      lab.appendChild(ls);
+      wrap.appendChild(lab);
+      const box = document.createElement("div");
+      box.className = "seg-control";
+      box.setAttribute("role", "group");
+      box.setAttribute("aria-label", label);
+      for (const o of opts) {
+        const b = document.createElement("button");
+        b.type = "button";
+        b.className = "seg-btn" + (o.value === value ? " active" : "");
+        b.setAttribute("aria-pressed", o.value === value ? "true" : "false");
+        b.textContent = o.label;
+        if (o.hint) b.title = o.hint;
+        b.addEventListener("click", () => { if (o.value !== value) onPick(o.value); });
+        box.appendChild(b);
+      }
+      wrap.appendChild(box);
+      const cur = opts.find((o) => o.value === value);
+      if (cur && cur.hint) {
+        const h = document.createElement("div");
+        h.className = "param-hint";
+        h.textContent = cur.hint;
+        wrap.appendChild(h);
+      }
+      return wrap;
+    };
+    const set = (k, v, rerender) => { info.setParam(k, v); if (rerender) renderPost(info); };
+    const slider = (label, k, def) => dlSlider(label, 0, 100, 1, def, p[k] ?? def, (v) => set(k, v));
+    const btn = (label, onClick, primary) => {
+      const b = document.createElement("button");
+      b.type = "button";
+      b.className = primary ? "btn btn-primary" : "btn";
+      b.style.width = "100%";
+      b.style.marginTop = "8px";
+      b.textContent = label;
+      b.addEventListener("click", onClick);
+      return b;
+    };
+
+    if (!isCount) {
+      container.appendChild(seg("วิธีหาจุดศูนย์กลาง", [
+        { value: "shape", label: "รูปทรงชิ้นงาน", hint: "จุดศูนย์ถ่วงของเนื้อชิ้นงานในกรอบ (mask ของโมเดล seg หรือแยกชิ้นงานจากพื้นด้วย Otsu) — ตรงกับชิ้นงานรูปทรงไม่สมมาตร เช่นตัว L" },
+        { value: "box", label: "กึ่งกลางกรอบ", hint: "จุดกลางกรอบที่โมเดลตีให้ — เร็ว แต่ชิ้นงานรูปทรงไม่สมมาตรจะเยื้องจากเนื้อจริง" },
+      ], p.method === "box" ? "box" : "shape", (v) => set("method", v, true)));
+      const on = p.showCoords !== false;
+      const row = document.createElement("button");
+      row.type = "button";
+      row.className = "param-toggle" + (on ? " on" : "");
+      row.style.marginTop = "12px";
+      row.setAttribute("role", "switch");
+      row.setAttribute("aria-checked", on ? "true" : "false");
+      const rl = document.createElement("span");
+      rl.className = "pt-label";
+      rl.textContent = "เขียนพิกัด (x, y) ข้างจุด";
+      const rs = document.createElement("span");
+      rs.className = "pt-state";
+      rs.textContent = on ? "ON" : "OFF";
+      const sw = document.createElement("span");
+      sw.className = "pt-switch";
+      sw.innerHTML = '<span class="pt-knob"></span>';
+      row.append(rl, rs, sw);
+      row.addEventListener("click", () => set("showCoords", !on, true));
+      container.appendChild(row);
+    } else {
+      const mode = p.mode === "zone" ? "zone" : "line";
+      container.appendChild(seg("แบบการนับ", [
+        { value: "line", label: "Line count", hint: "ลากเส้น — นับเมื่อชิ้นงานวิ่งข้ามเส้น (ชิ้นละครั้ง)" },
+        { value: "zone", label: "Zone count", hint: "ตีกรอบ — นับชิ้นงานที่อยู่ในกรอบ (ตอนนี้ / ที่เคยเข้ารวม)" },
+      ], mode, (v) => set("mode", v, true)));
+      const drawing = info.drawing ? info.drawing() : false;
+      const drawBtn = btn(
+        drawing ? "✋ เลิกวาด (กลับไปซูม/เลื่อนภาพ)" : mode === "zone" ? "✏️ ตีกรอบโซนบนจอผลลัพธ์" : "✏️ ลากเส้นบนจอผลลัพธ์",
+        () => { info.onDraw(); renderPost(info); }, !drawing);
+      drawBtn.title = "กดแล้วลากเมาส์บนจอผลลัพธ์ที่ต่อผ่านกล่องนี้ (ปล่อยเมาส์ = เสร็จ) · ปรับละเอียดด้วยสไลเดอร์ด้านล่าง";
+      container.appendChild(drawBtn);
+      if (mode === "line") {
+        container.appendChild(slider("จุด A — x (%)", "x1", 50));
+        container.appendChild(slider("จุด A — y (%)", "y1", 5));
+        container.appendChild(slider("จุด B — x (%)", "x2", 50));
+        container.appendChild(slider("จุด B — y (%)", "y2", 95));
+        container.appendChild(seg("ทิศที่นับ (ลูกศร IN บนภาพ)", [
+          { value: "both", label: "ทั้งสองทาง", hint: "นับทั้ง IN และ OUT" },
+          { value: "in", label: "IN", hint: "นับเฉพาะชิ้นที่วิ่งตามลูกศร" },
+          { value: "out", label: "OUT", hint: "นับเฉพาะชิ้นที่วิ่งสวนลูกศร" },
+        ], ["in", "out"].includes(p.dir) ? p.dir : "both", (v) => set("dir", v, true)));
+        container.appendChild(btn("⇄ สลับทิศลูกศร (สลับจุด A กับ B)", () => {
+          const q = info.getParams();
+          info.setParams({ x1: q.x2, y1: q.y2, x2: q.x1, y2: q.y1 });
+          renderPost(info);
+        }));
+      } else {
+        container.appendChild(slider("โซน — ซ้าย x (%)", "zx", 30));
+        container.appendChild(slider("โซน — บน y (%)", "zy", 20));
+        container.appendChild(slider("โซน — กว้าง (%)", "zw", 40));
+        container.appendChild(slider("โซน — สูง (%)", "zh", 60));
+      }
+      // คลาสที่นับ
+      const cw = document.createElement("div");
+      cw.className = "param";
+      cw.style.marginTop = "12px";
+      const cl = document.createElement("div");
+      cl.className = "param-label";
+      cl.innerHTML = "<span>นับคลาส</span>";
+      const sel = document.createElement("select");
+      sel.className = "field-select";
+      sel.setAttribute("aria-label", "นับคลาส");
+      const labels = [...new Set((info.labels || []).map(String).filter(Boolean))];
+      if (p.cls && !labels.includes(p.cls)) labels.unshift(p.cls);
+      for (const [v, t] of [["", "ทุกคลาส"], ...labels.map((l) => [l, l])]) {
+        const o = document.createElement("option");
+        o.value = v;
+        o.textContent = t;
+        if (v === (p.cls || "")) o.selected = true;
+        sel.appendChild(o);
+      }
+      sel.addEventListener("change", () => set("cls", sel.value));
+      cw.append(cl, sel);
+      container.appendChild(cw);
+      container.appendChild(dlSlider("ระยะติดตามชิ้นเดิม (% ของเส้นทแยงภาพ)", 1, 50, 1, 12, p.maxDist ?? 12, (v) => set("maxDist", v)));
+      container.appendChild(dlSlider("หายจากการตรวจได้ (ครั้ง) ก่อนลืมชิ้นนั้น", 0, 60, 1, 10, p.maxMissed ?? 10, (v) => set("maxMissed", v)));
+      const th = document.createElement("div");
+      th.className = "param-hint";
+      th.textContent = "ชิ้นงานวิ่งเร็ว/ตรวจไม่ทัน → เพิ่มระยะติดตาม · ชิ้นงานอยู่ชิดกันแล้วเลขสลับ → ลดระยะติดตาม";
+      container.appendChild(th);
+    }
+
+    // ผลสด (อัปเดตเองทุก 250 ms จนกว่าแผงจะถูกสร้างใหม่)
+    const live = document.createElement("div");
+    live.className = "detail-note detail-note-info mono post-live";
+    live.style.marginTop = "14px";
+    live.style.whiteSpace = "pre-line";
+    container.appendChild(live);
+    const tick = () => {
+      if (!live.isConnected) return;
+      const lines = info.getLive ? info.getLive() : [];
+      const text = lines.length ? lines.join("\n") : "ยังไม่มีผล — โหลดโมเดลใน Model Detect แล้วเปิดภาพ/วิดีโอ";
+      if (live.textContent !== text) live.textContent = text;
+      syncWarn();
+      setTimeout(tick, 250);
+    };
+    tick();
+    if (isCount && info.onReset) container.appendChild(btn("↺ รีเซ็ตตัวนับ", () => info.onReset()));
+
+    const hint = document.createElement("div");
+    hint.className = "param-hint";
+    hint.style.marginTop = "10px";
+    hint.textContent = isCount
+      ? "ต่อสาย: แหล่งภาพ → Model Detect → (Centroid) → Object Count → ผลลัพธ์ · ต่อ Object Count หลายกล่องเรียงกันได้ (เช่น เส้น + โซน) · วิดีโอย้อนกลับ/ข้ามช่วง = เริ่มนับใหม่"
+      : "ต่อสาย: แหล่งภาพ → Model Detect → Centroid → ผลลัพธ์ · กดสร้างโค้ดที่กล่องผลลัพธ์ = ได้โค้ด Python ที่หา centroid + นับแบบเดียวกัน";
+    container.appendChild(hint);
+  }
+
   // อุปกรณ์ที่รันโมเดล (Auto / GPU / CPU) — segmented control แบบเดียวกับ select สั้น ๆ ของ filter
   // เปลี่ยนแล้วแอปโหลดโมเดลใหม่บนตัวรันนั้น · ค่าเดียวกันติดไปเป็น DEVICE ในโค้ด Python ที่ gen
   const DL_DEVICE_OPTS = [
@@ -1588,5 +1783,5 @@ export function createDetailPanel(container, cb) {
     return !ownChange && !!curStep && !!step && viewIdOf(curStep) !== viewIdOf(step);
   }
 
-  return { render, renderDisplay, renderDL, applyNotes, updateInfo, isViewStale };
+  return { render, renderDisplay, renderDL, renderPost, applyNotes, updateInfo, isViewStale };
 }

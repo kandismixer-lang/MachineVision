@@ -9,6 +9,7 @@ import { computeFit, findFreeSpot, applyFit, isViewUntouched, planInsert, format
 import { canvasBufferSizeDpr, dotGridRange, flowT, flowDotCount, visibleAreaOf, isFlowLink, createFlowLoop, buildStepIds } from "../ui/phase3-math.js";
 import { GROUP_ICON, OP_ICON, OP_PRIMARY, currentOpId, localParamsFor, shortToolName, contrastOn } from "../filters/ui-meta.js";
 import { graphColors, onThemeChange } from "../ui/theme.js";
+import { CENTROID_DEFAULTS, COUNT_DEFAULTS } from "../dl-post.js";
 
 // ---- node card สไตล์ Arctic Blue ----
 // Filter/Source/Model Detect = การ์ดขาวกะทัดรัด (ขอบบาง มุมมน เงาจาง): ชื่อ (ตัวหนา) อยู่บนซ้ายในการ์ด · กล่องไอคอนสีหมวดทางซ้าย
@@ -318,6 +319,10 @@ function ellipsisText(ctx, node, cacheKey, text, maxWidth) {
 const SOURCE_TYPE = "mv/source";
 const DISPLAY_TYPE = "mv/display";
 const DL_TYPE = "mv/dl-yolo";
+// กล่องหลัง Model Detect (2026-11-26): ใช้ผลการตรวจของ Model Detect ต้นสาย (ไม่ใช่ filter ใน worker)
+const CENTROID_TYPE = "mv/dl-centroid";
+const COUNT_TYPE = "mv/dl-count";
+const POST_TYPES = { [CENTROID_TYPE]: "centroid", [COUNT_TYPE]: "count" };
 
 let registered = false;
 
@@ -426,6 +431,32 @@ function registerNodeTypes(onGraphChange) {
   };
   installCardHooks(DLNode, LAYOUT_STD);
   LiteGraph.registerNodeType(DL_TYPE, DLNode);
+
+  // --- 📍 Centroid / 🔢 Object Count — ต่อหลัง Model Detect · ค่าตั้งเก็บใน properties (บันทึกไปกับกราฟ) ---
+  const postNode = (type, title, glyph, color, defaults, sub) => {
+    function PostNode() {
+      this.addInput("เข้า", "image");
+      this.addOutput("ออก", "image");
+      this.properties = { ...defaults };
+      this.boxcolor = color;
+      this.size = [LAYOUT_STD.w, LAYOUT_STD.h];
+      this.__mvInPipeline = false;
+      styleSlots(this);
+    }
+    registerCardColors(PostNode, color);
+    PostNode.title = title;
+    PostNode.prototype.onConnectionsChange = onGraphChange;
+    PostNode.prototype.onPropertyChanged = onGraphChange;
+    PostNode.prototype.onDrawForeground = function (ctx) {
+      drawCard(ctx, this, { accent: this.boxcolor, glyph, sub: sub(this.properties || {}) });
+    };
+    installCardHooks(PostNode, LAYOUT_STD);
+    LiteGraph.registerNodeType(type, PostNode);
+  };
+  postNode(CENTROID_TYPE, "📍 Centroid", "📍", "#ef5bff", CENTROID_DEFAULTS,
+    (p) => (p.method === "box" ? "กึ่งกลางกรอบ" : "รูปทรงชิ้นงาน"));
+  postNode(COUNT_TYPE, "🔢 Object Count", "🔢", "#ef5bff", COUNT_DEFAULTS,
+    (p) => (p.mode === "zone" ? "Zone count" : "Line count"));
 
   // --- node ของ filter แต่ละตัวจาก registry (ลงสีตามกลุ่ม) ---
   for (const [id, def] of Object.entries(FILTERS)) {
@@ -664,6 +695,8 @@ export function createGraphEditor(canvasEl, cb) {
     let inputIdx = startInputIdx;
     let reachedSource = false;
     let hasDL = false;
+    const post = []; // กล่อง Centroid/Count ที่อยู่ "หลัง" Model Detect (ลำดับต้นน้ำ → ปลายน้ำ)
+    let postBeforeDL = false; // เจอกล่องพวกนี้ต้นน้ำของ Model Detect (ใช้ไม่ได้)
 
     while (node) {
       const inp = node.inputs && node.inputs[inputIdx];
@@ -678,6 +711,15 @@ export function createGraphEditor(canvasEl, cb) {
       if (prev.type === SOURCE_TYPE) {
         reachedSource = true;
         break;
+      }
+      if (POST_TYPES[prev.type]) {
+        if (stopAtDL) break;
+        if (collectPathNodes) pathNodes.unshift(prev);
+        if (hasDL) postBeforeDL = true;
+        else post.unshift({ type: POST_TYPES[prev.type], params: { ...prev.properties }, nodeId: prev.id, enabled: prev.mode !== LiteGraph.NEVER });
+        node = prev;
+        inputIdx = 0;
+        continue;
       }
       if (prev.type === DL_TYPE) {
         if (stopAtDL) break; // เหมือนเดิม: DL มี worker คนละตัว ไม่รองรับต่อสายผ่าน (preview/src2)
@@ -711,6 +753,8 @@ export function createGraphEditor(canvasEl, cb) {
       pipeline: reachedSource ? chain : [],
       connected: reachedSource,
       hasDL,
+      post,
+      postBeforeDL,
       pathNodes,
     };
   }
@@ -718,7 +762,7 @@ export function createGraphEditor(canvasEl, cb) {
   // --- สกัด pipeline ของกล่องผลลัพธ์หนึ่งกล่อง (เดินย้อนจากกล่องกลับไปหาแหล่งภาพ) ---
   //   autoNum = ลำดับกล่อง (1-based) ใช้ตั้งชื่ออัตโนมัติ "Display N"
   function tracePipeline(displayNode, autoNum) {
-    const { pipeline: chain, connected: reachedSource, hasDL, pathNodes } =
+    const { pipeline: chain, connected: reachedSource, hasDL, pathNodes, post, postBeforeDL } =
       traceChainFrom(displayNode, 0, { stopAtDL: false, collectPathNodes: true });
 
     // เลขขั้นตอนอิงเส้นทางจริง: Source = 1, Function = 2..N, Display = N+1
@@ -735,7 +779,8 @@ export function createGraphEditor(canvasEl, cb) {
           ? (typeof FILTERS[pathNode.filterId]?.subtitle === "function"
               ? FILTERS[pathNode.filterId].subtitle(pathNode.properties)
               : FILTERS[pathNode.filterId]?.name)
-          : "Model Detect";
+          : POST_TYPES[pathNode.type] === "centroid" ? "Centroid"
+            : POST_TYPES[pathNode.type] === "count" ? "Object Count" : "Model Detect";
         pathNode.title = `${i + 2}. ${label || "Function"}`;
       });
     }
@@ -753,6 +798,10 @@ export function createGraphEditor(canvasEl, cb) {
       pipeline: reachedSource ? chain : [],
       connected: reachedSource,
       dl: reachedSource && hasDL, // ผลลัพธ์นี้ต้องรัน YOLO detect
+      // กล่อง Centroid/Count หลัง Model Detect (ปิดไว้ = ข้าม) · ไม่มี Model Detect ต้นสาย = ไม่มีผล
+      dlPost: reachedSource && hasDL ? post.filter((s) => s.enabled) : [],
+      postOrphan: reachedSource && post.length > 0 && !hasDL, // ต่อ Centroid/Count โดยไม่มี Model Detect ต้นสาย
+      postBeforeDL, // มี Centroid/Count อยู่ก่อน Model Detect
       // id ของกล่องบนสายนี้ตามเลขที่เห็นบนการ์ด (1 = แหล่งภาพ … สุดท้าย = Display) — คีย์ 1–9 ใช้ (nthStepNodeId)
       stepIds: reachedSource && sourceNode ? buildStepIds(sourceNode.id, pathNodes.map((n) => n.id), displayNode.id) : [],
     };
@@ -890,6 +939,17 @@ export function createGraphEditor(canvasEl, cb) {
       });
     } else if (node && node.type === DL_TYPE) {
       cb.onSelect({ kind: "dl", id: node.id }); // กล่อง YOLO Detect → แผงขวาโชว์ browse
+    } else if (node && POST_TYPES[node.type]) {
+      cb.onSelect({
+        kind: "dlpost",
+        postType: POST_TYPES[node.type],
+        id: node.id,
+        getParams: () => ({ ...node.properties }),
+        setParam: (key, value) => {
+          node.setProperty(key, value);
+          canvas.setDirty(true, true);
+        },
+      });
     } else if (node && node.type === DISPLAY_TYPE) {
       cb.onSelect({
         kind: "display",
@@ -970,12 +1030,14 @@ export function createGraphEditor(canvasEl, cb) {
   }
   // "แทรกหลังกล่องที่เลือก": เลือก Source/filter อยู่ 1 กล่อง + คลิกเครื่องมือใน palette → ต่อ selected → ใหม่ → ปลายทางเดิม
   // เงื่อนไขข้าม (คืน null → ผู้เรียกวางที่ว่างแบบเดิม) ตัดสินใน planInsert (layout-math.js)
-  function trySpliceAfterSelected(node, def) {
+  // afterDL: กล่อง Centroid/Count แทรกต่อจาก Model Detect หรือกล่อง Centroid/Count ได้ (filter ปกติไม่แทรกหลัง DL)
+  function trySpliceAfterSelected(node, def, afterDL = false) {
     const ids = Object.keys(canvas.selected_nodes || {});
     if (ids.length !== 1) return null;
     const sel = canvas.selected_nodes[ids[0]];
     if (!sel || !sel.outputs || !sel.outputs[0]) return null;
-    const kind = sel.type === SOURCE_TYPE ? "source" : sel.filterId ? "filter" : sel.type === DISPLAY_TYPE ? "display" : "dl";
+    let kind = sel.type === SOURCE_TYPE ? "source" : sel.filterId ? "filter" : sel.type === DISPLAY_TYPE ? "display" : "dl";
+    if (afterDL) kind = sel.type === DL_TYPE || POST_TYPES[sel.type] ? "filter" : "none";
     const outLinks = (sel.outputs[0].links || []).filter((lid) => graph.links[lid]);
     const down = downstreamOf(sel);
     const directIds = new Set(outLinks.map((lid) => graph.links[lid].target_id));
@@ -994,6 +1056,21 @@ export function createGraphEditor(canvasEl, cb) {
     if (plan.mode !== "splice") return null;
     return { plan, sel, outLinks, down };
   }
+  // แทรก node ใหม่ระหว่างกล่องที่เลือกกับปลายทางเดิม (ผลของ trySpliceAfterSelected)
+  // ทุกอย่างทำแบบ synchronous แล้วผู้เรียก notifyNow() ครั้งเดียว → history ได้ snapshot เดียว = undo ก้อนเดียว
+  function applySplice(node, sp) {
+    const { plan, sel, outLinks } = sp;
+    const old = outLinks.map((lid) => graph.links[lid]).map((l) => ({ id: l.target_id, slot: l.target_slot }));
+    const originSlot = outLinks.length ? graph.links[outLinks[0]].origin_slot : 0;
+    for (const n of sp.down) n.pos[0] += plan.dx;
+    node.pos = plan.pos;
+    graph.add(node);
+    for (const t of old) { // ใหม่ → ปลายทางเดิม (input รับได้เส้นเดียว → แทนสายเดิมของ selected อัตโนมัติ)
+      const target = graph.getNodeById(t.id);
+      if (target) node.connect(0, target, t.slot);
+    }
+    sel.connect(originSlot, node, 0);
+  }
   function addFilterNode(filterId, opId = null) {
     const node = LiteGraph.createNode("filters/" + filterId);
     if (opId && Object.prototype.hasOwnProperty.call(node.properties || {}, "mode")) {
@@ -1004,20 +1081,8 @@ export function createGraphEditor(canvasEl, cb) {
         : (filter?.name || opId);
     }
     const sp = trySpliceAfterSelected(node, FILTERS[filterId]);
-    if (sp) {
-      // ทุกอย่างทำแบบ synchronous แล้ว notifyNow() ครั้งเดียวท้ายฟังก์ชัน → history ได้ snapshot เดียว = undo ก้อนเดียว
-      const { plan, sel, outLinks } = sp;
-      const old = outLinks.map((lid) => graph.links[lid]).map((l) => ({ id: l.target_id, slot: l.target_slot }));
-      const originSlot = outLinks.length ? graph.links[outLinks[0]].origin_slot : 0;
-      for (const n of sp.down) n.pos[0] += plan.dx;
-      node.pos = plan.pos;
-      graph.add(node);
-      for (const t of old) { // ใหม่ → ปลายทางเดิม (input รับได้เส้นเดียว → แทนสายเดิมของ selected อัตโนมัติ)
-        const target = graph.getNodeById(t.id);
-        if (target) node.connect(0, target, t.slot);
-      }
-      sel.connect(originSlot, node, 0);
-    } else {
+    if (sp) applySplice(node, sp);
+    else {
       placeAtCenter(node);
       graph.add(node);
     }
@@ -1045,6 +1110,24 @@ export function createGraphEditor(canvasEl, cb) {
     const node = LiteGraph.createNode(DL_TYPE);
     placeAtCenter(node);
     graph.add(node);
+    revealNew(node);
+    canvas.selectNodes([node]);
+    canvas.onNodeSelected(node);
+    notifyNow();
+    return node;
+  }
+
+  // --- เพิ่มกล่อง Centroid / Object Count (หลัง Model Detect) ---
+  //   เลือก Model Detect (หรือกล่องหลังมัน) อยู่ → แทรกต่อท้ายให้เลย แบบเดียวกับเครื่องมือใน palette
+  function addPostNode(kind) {
+    const type = kind === "centroid" ? CENTROID_TYPE : COUNT_TYPE;
+    const node = LiteGraph.createNode(type);
+    const splice = trySpliceAfterSelected(node, { inputs: 1 }, true);
+    if (splice) applySplice(node, splice);
+    else {
+      placeAtCenter(node);
+      graph.add(node);
+    }
     revealNew(node);
     canvas.selectNodes([node]);
     canvas.onNodeSelected(node);
@@ -1247,7 +1330,7 @@ export function createGraphEditor(canvasEl, cb) {
     notifyNow();
   }
 
-  return { addFilterNode, addDisplayNode, addDLNode, selectNodeById, setDisplayImage, extractPipelines, exportTemplateSteps, resize,
+  return { addFilterNode, addDisplayNode, addDLNode, addPostNode, selectNodeById, setDisplayImage, extractPipelines, exportTemplateSteps, resize,
     zoomIn: () => zoomBy(1.2), zoomOut: () => zoomBy(1 / 1.2), resetView, fitView, deleteSelected, applyTemplate,
     // แหล่งภาพเปลี่ยนโหมด/ไฟล์ → ชื่อ/ไอคอน/บรรทัดรายละเอียดของ Source node ตาม (app.js เรียกเฉพาะตอนค่าเปลี่ยน)
     setSourceInfo: (info) => {

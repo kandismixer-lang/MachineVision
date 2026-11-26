@@ -6824,3 +6824,17 @@ body:not(.ui-v2) .panel-collapse-btn, body:not(.ui-v2) .panel-collapse-anchor { 
 :root[data-theme="dark"] .lv-hidden-chip:hover,
 :root[data-theme="dark"] .lv-hidden-chip:focus-visible,
 :root[data-theme="dark"] .lv-hidden-all { color: #04111f; }
+
+/* ---- กล่อง Centroid / Object Count (2026-11-26) ---- */
+.detail-note-warn {
+  background: var(--warning-soft);
+  border: 1px solid var(--warning);
+  color: var(--text-primary);
+  border-radius: 7px;
+  padding: 8px 10px;
+  font-size: var(--fs-md);
+  line-height: var(--lh-md);
+}
+.post-live { font-variant-numeric: tabular-nums; }
+/* โหมดลากวาดเส้น/โซนบนจอผลลัพธ์ */
+.stage-view.post-drawing { cursor: crosshair; }

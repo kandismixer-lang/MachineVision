@@ -5,7 +5,7 @@
 //  · mousemove ไม่สร้างอ็อบเจ็กต์ใหม่: ใช้ rect ที่แคชไว้ + อ็อบเจ็กต์พิกัดตัวเดียว + อ่านค่าจาก ImageData ของเฟรมล่าสุดโดยตรง
 //    (ไม่เรียก getImageData) และเขียน DOM เมื่อ "พิกเซลที่ชี้ เปลี่ยน" เท่านั้น
 import {
-  FIT_VIEW, PX_GRID_SCALE, clampView, zoomAt, panBy, wheelFactor, screenToImage, visiblePixelRange,
+  FIT_VIEW, PX_GRID_SCALE, fitRect, clampView, zoomAt, panBy, wheelFactor, screenToImage, visiblePixelRange,
   displayScale, readRGB, formatPixel, formatPos, formatZoomPct,
 } from "./phase3-math.js";
 
@@ -33,6 +33,7 @@ export function createTileInspector(parts, opts = {}) {
   let shownX = -1, shownY = -1; // พิกเซลที่แสดงอยู่ในแถบ (กันเขียน DOM ซ้ำ)
   const rgb = [0, 0, 0];
   let pan = null; // { id, x, y } ขณะลากเลื่อน
+  let drawId = null; // pointerId ขณะลากวาดเส้น/โซน (opts.draw)
   let lastTransform = "";
   let ptrX = 0, ptrY = 0; // ตำแหน่งเมาส์ล่าสุด (clientX/Y) — ใช้คำนวณพิกเซลที่ชี้ใหม่เมื่อภาพเปลี่ยนขนาด
   let measuredAt = 0;
@@ -124,7 +125,21 @@ export function createTileInspector(parts, opts = {}) {
     if (hovered === api) hovered = null;
     if (!pan) { hov.inside = false; showReadout(true); drawGrid(); }
   });
+  // พิกัดภาพแบบทศนิยม (ไม่ปัด ไม่บีบให้อยู่ในภาพ) — ใช้ลากวาดเส้น/โซนนับชิ้นงาน
+  function imagePoint(e) {
+    const r = fitRect(geom.vw, geom.vh, geom.iw, geom.ih);
+    if (!r) return null;
+    return {
+      x: ((e.clientX - left - view.tx) / view.z - r.x) / r.f,
+      y: ((e.clientY - top - view.ty) / view.z - r.y) / r.f,
+      w: geom.iw, h: geom.ih,
+    };
+  }
   viewEl.addEventListener("pointermove", (e) => {
+    if (drawId != null && drawId === e.pointerId) {
+      const pt = imagePoint(e);
+      if (pt) opts.draw.move(pt);
+    }
     // ทาย "ตำแหน่ง tile ขยับโดยไม่เปลี่ยนขนาด" (เลย์เอาต์ข้างเคียงเปลี่ยน/หน้าเลื่อน): วัดซ้ำเป็นระยะ ไม่ใช่ทุก mousemove
     if (Date.now() - measuredAt > 250) { measure(); measuredAt = Date.now(); }
     if (pan && pan.id === e.pointerId) {
@@ -138,6 +153,15 @@ export function createTileInspector(parts, opts = {}) {
   viewEl.addEventListener("pointerdown", (e) => {
     if (e.button !== 0 || e.target === badge || badge.contains(e.target)) return;
     measure();
+    if (opts.draw && opts.draw.active()) {
+      const pt = imagePoint(e);
+      if (!pt) return;
+      drawId = e.pointerId;
+      try { viewEl.setPointerCapture(e.pointerId); } catch { /* ข้ามได้ */ }
+      e.preventDefault();
+      opts.draw.start(pt);
+      return;
+    }
     if (view.z <= 1.0001) return; // พอดีจอ = ไม่มีอะไรให้เลื่อน
     pan = { id: e.pointerId, x: e.clientX, y: e.clientY };
     viewEl.classList.add("is-panning");
@@ -145,6 +169,13 @@ export function createTileInspector(parts, opts = {}) {
     e.preventDefault();
   });
   const endPan = (e) => {
+    if (drawId != null && drawId === e.pointerId) {
+      drawId = null;
+      try { viewEl.releasePointerCapture(e.pointerId); } catch { /* ข้ามได้ */ }
+      const pt = e.type === "pointercancel" ? null : imagePoint(e);
+      opts.draw.end(pt);
+      return;
+    }
     if (!pan || pan.id !== e.pointerId) return;
     pan = null;
     viewEl.classList.remove("is-panning");

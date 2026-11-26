@@ -455,9 +455,10 @@ const LG_NEVER = 2; // ยืนยันแล้วจาก LiteGraph.NEVER �
 const LiteGraphMock = { NEVER: LG_NEVER };
 
 function buildTraceChainFrom(g) {
-  return new Function('graph', 'FILTERS', 'LiteGraph', 'SOURCE_TYPE', 'DL_TYPE',
+  // POST_TYPES = กล่อง Centroid/Count หลัง Model Detect (2026-11-26) — ค่าเดียวกับใน editor.js
+  return new Function('graph', 'FILTERS', 'LiteGraph', 'SOURCE_TYPE', 'DL_TYPE', 'POST_TYPES',
     traceChainFromSrc + '\nreturn traceChainFrom;'
-  )(g, FILTERS, LiteGraphMock, SOURCE_TYPE_T, DL_TYPE_T);
+  )(g, FILTERS, LiteGraphMock, SOURCE_TYPE_T, DL_TYPE_T, { 'mv/dl-centroid': 'centroid', 'mv/dl-count': 'count' });
 }
 
 test('tier2-9a. traceChainFrom: old-style single-input chain (Source -> filterA -> filterB -> target) traces identically to the pre-refactor shape', () => {
