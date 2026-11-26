@@ -680,7 +680,7 @@ function counterClass(f) {
     : f.zone ? `        ${ZONE_FMT}` : indent(LINE_FMT, 8);
   return [
     "class Counter:",
-    "    # นับชิ้นงานที่ข้ามเส้น / เข้าโซน รวมและแยกตามคลาส",
+    `    # นับชิ้นงานที่${f.zone && f.line ? "ข้ามเส้น / เข้าโซน" : f.zone ? "เข้าโซน" : "ข้ามเส้น"} รวมและแยกตามคลาส`,
     "    def __init__(self, cfg):",
     "        self.cfg = cfg",
     "        self.reset()",
@@ -759,7 +759,7 @@ function drawCounters(f) {
     "",
     "",
     "def draw_counters(img, scale):",
-    "    # วาดเส้น/โซน + เลข # ของชิ้น + ป้ายยอดนับ (และแถวแยกคลาส) มุมซ้ายบน",
+    `    # วาด${f.zone && f.line ? "เส้น/โซน" : f.zone ? "โซน" : "เส้น"} + เลข # ของชิ้น + ป้ายยอดนับ (และแถวแยกคลาส) มุมซ้ายบน`,
     "    H, W = img.shape[:2]",
     "    for k in COUNTER_OBJS:",
     "        c = k.cfg",
