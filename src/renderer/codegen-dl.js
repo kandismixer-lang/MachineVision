@@ -1,63 +1,65 @@
-// โค้ด Python ของกล่องผลลัพธ์ที่ต่อสายผ่านกล่อง Model Detect (2026-11-20)
-// เดิม buildPythonCode ไม่รู้จักกล่อง DL (editor ไม่ใส่ลง pipeline แค่ตั้ง dl: true) → โค้ดที่ได้ไม่มีโมเดลเลย
-// ไฟล์นี้สร้างสคริปต์ที่รันโมเดล .onnx ตัวเดียวกับในแอป ด้วยขั้นตอนเดียวกันทุกอย่าง:
-//   letterbox / RF-DETR preprocess (dl-yolo.js) · ถอดผล + NMS (dl-decode.js) · แบ่ง tile + รวมกล่อง (dl-tiles.js)
-//   · วาดกรอบ/ป้าย/mask (drawDetections ใน dl-yolo.js)
-// แอปตรวจบน "ภาพต้นฉบับขนาดจริง" (renderDLDisplays ส่ง src เต็ม, Box อื่นบนสาย DL ไม่ถูกรัน) → สคริปต์ทำเหมือนกัน
+// โค้ด Python ของจอที่ต่อผ่านกล่อง Model Detect — ตรงกับ dl-yolo.js / dl-decode.js / dl-tiles.js / dl-post.js ทีละขั้น
+// ใส่เฉพาะส่วนที่กราฟใช้จริง (ชนิดโมเดล · tile · centroid · เส้น/โซน) ให้ไฟล์สั้นและอ่านง่าย (2026-11-26)
 import { FILTERS } from "./filters/registry.js";
 import { normalizeSource5S, runSection5S } from "./codegen.js";
 import { normCentroid, normCount, counterName } from "./dl-post.js";
 
 const KINDS = new Set(["yolo", "yoloseg", "rfdetr"]);
-const pyStr = (s) => JSON.stringify(String(s)); // สตริง JSON = สตริง Python ที่ถูกต้อง (escape \ " อักขระควบคุมแล้ว)
+const pyStr = (s) => JSON.stringify(String(s)); // สตริง JSON = สตริง Python ที่ถูกต้อง
 const pyNum = (v, d) => (Number.isFinite(Number(v)) ? String(Number(v)) : String(d));
 const oneLine = (t) => String(t ?? "").replace(/[\r\n\x85\p{Zl}\p{Zp}]+/gu, " ").replace(/[\u0000-\u001f\u007f]/g, "");
+const block = (s) => s.replace(/^\n+|\s+$/g, "");
+const indent = (s, n) => block(s).split("\n").map((l) => (l ? " ".repeat(n) + l : l)).join("\n");
 
-function settingsLines(dl) {
+// ฟีเจอร์ที่ต้องใส่ในโค้ด — คำนวณครั้งเดียวจากกล่อง Model Detect + กล่องหลัง DL
+function featuresOf(dl, post) {
+  const kind = KINDS.has(dl.kind) ? dl.kind : null; // null = ไม่รู้ชนิด → ใส่ทุกแบบแล้วเดาจาก output
+  const cen = post.find((s) => s.type === "centroid");
+  const counters = post.filter((s) => s.type === "count").map((s) => normCount(s.params));
+  return {
+    kind,
+    yolo: !kind || kind === "yolo",
+    seg: !kind || kind === "yoloseg",
+    rf: !kind || kind === "rfdetr",
+    tile: !!dl.tile?.on,
+    cen: cen ? normCentroid(cen.params) : null,
+    counters,
+    line: counters.some((p) => p.mode === "line"),
+    zone: counters.some((p) => p.mode === "zone"),
+  };
+}
+
+function settingsLines(dl, f) {
   const lines = [];
-  if (!dl.loaded) {
-    lines.push('MODEL_PATH = ""   # << ยังไม่ได้โหลดโมเดลในโปรแกรม ใส่ path ไฟล์ .onnx');
-  } else if (dl.modelPath) {
-    lines.push(`MODEL_PATH = ${pyStr(dl.modelPath)}   # โมเดลที่โหลดในกล่อง Model Detect`);
-  } else {
-    lines.push(`MODEL_PATH = ${pyStr(dl.modelName || "model.onnx")}   # << ไม่รู้ตำแหน่งไฟล์เต็ม ใส่ path ของไฟล์ .onnx เอง`);
-  }
-  const kind = KINDS.has(dl.kind) ? pyStr(dl.kind) : "None";
-  const size = Number.isFinite(Number(dl.inputSize)) && Number(dl.inputSize) > 0 ? Math.round(Number(dl.inputSize)) : 640;
+  if (!dl.loaded) lines.push('MODEL_PATH = ""   # << ยังไม่ได้โหลดโมเดลในโปรแกรม ใส่ path ไฟล์ .onnx');
+  else if (dl.modelPath) lines.push(`MODEL_PATH = ${pyStr(dl.modelPath)}   # โมเดลที่โหลดในกล่อง Model Detect`);
+  else lines.push(`MODEL_PATH = ${pyStr(dl.modelName || "model.onnx")}   # << ไม่รู้ตำแหน่งไฟล์เต็ม ใส่ path ของไฟล์ .onnx เอง`);
+  const size = Number(dl.inputSize) > 0 ? Math.round(Number(dl.inputSize)) : 640;
   const labels = Array.isArray(dl.labels) ? dl.labels.map((s) => String(s ?? "")) : [];
-  const tile = dl.tile || {};
   const conf = Number.isFinite(Number(dl.conf)) ? Number(dl.conf) : 0.25;
-  const tileSize = Number.isFinite(Number(tile.size)) && Number(tile.size) > 0 ? Math.round(Number(tile.size)) : 640;
-  const overlap = Number.isFinite(Number(tile.overlap)) ? Number(tile.overlap) / 100 : 0.2;
-  const device = ["auto", "gpu", "cpu"].includes(dl.device) ? dl.device : "auto"; // อุปกรณ์ที่เลือกในกล่อง Model Detect
+  const device = ["auto", "gpu", "cpu"].includes(dl.device) ? dl.device : "auto";
   lines.push(
-    `MODEL_KIND = ${kind}   # yolo | yoloseg | rfdetr (ชนิดที่โปรแกรมตรวจได้ตอนโหลดโมเดล) · None = เดาจาก output ของโมเดล`,
-    `INPUT_SIZE = ${size}   # ขนาด input ของโมเดล (ใช้เมื่ออ่านจากไฟล์โมเดลไม่ได้)`,
-    `NAMES = [${labels.map(pyStr).join(", ")}]   # ชื่อคลาสตามลำดับ index ของโมเดล`,
-    `CONF = ${pyNum(conf, 0.25)}   # ค่า "ความไว" ของกล่อง Model Detect ในโปรแกรม (ต่ำกว่านี้ไม่นับ)`,
-    "IOU = 0.45   # NMS: กล่องคลาสเดียวกันที่ซ้อนกันเกินนี้ เก็บไว้แค่กล่องคะแนนสูงสุด",
-    `TILE_ON = ${tile.on ? "True" : "False"}   # ตรวจแบบแบ่ง tile (เปิด/ปิดในกล่อง Model Detect)`,
-    `TILE_SIZE = ${tileSize}`,
-    `TILE_OVERLAP = ${pyNum(Math.min(0.9, Math.max(0, overlap)), 0.2)}   # สัดส่วนเหลื่อมกันของ tile (${pyNum(tile.overlap, 20)}%)`,
-    `DEVICE = "${device}"   # "auto" = GPU ถ้ามี ไม่มีใช้ CPU · "gpu" = บังคับ GPU · "cpu" = บังคับ CPU (ตั้งจากกล่อง Model Detect)`,
-    "# GPU ต้องลง onnxruntime รุ่น GPU แทนตัวธรรมดา: pip uninstall onnxruntime แล้ว pip install onnxruntime-directml (การ์ดทุกยี่ห้อบน Windows)",
-    "#   หรือ onnxruntime-gpu (NVIDIA + CUDA) · cv2.dnn ใช้ CPU เสมอ",
+    `INPUT_SIZE = ${size}   # ขนาด input ของโมเดล (ใช้เมื่ออ่านจากไฟล์ไม่ได้)`,
+    `NAMES = [${labels.map(pyStr).join(", ")}]   # ชื่อคลาสตาม index`,
+    `CONF = ${pyNum(conf, 0.25)}   # คะแนนขั้นต่ำ ("ความไว" ในกล่อง Model Detect)`,
   );
+  if (f.yolo || f.seg) lines.push("IOU = 0.45   # เกณฑ์ NMS");
+  if (f.tile) {
+    const t = dl.tile;
+    const overlap = Number.isFinite(Number(t.overlap)) ? Number(t.overlap) / 100 : 0.2;
+    lines.push(
+      `TILE_SIZE = ${Number(t.size) > 0 ? Math.round(Number(t.size)) : 640}   # ขนาด tile`,
+      `TILE_OVERLAP = ${pyNum(Math.min(0.9, Math.max(0, overlap)), 0.2)}   # tile เหลื่อมกัน (สัดส่วน)`,
+    );
+  }
+  lines.push(`DEVICE = "${device}"   # "auto" = GPU ถ้ามี · "gpu" · "cpu" (GPU ต้อง pip install onnxruntime-directml หรือ onnxruntime-gpu)`);
   return lines;
 }
 
-// ส่วนรันโมเดล — ฟังก์ชันตรงกับ dl-yolo.js / dl-decode.js / dl-tiles.js ทีละบรรทัด (ชื่อแบบ snake_case)
-const CORE = String.raw`
-IMAGENET_MEAN = np.array([0.485, 0.456, 0.406], np.float32)
-IMAGENET_STD = np.array([0.229, 0.224, 0.225], np.float32)
-BOX_COLOR = (255, 224, 0)    # #00e0ff (BGR) สีกรอบเดียวกับในโปรแกรม
-TEXT_COLOR = (24, 16, 0)     # #001018
-MASK_COLORS = [(59, 130, 246), (239, 68, 68), (34, 197, 94), (234, 179, 8), (168, 85, 247),
-               (6, 182, 212), (249, 115, 22), (236, 72, 153), (132, 204, 22), (20, 184, 166)]  # RGB
-
-
+// ---------- ส่วนโมเดล ----------
+const LOAD = String.raw`
 def js_round(x):
-    # Math.round ของ JavaScript (.5 ปัดขึ้นเสมอ) — round() ของ Python ปัดเข้าเลขคู่ ผลจะต่างจากโปรแกรม
+    # ปัด .5 ขึ้นแบบ JavaScript (round() ของ Python ปัดเข้าเลขคู่)
     return int(math.floor(x + 0.5))
 
 
@@ -65,7 +67,7 @@ _MODELS = {}
 
 
 def load_model(path=None):
-    # โหลดโมเดลครั้งเดียวแล้วเก็บไว้ (ไม่โหลดใหม่ทุกเฟรม)
+    # โหลดโมเดลครั้งเดียว: onnxruntime (CPU/GPU) ถ้ามี ไม่มีใช้ cv2.dnn
     path = MODEL_PATH if path is None else path
     if path in _MODELS:
         return _MODELS[path]
@@ -73,7 +75,7 @@ def load_model(path=None):
         raise FileNotFoundError("ยังไม่ได้ระบุไฟล์โมเดล — ใส่ path ของไฟล์ .onnx ที่ MODEL_PATH ด้านบน")
     if not os.path.isfile(path):
         raise FileNotFoundError("ไม่เจอไฟล์โมเดล: " + path)
-    data = np.fromfile(path, dtype=np.uint8)   # อ่านเป็น bytes เอง → path ภาษาไทยก็โหลดได้
+    data = np.fromfile(path, dtype=np.uint8)
     try:
         import onnxruntime as ort
     except ImportError:
@@ -88,7 +90,7 @@ def load_model(path=None):
         providers = (gpu[:1] if DEVICE != "cpu" else []) + ["CPUExecutionProvider"]
         so = ort.SessionOptions()
         if "DmlExecutionProvider" in providers:
-            so.enable_mem_pattern = False   # DirectML ต้องปิดสองค่านี้
+            so.enable_mem_pattern = False
             so.execution_mode = ort.ExecutionMode.ORT_SEQUENTIAL
         sess = ort.InferenceSession(data.tobytes(), so, providers=providers)
         inp = sess.get_inputs()[0]
@@ -111,16 +113,16 @@ def load_model(path=None):
 
         def run(blob):
             net.setInput(blob)
-            outs = net.forward(names)
-            return dict(zip(names, outs))
+            return dict(zip(names, net.forward(names)))
         engine = "cv2.dnn"
     model = {"run": run, "size": int(size), "names": names, "engine": engine}
     _MODELS[path] = model
     return model
+`;
 
-
+const LETTERBOX = String.raw`
 def letterbox(img, size):
-    # ย่อคงอัตราส่วนให้พอดี size × size วางกลาง เติมสีเทา 114 → RGB / 255, CHW (เหมือน letterbox ใน dl-yolo.js)
+    # ย่อคงอัตราส่วนวางกลางพื้นเทา 114 → RGB / 255 แบบ CHW
     h, w = img.shape[:2]
     r = min(size / w, size / h)
     nw, nh = max(1, js_round(w * r)), max(1, js_round(h * r))
@@ -129,28 +131,54 @@ def letterbox(img, size):
     canvas[dy:dy + nh, dx:dx + nw] = cv2.resize(img, (nw, nh), interpolation=cv2.INTER_LINEAR)
     rgb = canvas[:, :, ::-1].astype(np.float32) / 255.0
     return np.ascontiguousarray(rgb.transpose(2, 0, 1))[None], r, dx, dy
+`;
+
+const RF_PRE = String.raw`
+IMAGENET_MEAN = np.array([0.485, 0.456, 0.406], np.float32)
+IMAGENET_STD = np.array([0.229, 0.224, 0.225], np.float32)
 
 
 def rfdetr_preprocess(img, size):
-    # RF-DETR: resize ตรง ๆ เป็น size × size (ไม่ letterbox) + normalize แบบ ImageNet
+    # RF-DETR: resize ตรงเป็น size × size + normalize แบบ ImageNet
     rgb = cv2.resize(img, (size, size), interpolation=cv2.INTER_LINEAR)[:, :, ::-1].astype(np.float32) / 255.0
     rgb = (rgb - IMAGENET_MEAN) / IMAGENET_STD
     return np.ascontiguousarray(rgb.transpose(2, 0, 1), dtype=np.float32)[None]
+`;
 
-
+const SIGMOID = String.raw`
 def sigmoid(x):
     return 1.0 / (1.0 + np.exp(-np.asarray(x, np.float64)))
+`;
 
-
+const BEST_CLASS = String.raw`
 def best_class(scores):
-    # scores = [คลาส, จำนวน] → (คะแนนสูงสุด, index) ต่อคอลัมน์ · เท่ากันเอาคลาสแรก · ไม่มีค่า > 0 → (0, 0) เหมือน JS
+    # คะแนนสูงสุด + คลาสต่อคอลัมน์ (ไม่มีค่า > 0 → 0, คลาส 0)
     m = scores.max(axis=0)
     cls = np.where(m > 0, scores.argmax(axis=0), 0)
     return np.maximum(m, 0.0), cls
+`;
+
+const NMS = String.raw`
+def iou_of(a, b):
+    x1, y1 = max(a["x"], b["x"]), max(a["y"], b["y"])
+    x2, y2 = min(a["x"] + a["w"], b["x"] + b["w"]), min(a["y"] + a["h"], b["y"] + b["h"])
+    inter = max(0.0, x2 - x1) * max(0.0, y2 - y1)
+    uni = a["w"] * a["h"] + b["w"] * b["h"] - inter
+    return inter / uni if uni > 0 else 0.0
 
 
+def nms(boxes, iou_thresh):
+    # เก็บกล่องคะแนนสูงก่อน ตัดกล่องคลาสเดียวกันที่ทับเกินเกณฑ์
+    kept = []
+    for b in sorted(boxes, key=lambda b: -b["score"]):
+        if all(k["cls"] != b["cls"] or iou_of(k, b) < iou_thresh for k in kept):
+            kept.append(b)
+    return kept
+`;
+
+const YOLO_DEC = String.raw`
 def decode_raw_head(out, r, dx, dy, conf):
-    # YOLO แบบ raw head [1, 4+nc, N]: cx, cy, w, h (px บนภาพ letterbox) + คะแนนต่อคลาส
+    # YOLO raw head [1, 4+nc, N] → กล่องบนภาพจริง
     d = np.asarray(out, np.float64)[0]
     if d.shape[0] <= 4:
         return []
@@ -163,25 +191,8 @@ def decode_raw_head(out, r, dx, dy, conf):
     return boxes
 
 
-def iou_of(a, b):
-    x1, y1 = max(a["x"], b["x"]), max(a["y"], b["y"])
-    x2, y2 = min(a["x"] + a["w"], b["x"] + b["w"]), min(a["y"] + a["h"], b["y"] + b["h"])
-    inter = max(0.0, x2 - x1) * max(0.0, y2 - y1)
-    uni = a["w"] * a["h"] + b["w"] * b["h"] - inter
-    return inter / uni if uni > 0 else 0.0
-
-
-def nms(boxes, iou_thresh):
-    # เรียงคะแนนมาก → น้อย · ตัดเฉพาะกล่องคลาสเดียวกันที่ IoU ไม่ต่ำกว่าเกณฑ์
-    kept = []
-    for b in sorted(boxes, key=lambda b: -b["score"]):
-        if all(k["cls"] != b["cls"] or iou_of(k, b) < iou_thresh for k in kept):
-            kept.append(b)
-    return kept
-
-
 def decode_nms_baked(out, r, dx, dy, conf):
-    # end-to-end / NMS ในโมเดล (เช่น YOLO26): [1, n, 6] = x1, y1, x2, y2, score, class — ไม่ต้อง NMS ซ้ำ
+    # YOLO ที่ทำ NMS ในโมเดลแล้ว (เช่น YOLO26) [1, n, 6] = x1, y1, x2, y2, score, class
     boxes = []
     for x1, y1, x2, y2, score, c in np.asarray(out, np.float64)[0]:
         if score < conf:
@@ -189,10 +200,11 @@ def decode_nms_baked(out, r, dx, dy, conf):
         boxes.append({"x": (x1 - dx) / r, "y": (y1 - dy) / r, "w": (x2 - x1) / r, "h": (y2 - y1) / r,
                       "score": float(score), "cls": int(c)})
     return boxes
+`;
 
-
+const RF_DEC = String.raw`
 def decode_rfdetr(box, logit, orig_w, orig_h, conf):
-    # RF-DETR: box [1, N, 4] = cx, cy, w, h (0..1 เทียบภาพเต็ม) · logit [1, N, C] → sigmoid · ไม่ต้อง NMS
+    # RF-DETR: box [1, N, 4] (0..1) + logit [1, N, C] → กล่องบนภาพจริง
     bd = np.asarray(box, np.float64)[0]
     best, cls = best_class(sigmoid(np.asarray(logit, np.float64)[0]).T)
     boxes = []
@@ -201,10 +213,11 @@ def decode_rfdetr(box, logit, orig_w, orig_h, conf):
         boxes.append({"x": (cx - w / 2) * orig_w, "y": (cy - h / 2) * orig_h, "w": w * orig_w, "h": h * orig_h,
                       "score": float(best[i]), "cls": int(cls[i])})
     return boxes
+`;
 
-
+const SEG_DEC = String.raw`
 def decode_seg(det, proto, r, dx, dy, conf, iou, size):
-    # YOLO-seg: det [1, 4+nc+32, N] + proto [1, 32, mh, mw] → กล่อง + mask (ครอปเฉพาะในกรอบ ความละเอียด proto)
+    # YOLO-seg: det [1, 4+nc+32, N] + proto [1, 32, mh, mw] → กล่อง + mask ในกรอบ
     d = np.asarray(det, np.float64)[0]
     p = np.asarray(proto, np.float64)[0]
     NM = 32
@@ -228,72 +241,90 @@ def decode_seg(det, proto, r, dx, dy, conf, iou, size):
         px1, py1 = min(mw, math.ceil(ix1 * sx)), min(mh, math.ceil(iy1 * sy))
         cw, ch = max(1, px1 - px0), max(1, py1 - py0)
         mask = np.zeros((ch, cw), np.uint8)
-        vh, vw = max(0, min(ch, mh - py0)), max(0, min(cw, mw - px0))   # ส่วนที่อยู่ในแผ่น proto จริง
+        vh, vw = max(0, min(ch, mh - py0)), max(0, min(cw, mw - px0))
         if vh and vw:
             acc = np.tensordot(co, p[:, py0:py0 + vh, px0:px0 + vw], axes=1)
             mask[:vh, :vw] = np.where(sigmoid(acc) > 0.5, 255, 0).astype(np.uint8)
         b["mask"] = mask
     return kept
+`;
 
-
+const KIND_OF = String.raw`
 def kind_of(outs):
-    # เดาชนิดโมเดลจาก output (กติกาเดียวกับโปรแกรม): 1 output = yolo · มีตัว 4 มิติ = yoloseg · นอกนั้น rfdetr
+    # เดาชนิดโมเดลจาก output: 1 ตัว = yolo · มีตัว 4 มิติ = yoloseg · นอกนั้น rfdetr
     if len(outs) < 2:
         return "yolo"
     return "yoloseg" if any(np.ndim(o) == 4 for o in outs.values()) else "rfdetr"
+`;
 
+// ตัวถอด output ของแต่ละชนิด (เนื้อฟังก์ชัน decode_outputs)
+const DECODE_BODY = {
+  yolo: String.raw`
+o = next(iter(outs.values()))
+if np.ndim(o) == 3 and np.shape(o)[2] == 6:
+    return decode_nms_baked(o, m["r"], m["dx"], m["dy"], m["conf"])
+return nms(decode_raw_head(o, m["r"], m["dx"], m["dy"], m["conf"]), m["iou"])`,
+  yoloseg: String.raw`
+det = next((o for o in outs.values() if np.ndim(o) == 3), None)
+proto = next((o for o in outs.values() if np.ndim(o) == 4), None)
+if det is None or proto is None:
+    return []
+return decode_seg(det, proto, m["r"], m["dx"], m["dy"], m["conf"], m["iou"], size)`,
+  rfdetr: String.raw`
+names = list(outs)
+four = [n for n in names if np.shape(outs[n])[-1] == 4]
+box_name = four[0] if len(four) == 1 else next((n for n in names if re.search(r"det|box|bbox|point", n, re.I)), names[0])
+logit_name = next(n for n in names if n != box_name)
+return decode_rfdetr(outs[box_name], outs[logit_name], m["orig_w"], m["orig_h"], m["conf"])`,
+};
 
-def decode_outputs(kind, outs, m, size):
-    # outs = {ชื่อ output: array} · m = {orig_w, orig_h, r, dx, dy, conf, iou}
-    names = list(outs.keys())
-    if kind == "rfdetr":
-        four = [n for n in names if np.shape(outs[n])[-1] == 4]
-        if len(four) == 1:
-            box_name = four[0]
-        else:
-            box_name = next((n for n in names if re.search(r"det|box|bbox|point", n, re.I)), names[0])
-        logit_name = next(n for n in names if n != box_name)
-        return decode_rfdetr(outs[box_name], outs[logit_name], m["orig_w"], m["orig_h"], m["conf"])
-    if kind == "yoloseg":
-        det = next((outs[n] for n in names if np.ndim(outs[n]) == 3), None)
-        proto = next((outs[n] for n in names if np.ndim(outs[n]) == 4), None)
-        if det is None or proto is None:
-            return []
-        return decode_seg(det, proto, m["r"], m["dx"], m["dy"], m["conf"], m["iou"], size)
-    o = outs[names[0]]
-    if np.ndim(o) == 3 and np.shape(o)[2] == 6:
-        return decode_nms_baked(o, m["r"], m["dx"], m["dy"], m["conf"])
-    return nms(decode_raw_head(o, m["r"], m["dx"], m["dy"], m["conf"]), m["iou"])
+function decodeOutputs(kind) {
+  const head = "def decode_outputs(outs, m, size):\n    # output ของโมเดล ({ชื่อ: array}) → list ของกล่อง\n";
+  if (kind) return head + indent(DECODE_BODY[kind], 4);
+  return head + [
+    '    if m["kind"] == "rfdetr":', indent(DECODE_BODY.rfdetr, 8),
+    '    if m["kind"] == "yoloseg":', indent(DECODE_BODY.yoloseg, 8),
+    indent(DECODE_BODY.yolo, 4),
+  ].join("\n");
+}
 
+function detectFn(kind) {
+  const head = [
+    "def label_of(c):",
+    "    return NAMES[c] if 0 <= c < len(NAMES) and NAMES[c] else str(c)",
+    "",
+    "",
+    "def detect(img):",
+    "    # ตรวจภาพ 1 ภาพ (BGR) → กล่อง {x, y, w, h, score, cls, label}",
+    "    model = load_model()",
+    '    size = model["size"]',
+  ];
+  let body;
+  if (kind === "rfdetr") {
+    body = String.raw`
+h, w = img.shape[:2]
+outs = model["run"](rfdetr_preprocess(img, size))
+boxes = decode_outputs(outs, {"orig_w": w, "orig_h": h, "conf": CONF}, size)`;
+  } else if (kind) {
+    body = String.raw`
+blob, r, dx, dy = letterbox(img, size)
+boxes = decode_outputs(model["run"](blob), {"r": r, "dx": dx, "dy": dy, "conf": CONF, "iou": IOU}, size)`;
+  } else {
+    body = String.raw`
+h, w = img.shape[:2]
+blob, r, dx, dy = letterbox(img, size)
+outs = model["run"](blob)
+m = {"kind": kind_of(outs), "r": r, "dx": dx, "dy": dy, "conf": CONF, "iou": IOU, "orig_w": w, "orig_h": h}
+if m["kind"] == "rfdetr":
+    outs = model["run"](rfdetr_preprocess(img, size))
+boxes = decode_outputs(outs, m, size)`;
+  }
+  return [...head, indent(body, 4), '    for b in boxes:', '        b["label"] = label_of(b["cls"])', "    return boxes"].join("\n");
+}
 
-def label_of(c):
-    return NAMES[c] if 0 <= c < len(NAMES) and NAMES[c] else str(c)
-
-
-def detect(img):
-    # ตรวจภาพ 1 ภาพ (BGR) → list ของกล่อง {x, y, w, h, score, cls, label} บนพิกัดภาพนี้
-    model = load_model()
-    size = model["size"]
-    h, w = img.shape[:2]
-    if MODEL_KIND == "rfdetr":
-        outs = model["run"](rfdetr_preprocess(img, size))
-        m = {"orig_w": w, "orig_h": h, "conf": CONF}
-    else:
-        blob, r, dx, dy = letterbox(img, size)
-        outs = model["run"](blob)
-        m = {"r": r, "dx": dx, "dy": dy, "conf": CONF, "iou": IOU}
-    kind = MODEL_KIND or kind_of(outs)
-    if kind == "rfdetr" and MODEL_KIND != "rfdetr":   # เดาได้ว่าเป็น RF-DETR → ต้อง preprocess แบบ RF-DETR ใหม่
-        outs = model["run"](rfdetr_preprocess(img, size))
-        m = {"orig_w": w, "orig_h": h, "conf": CONF}
-    boxes = decode_outputs(kind, outs, m, size)
-    for b in boxes:
-        b["label"] = label_of(b["cls"])
-    return boxes
-
-
+const TILE = String.raw`
 def tile_positions(length, tile, overlap):
-    # ตำแหน่งเริ่ม tile ตามแกนเดียว: ก้าวทีละ tile × (1 − overlap) ชิ้นสุดท้ายชิดขอบพอดี
+    # ตำแหน่งเริ่ม tile ตามแกนเดียว (ชิ้นสุดท้ายชิดขอบ)
     L, T = max(1, js_round(length)), max(1, js_round(tile))
     if L <= T:
         return [0]
@@ -321,7 +352,7 @@ def intersect_over_smaller(a, b):
 
 
 def merge_tile_boxes(boxes, thr=0.5):
-    # รวมกล่องจากทุก tile: กล่องคลาสเดียวกันที่ทับกัน (intersection / กล่องเล็ก ≥ thr) → ขยายให้ครอบทั้งคู่
+    # รวมกล่องคลาสเดียวกันที่ทับกันข้าม tile ให้เป็นกล่องเดียว
     keep = []
     for b in sorted(boxes, key=lambda b: -b["score"]):
         k = next((q for q in keep if q["cls"] == b["cls"] and intersect_over_smaller(q, b) >= thr), None)
@@ -335,7 +366,7 @@ def merge_tile_boxes(boxes, thr=0.5):
 
 
 def detect_tiled(img):
-    # หั่นภาพเป็น tile เหลื่อมกัน ตรวจทีละชิ้น แล้วรวมกล่องกลับเป็นพิกัดภาพเต็ม
+    # หั่นภาพเป็น tile ตรวจทีละชิ้น แล้วรวมกล่องกลับเป็นพิกัดภาพเต็ม
     h, w = img.shape[:2]
     rects = tile_grid(w, h, TILE_SIZE, TILE_OVERLAP)
     if len(rects) <= 1:
@@ -347,9 +378,15 @@ def detect_tiled(img):
             b["y"] += y
             found.append(b)
     return merge_tile_boxes(found, 0.5)
+`;
+
+const DRAW_MASK = String.raw`
+MASK_COLORS = [(59, 130, 246), (239, 68, 68), (34, 197, 94), (234, 179, 8), (168, 85, 247),
+               (6, 182, 212), (249, 115, 22), (236, 72, 153), (132, 204, 22), (20, 184, 166)]  # RGB
 
 
 def draw_mask(img, b):
+    # ระบายสี mask ของกล่องโปร่ง ~47%
     mask = b.get("mask")
     if mask is None or mask.size == 0:
         return
@@ -364,18 +401,20 @@ def draw_mask(img, b):
     rr, gg, bb = MASK_COLORS[b["cls"] % len(MASK_COLORS)]
     roi = img[cy0:cy1, cx0:cx1].astype(np.float32)
     img[cy0:cy1, cx0:cx1] = (roi * (1 - a) + np.array([bb, gg, rr], np.float32) * a + 0.5).astype(np.uint8)
+`;
+
+function drawDetections(seg) {
+  return String.raw`
+BOX_COLOR, TEXT_COLOR = (255, 224, 0), (24, 16, 0)   # BGR สีกรอบ/ตัวหนังสือเดียวกับในโปรแกรม
 
 
 def draw_detections(img, boxes):
-    # วาดเหมือนจอผลลัพธ์ในโปรแกรม: mask (ถ้ามี) → กรอบฟ้า + ป้าย "ชื่อ xx%"
-    # (cv2.putText เขียนภาษาไทยไม่ได้ — ชื่อคลาสภาษาไทยจะขึ้นเป็น ???)
+    # วาดกรอบ + ป้าย "ชื่อ xx%" (cv2.putText เขียนภาษาไทยไม่ได้)
     if img.ndim == 2:
         img = cv2.cvtColor(img, cv2.COLOR_GRAY2BGR)
     H, W = img.shape[:2]
     scale = max(1.0, W / 640.0)
-    for b in boxes:
-        draw_mask(img, b)
-    lw = max(1, js_round(2 * scale))
+${seg ? "    for b in boxes:\n        draw_mask(img, b)\n" : ""}    lw = max(1, js_round(2 * scale))
     fs, ft = 0.5 * scale, max(1, js_round(scale))
     th = 20 * scale
     for b in boxes:
@@ -389,29 +428,20 @@ def draw_detections(img, boxes):
         cv2.putText(img, text, (js_round(lx + 3 * scale), js_round(ly + th - 5 * scale)),
                     cv2.FONT_HERSHEY_SIMPLEX, fs, TEXT_COLOR, ft, cv2.LINE_AA)
     return img
+`;
+}
 
-
+// ---------- Centroid ----------
+const BOX_CENTERS = String.raw`
+def box_centers(boxes):
+    # จุดกึ่งกลางกรอบของแต่ละชิ้น
+    return [{"x": float(b["x"] + b["w"] / 2), "y": float(b["y"] + b["h"] / 2), "cls": b["cls"], "label": b.get("label", str(b["cls"]))}
+            for b in boxes]
 `;
 
-const PROCESS_PLAIN = String.raw`
-def process_image(img):
-    # ตรวจด้วยโมเดลบนภาพนี้ แล้ววาดกรอบ + ชื่อคลาส เหมือนจอผลลัพธ์ในโปรแกรม
-    boxes = detect_tiled(img) if TILE_ON else detect(img)
-    return draw_detections(img.copy(), boxes)
-`;
-
-const PROCESS_TAIL = String.raw`
-def process(path):
-    img = cv2.imread(path)  # อ่านภาพ (BGR)
-    if img is None:
-        raise FileNotFoundError(path)
-    return process_image(img)
-`;
-
-// กล่อง 📍 Centroid + 🔢 Object Count — ตรงกับ dl-post.js ทีละขั้น
-const POST_CORE = String.raw`
+const SHAPE_CENTROID = String.raw`
 def otsu_threshold(hist, total):
-    # เกณฑ์ Otsu (ค่าที่ > เกณฑ์ = กลุ่มสว่าง) · เท่ากันเอาเกณฑ์ตัวแรก — เหมือนในโปรแกรม
+    # เกณฑ์ Otsu (เท่ากันเอาเกณฑ์ตัวแรก เหมือนในโปรแกรม)
     sum_all = float(np.dot(np.arange(256), hist))
     w_b, sum_b, best, thr = 0.0, 0.0, -1.0, 0
     for t in range(256):
@@ -430,7 +460,7 @@ def otsu_threshold(hist, total):
 
 
 def shape_centroid(roi):
-    # จุดศูนย์ถ่วงของชิ้นงานในกรอบ (พิกัดในกรอบ): gray → Otsu → กลุ่มที่แตะขอบกรอบน้อยกว่า = ชิ้นงาน → moments
+    # จุดศูนย์ถ่วงชิ้นงานในกรอบ: Otsu → กลุ่มที่แตะขอบน้อยกว่า = ชิ้นงาน → ค่าเฉลี่ยพิกัด
     h, w = roi.shape[:2]
     if w < 2 or h < 2:
         return None
@@ -446,10 +476,11 @@ def shape_centroid(roi):
         return None
     ys, xs = np.nonzero(fg)
     return float(xs.mean()) + 0.5, float(ys.mean()) + 0.5
+`;
 
-
+const MASK_CENTROID = String.raw`
 def mask_centroid_frac(mask):
-    # mask ของโมเดล seg (ครอปในกรอบ) → จุดศูนย์ถ่วงเป็นสัดส่วน 0..1 ของกรอบ
+    # จุดศูนย์ถ่วงของ mask เป็นสัดส่วน 0..1 ของกรอบ
     if mask is None or mask.size == 0:
         return None
     ys, xs = np.nonzero(mask >= 128)
@@ -457,39 +488,58 @@ def mask_centroid_frac(mask):
         return None
     mh, mw = mask.shape[:2]
     return float((xs + 0.5).mean()) / mw, float((ys + 0.5).mean()) / mh
+`;
 
-
-def box_centers(boxes):
-    return [{"x": float(b["x"] + b["w"] / 2), "y": float(b["y"] + b["h"] / 2), "cls": b["cls"], "label": b.get("label", str(b["cls"]))}
-            for b in boxes]
-
-
+function computeCentroids(seg) {
+  return String.raw`
 def compute_centroids(img, boxes):
-    # จุดของแต่ละชิ้น: "shape" = mask (ถ้ามี) หรือ Otsu ในกรอบ · "box" หรือหาไม่ได้ = กึ่งกลางกรอบ
+    # จุดของแต่ละชิ้น = ศูนย์ถ่วงรูปทรง${seg ? " (หรือ mask)" : ""} · หาไม่ได้ = กลางกรอบ
     H, W = img.shape[:2]
     pts = box_centers(boxes)
-    if CENTROID_METHOD != "shape":
-        return pts
     for p, b in zip(pts, boxes):
-        m = mask_centroid_frac(b.get("mask"))
+${seg ? `        m = mask_centroid_frac(b.get("mask"))
         if m is not None:
             p["x"], p["y"] = b["x"] + m[0] * b["w"], b["y"] + m[1] * b["h"]
             continue
-        x0, y0 = min(W, max(0, math.floor(b["x"]))), min(H, max(0, math.floor(b["y"])))
+` : ""}        x0, y0 = min(W, max(0, math.floor(b["x"]))), min(H, max(0, math.floor(b["y"])))
         x1, y1 = min(W, max(0, math.ceil(b["x"] + b["w"]))), min(H, max(0, math.ceil(b["y"] + b["h"])))
         c = shape_centroid(img[y0:y1, x0:x1]) if x1 - x0 >= 2 and y1 - y0 >= 2 else None
         if c is not None:
             p["x"], p["y"] = x0 + c[0], y0 + c[1]
     return pts
+`;
+}
+
+const DRAW_CENTROIDS = String.raw`
+CENTROID_BGR = (92, 59, 255)
 
 
-FRAME_DT = 1.0 / 30   # ช่วงเวลาอ้างอิงของ max_dist (1 เฟรมที่ 30 fps) · สคริปต์นี้ตรวจทุกเฟรม = ห่างกันเฟรมละ FRAME_DT
-MAX_GATE_SCALE = 4    # ตรวจห่างมาก → ขยายระยะจับคู่ได้ไม่เกินกี่เท่า
+def draw_centroids(img, pts, scale):
+    # วาดจุด + พิกัด (x, y) ข้างจุด
+    for p in pts:
+        x, y = js_round(p["x"]), js_round(p["y"])
+        cv2.circle(img, (x, y), max(2, js_round(4 * scale)), CENTROID_BGR, -1, cv2.LINE_AA)
+        cv2.circle(img, (x, y), max(2, js_round(4 * scale)), (255, 255, 255), 1, cv2.LINE_AA)
+        if SHOW_COORDS:
+            fs = 0.4 * scale * CENTROID_FONT
+            text = "(%d, %d)" % (x, y)
+            tw = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, fs, 1)[0][0]
+            tx = p["x"] + 6 * scale
+            if tx + tw > img.shape[1]:
+                tx = p["x"] - 6 * scale - tw
+            org = (js_round(tx), js_round(p["y"] - 6 * scale))
+            cv2.putText(img, text, org, cv2.FONT_HERSHEY_SIMPLEX, fs, (0, 0, 0), 3, cv2.LINE_AA)
+            cv2.putText(img, text, org, cv2.FONT_HERSHEY_SIMPLEX, fs, (255, 255, 255), 1, cv2.LINE_AA)
+`;
+
+// ---------- Object Count ----------
+const TRACKER = String.raw`
+FRAME_DT = 1.0 / 30   # เวลา 1 เฟรมที่ใช้อ้างอิง max_dist
+MAX_GATE_SCALE = 4    # ตรวจห่างหลายเฟรม → ขยายระยะจับคู่ได้ไม่เกินกี่เท่า
 
 
 class Tracker:
-    # จับคู่จุดของเฟรมนี้กับตำแหน่งที่ทำนายของชิ้นเดิม (ล่าสุด + ความเร็ว × เวลา) คู่ที่ใกล้สุดก่อน (ไม่เกินระยะ)
-    # ชิ้นที่หายเกิน max_missed ครั้ง = ลืม
+    # จับคู่จุดเฟรมนี้กับตำแหน่งทำนายของชิ้นเดิม (ใกล้สุดก่อน) · หายเกิน max_missed = ลืม
     def __init__(self):
         self.tracks, self.next_id = [], 1
 
@@ -513,7 +563,7 @@ class Tracker:
             used_p.add(pi)
             t, p = self.tracks[ti], pts[pi]
             since = t["since"] + step
-            if since > 0:   # ความเร็ว (px/วินาที) เฉลี่ยกับค่าเดิมครึ่งต่อครึ่ง
+            if since > 0:
                 vx, vy = (p["x"] - t["x"]) / since, (p["y"] - t["y"]) / since
                 if t["hits"] > 1:
                     t["vx"], t["vy"] = (t["vx"] + vx) / 2, (t["vy"] + vy) / 2
@@ -538,8 +588,7 @@ class Tracker:
 
 
 def track_label(t):
-    # คลาสของชิ้นงาน = คลาสที่โมเดลทายบ่อยสุดตลอดช่วงที่ติดตาม (ทายสลับบางเฟรม → ไม่นับผิดคลาส)
-    # เท่ากัน → คลาสของเฟรมล่าสุด ถ้าไม่อยู่ในกลุ่มที่เท่ากัน → ชื่อที่เรียงก่อน
+    # คลาสของชิ้น = ที่โมเดลทายบ่อยสุด (เท่ากัน: ล่าสุดชนะ ไม่งั้นชื่อที่เรียงก่อน)
     cur = t["label"]
     votes = t.get("votes", {})
     best, n = cur, votes.get(cur, 0)
@@ -547,8 +596,9 @@ def track_label(t):
         if c > n or (c == n and best != cur and k < best):
             best, n = k, c
     return best
+`;
 
-
+const LINE_GEOM = String.raw`
 def side_of(ax, ay, bx, by, x, y):
     v = float((bx - ax) * (y - ay) - (by - ay) * (x - ax))
     return (v > 0) - (v < 0)
@@ -558,225 +608,199 @@ def crosses_segment(ax, ay, bx, by, x0, y0, x1, y1):
     s0 = side_of(x0, y0, x1, y1, ax, ay)
     s1 = side_of(x0, y0, x1, y1, bx, by)
     return s0 == 0 or s1 == 0 or s0 != s1
+`;
 
+const ZONE_UPDATE = String.raw`
+def _zone(self, tracks, W, H):
+    # NOW = ชิ้นในโซนตอนนี้ · TOTAL = ชิ้นที่เคยเข้าโซน (ชิ้นละครั้ง)
+    c = self.cfg
+    zx, zy = c["zx"] / 100.0 * W, c["zy"] / 100.0 * H
+    zx2, zy2 = zx + c["zw"] / 100.0 * W, zy + c["zh"] / 100.0 * H
+    now = 0
+    for b in self.by_class.values():
+        b["now"] = 0
+    for t in tracks:
+        if t["missed"] != 0 or not self._want(t):
+            continue
+        if t["x"] < zx or t["x"] > zx2 or t["y"] < zy or t["y"] > zy2:
+            continue
+        now += 1
+        if t["id"] not in self.counted:
+            self.counted.add(t["id"])
+            self._bump(t, "in")
+        self._slot(track_label(t))["now"] += 1
+    self.now = now
+`;
 
-class Counter:
-    # line: นับเมื่อชิ้นงานข้ามเส้น A→B (ชิ้นละครั้ง) · จากฝั่ง + ไปฝั่ง − = IN (ทิศลูกศรบนภาพ)
-    # zone: NOW = ชิ้นในกรอบตอนนี้ · TOTAL = ชิ้นที่เคยเข้ากรอบ (ชิ้นละครั้ง)
-    def __init__(self, cfg):
-        self.cfg = cfg
-        self.reset()
+const LINE_UPDATE = String.raw`
+def _line(self, tracks, W, H):
+    # ข้ามเส้น A→B (ชิ้นละครั้ง) · จากฝั่ง + ไปฝั่ง − = IN
+    c = self.cfg
+    ax, ay = c["x1"] / 100.0 * W, c["y1"] / 100.0 * H
+    bx, by = c["x2"] / 100.0 * W, c["y2"] / 100.0 * H
+    alive = set()
+    for t in tracks:
+        alive.add(t["id"])
+        if t["missed"] != 0:
+            continue
+        s = side_of(ax, ay, bx, by, t["x"], t["y"])
+        if s == 0:
+            continue
+        r = self.ref.get(t["id"])
+        self.ref[t["id"]] = (s, t["x"], t["y"])
+        if r is None or r[0] == s or t["id"] in self.counted or not self._want(t):
+            continue
+        if not crosses_segment(ax, ay, bx, by, r[1], r[2], t["x"], t["y"]):
+            continue
+        key = "in" if r[0] > 0 else "out"
+        if c["dir"] != "both" and c["dir"] != key:
+            continue
+        self.counted.add(t["id"])
+        self._bump(t, key)
+    self.ref = {k: v for k, v in self.ref.items() if k in alive}
+`;
 
-    def reset(self):
-        self.tracker = Tracker()
-        self.n_in = self.n_out = self.total = self.now = 0
-        self.by_class, self.counted, self.ref, self.events = {}, set(), {}, []
+const ZONE_FMT = 'return "%s: NOW %d  TOTAL %d" % (name, d["now"], d["total"])';
+const LINE_FMT = String.raw`
+c = self.cfg
+if c["dir"] == "in":
+    return "%s: IN %d" % (name, d["in"])
+if c["dir"] == "out":
+    return "%s: OUT %d" % (name, d["out"])
+return "%s: %d  (IN %d / OUT %d)" % (name, d["total"], d["in"], d["out"])`;
 
-    def _slot(self, label):
-        return self.by_class.setdefault(label, {"in": 0, "out": 0, "total": 0, "now": 0})
+// เลือกตามโหมดที่มี: ทั้งคู่ = if/else · โหมดเดียว = ใส่ตรง ๆ
+const byMode = (f, zone, line, n) => (f.zone && f.line
+  ? `${" ".repeat(n)}if c["mode"] == "zone":\n${indent(zone, n + 4)}\n${" ".repeat(n)}else:\n${indent(line, n + 4)}`
+  : indent(f.zone ? zone : line, n));
 
-    def _bump(self, t, key):
-        if key == "in":
-            self.n_in += 1
-        else:
-            self.n_out += 1
-        self.total += 1
-        label = track_label(t)
-        b = self._slot(label)
-        b[key] += 1
-        b["total"] += 1
-        self.events.append({"counter": self.cfg["name"], "id": t["id"], "label": label, "kind": key,
-                            "x": float(t["x"]), "y": float(t["y"]), "total": self.total, "class_total": b["total"]})
+function counterClass(f) {
+  const fmt = f.zone && f.line
+    ? `        if self.cfg["mode"] == "zone":\n            ${ZONE_FMT}\n${indent(LINE_FMT, 8)}`
+    : f.zone ? `        ${ZONE_FMT}` : indent(LINE_FMT, 8);
+  return [
+    "class Counter:",
+    "    # นับชิ้นงานที่ข้ามเส้น / เข้าโซน รวมและแยกตามคลาส",
+    "    def __init__(self, cfg):",
+    "        self.cfg = cfg",
+    "        self.reset()",
+    "",
+    "    def reset(self):",
+    "        self.tracker = Tracker()",
+    "        self.n_in = self.n_out = self.total = self.now = 0",
+    "        self.by_class, self.counted, self.events = {}, set(), []",
+    ...(f.line ? ["        self.ref = {}"] : []),
+    "",
+    "    def _slot(self, label):",
+    '        return self.by_class.setdefault(label, {"in": 0, "out": 0, "total": 0, "now": 0})',
+    "",
+    "    def _want(self, t):",
+    '        return not self.cfg["cls"] or track_label(t) == self.cfg["cls"]',
+    "",
+    "    def _bump(self, t, key):",
+    "        # นับ 1 ชิ้น: ยอดรวม + ยอดของคลาส + เก็บ event",
+    '        if key == "in":',
+    "            self.n_in += 1",
+    "        else:",
+    "            self.n_out += 1",
+    "        self.total += 1",
+    "        label = track_label(t)",
+    "        b = self._slot(label)",
+    "        b[key] += 1",
+    '        b["total"] += 1',
+    '        self.events.append({"counter": self.cfg["name"], "id": t["id"], "label": label, "kind": key,',
+    '                            "x": float(t["x"]), "y": float(t["y"]), "total": self.total, "class_total": b["total"]})',
+    "",
+    "    def update(self, pts, W, H, still=False, dt=FRAME_DT):",
+    "        c = self.cfg",
+    "        if still:",
+    "            self.reset()",
+    "        self.events = []",
+    '        tracks = self.tracker.update(pts, c["max_dist"] / 100.0 * math.hypot(W, H), c["max_missed"], dt)',
+    byMode(f, "self._zone(tracks, W, H)", "self._line(tracks, W, H)", 8),
+    "",
+    ...(f.zone ? [indent(ZONE_UPDATE, 4), ""] : []),
+    ...(f.line ? [indent(LINE_UPDATE, 4), ""] : []),
+    "    def _fmt(self, name, d):",
+    fmt,
+    "",
+    "    def text(self):",
+    '        return self._fmt(self.cfg["name"], {"in": self.n_in, "out": self.n_out, "total": self.total, "now": self.now})',
+    "",
+    "    def class_rows(self):",
+    "        return [self._fmt(k, self.by_class[k]) for k in sorted(self.by_class)]",
+  ].join("\n");
+}
 
-    def update(self, pts, W, H, still=False, dt=FRAME_DT):
-        c = self.cfg
-        if still:
-            self.reset()
-        self.events = []
-        tracks = self.tracker.update(pts, c["max_dist"] / 100.0 * math.hypot(W, H), c["max_missed"], dt)
+const ZONE_DRAW = String.raw`
+p0 = (js_round(c["zx"] / 100.0 * W), js_round(c["zy"] / 100.0 * H))
+p1 = (js_round((c["zx"] + c["zw"]) / 100.0 * W), js_round((c["zy"] + c["zh"]) / 100.0 * H))
+over = img.copy()
+cv2.rectangle(over, p0, p1, ZONE_BGR, -1)
+cv2.addWeighted(over, 0.35 if flash else 0.15, img, 0.65 if flash else 0.85, 0, img)
+cv2.rectangle(img, p0, p1, ZONE_BGR, max(1, js_round(2 * scale)))`;
 
-        def want(t):
-            return not c["cls"] or track_label(t) == c["cls"]
-        if c["mode"] == "zone":
-            zx, zy = c["zx"] / 100.0 * W, c["zy"] / 100.0 * H
-            zx2, zy2 = zx + c["zw"] / 100.0 * W, zy + c["zh"] / 100.0 * H
-            now = 0
-            for b in self.by_class.values():
-                b["now"] = 0
-            for t in tracks:
-                if t["missed"] != 0 or not want(t):
-                    continue
-                if t["x"] < zx or t["x"] > zx2 or t["y"] < zy or t["y"] > zy2:
-                    continue
-                now += 1
-                if t["id"] not in self.counted:
-                    self.counted.add(t["id"])
-                    self._bump(t, "in")
-                self._slot(track_label(t))["now"] += 1
-            self.now = now
-        else:
-            ax, ay = c["x1"] / 100.0 * W, c["y1"] / 100.0 * H
-            bx, by = c["x2"] / 100.0 * W, c["y2"] / 100.0 * H
-            alive = set()
-            for t in tracks:
-                alive.add(t["id"])
-                if t["missed"] != 0:
-                    continue
-                s = side_of(ax, ay, bx, by, t["x"], t["y"])
-                if s == 0:
-                    continue
-                r = self.ref.get(t["id"])
-                self.ref[t["id"]] = (s, t["x"], t["y"])
-                if r is None or r[0] == s or t["id"] in self.counted or not want(t):
-                    continue
-                if not crosses_segment(ax, ay, bx, by, r[1], r[2], t["x"], t["y"]):
-                    continue
-                key = "in" if r[0] > 0 else "out"
-                if c["dir"] != "both" and c["dir"] != key:
-                    continue
-                self.counted.add(t["id"])
-                self._bump(t, key)
-            self.ref = {k: v for k, v in self.ref.items() if k in alive}
-            self.now = 0
+const LINE_DRAW = String.raw`
+a = (js_round(c["x1"] / 100.0 * W), js_round(c["y1"] / 100.0 * H))
+b = (js_round(c["x2"] / 100.0 * W), js_round(c["y2"] / 100.0 * H))
+cv2.line(img, a, b, (136, 255, 34) if flash else LINE_BGR, max(1, js_round((4 if flash else 2.5) * scale)), cv2.LINE_AA)
+L = math.hypot(b[0] - a[0], b[1] - a[1])
+if L > 1:
+    nx, ny = (b[1] - a[1]) / L, -(b[0] - a[0]) / L
+    mx, my = (a[0] + b[0]) / 2, (a[1] + b[1]) / 2
+    tail = (js_round(mx - nx * 8 * scale), js_round(my - ny * 8 * scale))
+    head = (js_round(mx + nx * 16 * scale), js_round(my + ny * 16 * scale))
+    cv2.arrowedLine(img, tail, head, LINE_BGR, max(1, js_round(2 * scale)), cv2.LINE_AA, tipLength=0.35)`;
 
-    def text(self):
-        c, name = self.cfg, self.cfg["name"]
-        if c["mode"] == "zone":
-            return "%s: NOW %d  TOTAL %d" % (name, self.now, self.total)
-        if c["dir"] == "in":
-            return "%s: IN %d" % (name, self.n_in)
-        if c["dir"] == "out":
-            return "%s: OUT %d" % (name, self.n_out)
-        return "%s: %d  (IN %d / OUT %d)" % (name, self.total, self.n_in, self.n_out)
+function drawCounters(f) {
+  const color = f.zone && f.line ? 'ZONE_BGR if c["mode"] == "zone" else LINE_BGR' : f.zone ? "ZONE_BGR" : "LINE_BGR";
+  return [
+    `LINE_BGR${f.zone ? ", ZONE_BGR" : ""} = (10, 214, 255)${f.zone ? ", (153, 211, 52)" : ""}`,
+    "",
+    "",
+    "def draw_counters(img, scale):",
+    "    # วาดเส้น/โซน + เลข # ของชิ้น + ป้ายยอดนับ (และแถวแยกคลาส) มุมซ้ายบน",
+    "    H, W = img.shape[:2]",
+    "    for k in COUNTER_OBJS:",
+    "        c = k.cfg",
+    "        flash = bool(k.events)",
+    byMode(f, ZONE_DRAW, LINE_DRAW, 8),
+    "    ts = scale * COUNTER_OBJS[0].cfg.get(\"font\", 1.0)",
+    "    for t in COUNTER_OBJS[0].tracker.tracks:",
+    '        if t["missed"] == 0:',
+    '            org = (js_round(t["x"] + 6 * scale), js_round(t["y"] + 14 * ts))',
+    '            cv2.putText(img, "#%d" % t["id"], org, cv2.FONT_HERSHEY_SIMPLEX, 0.4 * ts, (0, 0, 0), 3, cv2.LINE_AA)',
+    '            cv2.putText(img, "#%d" % t["id"], org, cv2.FONT_HERSHEY_SIMPLEX, 0.4 * ts, LINE_BGR, 1, cv2.LINE_AA)',
+    "    y = js_round(6 * scale)",
+    "    for k in COUNTER_OBJS:",
+    "        c = k.cfg",
+    '        ts = scale * c.get("font", 1.0)',
+    "        row = max(6, js_round(20 * ts))",
+    "        fs = 0.45 * ts",
+    `        color = ${color}`,
+    "        rows = [(k.text(), 0)]",
+    '        if c.get("split_class"):',
+    "            rows += [(r, js_round(12 * ts)) for r in k.class_rows()]",
+    "        for text, indent in rows:",
+    "            x0 = js_round(6 * scale) + indent",
+    "            tw = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, fs, 1)[0][0] + js_round(12 * ts)",
+    "            over = img.copy()",
+    "            cv2.rectangle(over, (x0, y), (x0 + tw, y + row), (0, 0, 0), -1)",
+    "            cv2.addWeighted(over, 0.6, img, 0.4, 0, img)",
+    "            cv2.putText(img, text, (x0 + js_round(6 * ts), y + row - js_round(6 * ts)),",
+    "                        cv2.FONT_HERSHEY_SIMPLEX, fs, (255, 255, 255) if indent else color, 1, cv2.LINE_AA)",
+    "            y += row + js_round((2 if indent else 4) * ts)",
+  ].join("\n");
+}
 
-    def class_rows(self):
-        # ยอดแยกคลาส (เรียงชื่อคลาส) — แถวละคลาส
-        c, rows = self.cfg, []
-        for k in sorted(self.by_class):
-            b = self.by_class[k]
-            if c["mode"] == "zone":
-                rows.append("%s: NOW %d  TOTAL %d" % (k, b["now"], b["total"]))
-            elif c["dir"] == "in":
-                rows.append("%s: IN %d" % (k, b["in"]))
-            elif c["dir"] == "out":
-                rows.append("%s: OUT %d" % (k, b["out"]))
-            else:
-                rows.append("%s: %d  (IN %d / OUT %d)" % (k, b["total"], b["in"], b["out"]))
-        return rows
-
-
-COUNTER_OBJS = [Counter(c) for c in COUNTERS]
-LINE_BGR, ZONE_BGR, CENTROID_BGR = (10, 214, 255), (153, 211, 52), (92, 59, 255)
-
-
-def draw_centroids(img, pts, scale):
-    for p in pts:
-        x, y = js_round(p["x"]), js_round(p["y"])
-        cv2.circle(img, (x, y), max(2, js_round(4 * scale)), CENTROID_BGR, -1, cv2.LINE_AA)
-        cv2.circle(img, (x, y), max(2, js_round(4 * scale)), (255, 255, 255), 1, cv2.LINE_AA)
-        if SHOW_COORDS:
-            fs = 0.4 * scale * CENTROID_FONT
-            text = "(%d, %d)" % (x, y)
-            tw = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, fs, 1)[0][0]
-            tx = p["x"] + 6 * scale
-            if tx + tw > img.shape[1]:   # ชิดขอบขวา → เขียนทางซ้ายของจุด
-                tx = p["x"] - 6 * scale - tw
-            org = (js_round(tx), js_round(p["y"] - 6 * scale))
-            cv2.putText(img, text, org, cv2.FONT_HERSHEY_SIMPLEX, fs, (0, 0, 0), 3, cv2.LINE_AA)
-            cv2.putText(img, text, org, cv2.FONT_HERSHEY_SIMPLEX, fs, (255, 255, 255), 1, cv2.LINE_AA)
-
-
-def draw_counters(img, scale):
-    H, W = img.shape[:2]
-    for k in COUNTER_OBJS:
-        c = k.cfg
-        flash = bool(k.events)
-        if c["mode"] == "zone":
-            p0 = (js_round(c["zx"] / 100.0 * W), js_round(c["zy"] / 100.0 * H))
-            p1 = (js_round((c["zx"] + c["zw"]) / 100.0 * W), js_round((c["zy"] + c["zh"]) / 100.0 * H))
-            over = img.copy()
-            cv2.rectangle(over, p0, p1, ZONE_BGR, -1)
-            cv2.addWeighted(over, 0.35 if flash else 0.15, img, 0.65 if flash else 0.85, 0, img)
-            cv2.rectangle(img, p0, p1, ZONE_BGR, max(1, js_round(2 * scale)))
-        else:
-            a = (js_round(c["x1"] / 100.0 * W), js_round(c["y1"] / 100.0 * H))
-            b = (js_round(c["x2"] / 100.0 * W), js_round(c["y2"] / 100.0 * H))
-            cv2.line(img, a, b, (136, 255, 34) if flash else LINE_BGR, max(1, js_round((4 if flash else 2.5) * scale)), cv2.LINE_AA)
-            L = math.hypot(b[0] - a[0], b[1] - a[1])
-            if L > 1:   # ลูกศรทิศ IN (ตั้งฉากกับเส้น ชี้ไปฝั่ง −)
-                nx, ny = (b[1] - a[1]) / L, -(b[0] - a[0]) / L
-                mx, my = (a[0] + b[0]) / 2, (a[1] + b[1]) / 2
-                tail = (js_round(mx - nx * 8 * scale), js_round(my - ny * 8 * scale))
-                head = (js_round(mx + nx * 16 * scale), js_round(my + ny * 16 * scale))
-                cv2.arrowedLine(img, tail, head, LINE_BGR, max(1, js_round(2 * scale)), cv2.LINE_AA, tipLength=0.35)
-    if COUNTER_OBJS:   # เลข id ของชิ้นที่ติดตามอยู่ (ของกล่องนับกล่องแรก)
-        ts = scale * COUNTER_OBJS[0].cfg.get("font", 1.0)
-        for t in COUNTER_OBJS[0].tracker.tracks:
-            if t["missed"] == 0:
-                org = (js_round(t["x"] + 6 * scale), js_round(t["y"] + 14 * ts))
-                cv2.putText(img, "#%d" % t["id"], org, cv2.FONT_HERSHEY_SIMPLEX, 0.4 * ts, (0, 0, 0), 3, cv2.LINE_AA)
-                cv2.putText(img, "#%d" % t["id"], org, cv2.FONT_HERSHEY_SIMPLEX, 0.4 * ts, LINE_BGR, 1, cv2.LINE_AA)
-    y = js_round(6 * scale)
-    for k in COUNTER_OBJS:   # ป้ายยอดนับมุมซ้ายบน (ขนาดตาม "font" ของแต่ละกล่อง) + แถวแยกคลาส (split_class)
-        ts = scale * k.cfg.get("font", 1.0)
-        row = max(6, js_round(20 * ts))
-        fs = 0.45 * ts
-        color = ZONE_BGR if k.cfg["mode"] == "zone" else LINE_BGR
-        rows = [(k.text(), 0)]
-        if k.cfg.get("split_class"):
-            rows += [(r, js_round(12 * ts)) for r in k.class_rows()]
-        for text, indent in rows:
-            x0 = js_round(6 * scale) + indent
-            tw = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, fs, 1)[0][0] + js_round(12 * ts)
-            over = img.copy()
-            cv2.rectangle(over, (x0, y), (x0 + tw, y + row), (0, 0, 0), -1)
-            cv2.addWeighted(over, 0.6, img, 0.4, 0, img)
-            cv2.putText(img, text, (x0 + js_round(6 * ts), y + row - js_round(6 * ts)),
-                        cv2.FONT_HERSHEY_SIMPLEX, fs, (255, 255, 255) if indent else color, 1, cv2.LINE_AA)
-            y += row + js_round((2 if indent else 4) * ts)
-
-
-_FRAME = [0]
-
-
+const COUNT_HOOKS = String.raw`
 def on_count(event):
-    # ★ เรียกทุกครั้งที่นับได้ 1 ชิ้น — ใส่โค้ดสั่งงานต่อตรงนี้ (ส่ง Serial ไป Dobot / Modbus ไป PLC / เขียน CSV ...)
-    # event = {"frame": 310, "counter": "Line 1", "id": 12, "label": "Triangle", "kind": "in",
-    #          "x": 412.5, "y": 230.1, "total": 10, "class_total": 4}
-    #   label = คลาสของชิ้น (ที่โมเดลทายบ่อยสุดตลอดช่วงที่ติดตาม) · kind = "in" / "out" (โซน = "in" เสมอ)
-    #   x, y = พิกัดจุดของชิ้นตอนนับ (พิกเซลบนภาพ) · total / class_total = ยอดรวม / ยอดของคลาสนี้ หลังนับชิ้นนี้
-    # ยอดทั้งหมดอ่านได้ตลอดจาก COUNTER_OBJS[i].total / .n_in / .n_out / .now / .by_class["Triangle"]["total"]
-    # ตัวอย่าง:
-    #   if event["label"] == "Triangle":
-    #       robot.move_to(event["x"], event["y"])
+    # ★ เรียกทุกครั้งที่นับได้ 1 ชิ้น — event = {frame, counter, id, label, kind, x, y, total, class_total}
     pass
 
 
-def process_image(img):
-    # ตรวจด้วยโมเดล → วาดกรอบ → หา centroid → อัปเดตตัวนับ → วาดเส้น/โซน + ยอดนับ (เหมือนจอผลลัพธ์ในโปรแกรม)
-    _FRAME[0] += 1
-    boxes = detect_tiled(img) if TILE_ON else detect(img)
-    out = draw_detections(img.copy(), boxes)
-    H, W = img.shape[:2]
-    scale = max(1.0, W / 640.0)
-    pts = compute_centroids(img, boxes) if CENTROID_ON else box_centers(boxes)
-    for k in COUNTER_OBJS:
-        k.update(pts, W, H, STILL)
-        for ev in k.events:
-            ev["frame"] = _FRAME[0]
-            print("[frame %d] %s: +1 %s (#%d, %s) -> %s" % (ev["frame"], ev["counter"], ev["label"], ev["id"], ev["kind"].upper(), k.text()))
-            on_count(ev)
-    if CENTROID_ON:
-        draw_centroids(out, pts, scale)
-        if STILL or not COUNTER_OBJS:
-            for p in pts:
-                print("centroid %s: (%.1f, %.1f)" % (p["label"], p["x"], p["y"]))
-    draw_counters(out, scale)
-    return out
-
-
 def print_summary():
-    # สรุปยอดตอนจบโปรแกรม (ปิดหน้าต่าง / วิดีโอจบ)
+    # สรุปยอดตอนจบโปรแกรม
     for k in COUNTER_OBJS:
         print("SUMMARY %s | by class: %s" % (k.text(), " · ".join(k.class_rows()) or "-"))
 
@@ -784,36 +808,89 @@ def print_summary():
 atexit.register(print_summary)
 `;
 
-// post = [{ type: "centroid" | "count", params }] ตามลำดับบนสาย (ต้นน้ำ → ปลายน้ำ)
-function postSettingsLines(post, still) {
-  const cen = post.find((s) => s.type === "centroid");
-  const cp = normCentroid(cen?.params);
-  const counters = post.filter((s) => s.type === "count");
-  const idx = { line: 0, zone: 0 };
-  const lines = [
-    "",
-    "# ── ตั้งค่า 📍 Centroid + 🔢 Object Count (ดึงจากกล่องในโปรแกรม) ──",
-    `CENTROID_ON = ${cen ? "True" : "False"}   # มีกล่อง Centroid บนสาย (ไม่มี = นับด้วยจุดกึ่งกลางกรอบ)`,
-    `CENTROID_METHOD = ${pyStr(cp.method)}   # "shape" = จุดศูนย์ถ่วงของรูปทรงชิ้นงานในกรอบ · "box" = กึ่งกลางกรอบ`,
-    `SHOW_COORDS = ${cp.showCoords ? "True" : "False"}   # เขียนพิกัด (x, y) ข้างจุด`,
-    `CENTROID_FONT = ${cp.fontPct / 100}   # ขนาดตัวหนังสือพิกัด (1 = ปกติ · 0.5 = ครึ่งหนึ่ง)`,
-    `STILL = ${still ? "True" : "False"}   # True = ภาพนิ่ง (นับใหม่ทุกภาพ ไม่ติดตามข้ามภาพ) · วิดีโอ/กล้อง = False`,
-    "# พิกัดเส้น/โซนเป็น % ของกว้าง/สูงภาพ · max_dist = ระยะจับคู่ชิ้นเดิมข้ามเฟรม (% ของเส้นทแยงภาพ)",
-    "COUNTERS = [",
+function processImage(f) {
+  const detect = f.tile ? "detect_tiled(img)" : "detect(img)";
+  const post = f.cen || f.counters.length;
+  if (!post) {
+    return [
+      "def process_image(img):",
+      "    # ตรวจด้วยโมเดล แล้ววาดกรอบ + ชื่อคลาส",
+      `    return draw_detections(img.copy(), ${detect})`,
+    ].join("\n");
+  }
+  const n = f.counters.length > 0;
+  const shape = f.cen?.method === "shape";
+  const L = [
+    ...(n ? ["_FRAME = [0]", "", ""] : []),
+    "def process_image(img):",
+    `    # ตรวจ → ${f.cen ? "หาจุด" : "จุดกลางกรอบ"}${n ? " → นับ" : ""} → วาดผล`,
+    ...(n ? ["    _FRAME[0] += 1"] : []),
+    `    boxes = ${detect}`,
+    "    out = draw_detections(img.copy(), boxes)",
+    "    H, W = img.shape[:2]",
+    "    scale = max(1.0, W / 640.0)",
+    `    pts = ${shape ? "compute_centroids(img, boxes)" : "box_centers(boxes)"}`,
   ];
-  for (const s of counters) {
-    const p = normCount(s.params);
-    const name = counterName(p, ++idx[p.mode]);
+  if (n) {
+    L.push(
+      "    for k in COUNTER_OBJS:",
+      "        k.update(pts, W, H, STILL)",
+      "        for ev in k.events:",
+      '            ev["frame"] = _FRAME[0]',
+      '            print("[frame %d] %s: +1 %s (#%d, %s) -> %s" % (ev["frame"], ev["counter"], ev["label"], ev["id"], ev["kind"].upper(), k.text()))',
+      "            on_count(ev)",
+    );
+  }
+  if (f.cen) {
+    L.push("    draw_centroids(out, pts, scale)");
+    const pr = ['for p in pts:', '    print("centroid %s: (%.1f, %.1f)" % (p["label"], p["x"], p["y"]))'];
+    L.push(...(n ? ["    if STILL:", ...pr.map((l) => "        " + l)] : pr.map((l) => "    " + l)));
+  }
+  if (n) L.push("    draw_counters(out, scale)");
+  L.push("    return out");
+  return L.join("\n");
+}
+
+function postSettingsLines(f, still) {
+  const lines = ["", "# ── ตั้งค่า Centroid / Object Count ──"];
+  if (f.cen) {
     lines.push(
-      `    {"name": ${pyStr(name)}, "mode": ${pyStr(p.mode)},   # ${p.mode === "zone" ? "โซนนับ" : "เส้นนับ"}`,
-      `     "x1": ${p.x1}, "y1": ${p.y1}, "x2": ${p.x2}, "y2": ${p.y2}, "dir": ${pyStr(p.dir)},   # เส้น A(x1,y1) → B(x2,y2) · dir = "both" | "in" | "out"`,
-      `     "zx": ${p.zx}, "zy": ${p.zy}, "zw": ${p.zw}, "zh": ${p.zh},   # โซน: มุมซ้ายบน + กว้าง/สูง`,
-      `     "cls": ${pyStr(p.cls)}, "max_dist": ${p.maxDist}, "max_missed": ${p.maxMissed},   # cls "" = ทุกคลาส`,
-      `     "font": ${p.fontPct / 100}, "split_class": ${p.splitClass ? "True" : "False"}},   # font = ขนาดตัวหนังสือป้ายยอดนับ + เลข # (1 = ปกติ) · split_class = แสดงแถวยอดแยกคลาสบนภาพ`,
+      `SHOW_COORDS = ${f.cen.showCoords ? "True" : "False"}   # เขียนพิกัด (x, y) ข้างจุด`,
+      `CENTROID_FONT = ${f.cen.fontPct / 100}   # ขนาดตัวหนังสือพิกัด (1 = ปกติ)`,
+    );
+  }
+  if (!f.counters.length) return lines;
+  const idx = { line: 0, zone: 0 };
+  lines.push(
+    `STILL = ${still ? "True" : "False"}   # True = ภาพนิ่ง นับใหม่ทุกภาพ`,
+    "# พิกัดเป็น % ของภาพ · max_dist = ระยะจับคู่ชิ้นเดิม (% เส้นทแยง) · cls \"\" = ทุกคลาส · font 1 = ปกติ",
+    "COUNTERS = [",
+  );
+  for (const p of f.counters) {
+    const name = counterName(p, ++idx[p.mode]);
+    const geo = p.mode === "zone"
+      ? `"zx": ${p.zx}, "zy": ${p.zy}, "zw": ${p.zw}, "zh": ${p.zh}`
+      : `"x1": ${p.x1}, "y1": ${p.y1}, "x2": ${p.x2}, "y2": ${p.y2}, "dir": ${pyStr(p.dir)}`;
+    lines.push(
+      `    {"name": ${pyStr(name)}, "mode": ${pyStr(p.mode)}, ${geo},`,
+      `     "cls": ${pyStr(p.cls)}, "max_dist": ${p.maxDist}, "max_missed": ${p.maxMissed}, "font": ${p.fontPct / 100}, "split_class": ${p.splitClass ? "True" : "False"}},`,
     );
   }
   lines.push("]");
   return lines;
+}
+
+// ส่วนรันของ codegen.js ใช้ร่วมกับจอทั่วไป — จอ DL ตรวจบนภาพขนาดจริงเสมอ จึงตัด MAX_SIDE / fit_size และ helper ที่ไม่ได้เรียก
+function leanRunSection(text) {
+  let s = text.replace(/^MAX_SIDE = .*\n/m, "")
+    .replace(/fit_size\(read_image\(path\)\)/g, "read_image(path)")
+    .replace(/fit_size\(frame\)/g, "frame");
+  for (const name of ["fit_size", "read_image", "save_image"]) {
+    const def = new RegExp(`^def ${name}\\(.*\\n(?:(?: .*)?\\n)*?(?=\\S)`, "m");
+    const m = s.match(def);
+    if (m && !s.replace(m[0], "").includes(`${name}(`)) s = s.replace(m[0], "");
+  }
+  return s;
 }
 
 export function buildDLPythonCode(pipeline, opts = {}) {
@@ -822,44 +899,78 @@ export function buildDLPythonCode(pipeline, opts = {}) {
   const src = normalizeSource5S(opts.source);
   const ignored = (pipeline || []).filter((st) => st && st.enabled !== false);
   const post = (opts.post || []).filter((s) => s && (s.type === "centroid" || s.type === "count"));
+  const f = featuresOf(dl, post);
+  const n = f.counters.length > 0;
+  const shape = f.cen?.method === "shape";
 
   const out = [
     "# -*- coding: utf-8 -*-",
-    `# โค้ดนี้สร้างอัตโนมัติจากลำดับ Box ในกล่องผลลัพธ์: "${oneLine(name)}"`,
-    "# กล่องนี้ต่อผ่าน Model Detect — รันโมเดล .onnx แบบเดียวกับในโปรแกรม (onnxruntime หรือ cv2.dnn)",
-    "# ต้องมี: pip install opencv-python numpy onnxruntime   (ไม่มี onnxruntime จะใช้ cv2.dnn แทน)",
+    `# สร้างจากจอ "${oneLine(name)}" (ผ่าน Model Detect) · ต้องมี: pip install opencv-python numpy onnxruntime`,
     "import cv2",
     "import numpy as np",
     "import sys",
     "import os",
     "import math",
-    "import re",
-    ...(post.length ? ["import atexit"] : []),
+    ...(f.rf ? ["import re"] : []),
+    ...(n ? ["import atexit"] : []),
     "",
-    "# บังคับให้ข้อความที่ print() ออกมาเป็น UTF-8 เสมอ — บนวินโดวส์ เวลาส่งผลไปเก็บในไฟล์",
-    "# (เช่น python code.py > log.txt) ระบบจะใช้รหัสอักขระเดิมของเครื่อง ซึ่งเขียนภาษาไทยหรือ",
-    "# สัญลักษณ์อย่าง px² / ∞ ไม่ได้ แล้วโปรแกรมจะหยุดกลางคันด้วย UnicodeEncodeError",
-    "if hasattr(sys.stdout, \"reconfigure\"):",
+    "if hasattr(sys.stdout, \"reconfigure\"):   # ให้ print ภาษาไทยได้แม้ส่งผลลงไฟล์บน Windows",
     "    sys.stdout.reconfigure(encoding=\"utf-8\", errors=\"replace\")",
     "",
     "# ── ตั้งค่า (ดึงจากกล่อง Model Detect ตอนกดสร้างโค้ด) ──",
-    ...settingsLines(dl),
-    ...(post.length ? postSettingsLines(post, !src || src.kind === "image") : []),
+    ...settingsLines(dl, f),
+    ...(post.length ? postSettingsLines(f, !src || src.kind === "image") : []),
+    "",
   ];
   if (ignored.length) {
     const names = ignored.map((st) => FILTERS[st.id]?.name || st.id).join(", ");
     out.push(
       "",
-      `# หมายเหตุ: ในโปรแกรม กล่อง Model Detect ตรวจบน "ภาพต้นฉบับ" — Box อื่นบนสายนี้ (${oneLine(names)}) ไม่มีผลกับจอนี้ จึงไม่ได้ใส่ในโค้ด`,
+      `# หมายเหตุ: ในโปรแกรม กล่อง Model Detect ตรวจบนภาพต้นฉบับ — Box อื่นบนสายนี้ (${oneLine(names)}) ไม่มีผล จึงไม่ได้ใส่ในโค้ด`,
       'print("NOTE: filter boxes on this Model Detect line are not applied (same as the app)")',
     );
   }
-  out.push("", CORE.trim(), "", "", (post.length ? POST_CORE : PROCESS_PLAIN).trim(), "", "", PROCESS_TAIL.trim(), "", "");
+  const blocks = [
+    LOAD,
+    f.kind !== "rfdetr" && LETTERBOX,
+    f.rf && RF_PRE,
+    (f.rf || f.seg) && SIGMOID,
+    BEST_CLASS,
+    (f.yolo || f.seg) && NMS,
+    f.yolo && YOLO_DEC,
+    f.rf && RF_DEC,
+    f.seg && SEG_DEC,
+    !f.kind && KIND_OF,
+    decodeOutputs(f.kind),
+    detectFn(f.kind),
+    f.tile && TILE,
+    f.seg && DRAW_MASK,
+    drawDetections(f.seg),
+    post.length && BOX_CENTERS,
+    shape && SHAPE_CENTROID,
+    shape && f.seg && MASK_CENTROID,
+    shape && computeCentroids(f.seg),
+    f.cen && DRAW_CENTROIDS,
+    n && TRACKER,
+    n && f.line && LINE_GEOM,
+    n && counterClass(f),
+    n && "COUNTER_OBJS = [Counter(c) for c in COUNTERS]",
+    n && drawCounters(f),
+    n && COUNT_HOOKS,
+    processImage(f),
+  ].filter(Boolean).map(block);
+  out.push("", blocks.join("\n\n\n"), "", "");
   if (src) {
-    out.push("# กล่อง Model Detect ในโปรแกรมตรวจบนภาพขนาดจริง (ไม่ย่อ) จึงตั้ง MAX_SIDE = 0");
-    out.push(runSection5S({ ...src, maxSide: 0 }, false));
+    out.push(leanRunSection(runSection5S({ ...src, maxSide: 0 }, false)));
   } else {
     out.push(
+      "def process(path):",
+      "    img = cv2.imread(path)",
+      "    if img is None:",
+      "        raise FileNotFoundError(path)",
+      "    return process_image(img)",
+      "",
+      "",
       "if __name__ == \"__main__\":",
       "    result = process(\"input.jpg\")   # << ใส่ path ภาพของคุณ",
       "    cv2.imwrite(\"output.png\", result)",

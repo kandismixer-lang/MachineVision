@@ -174,7 +174,7 @@ function runPy(code, script, input) {
       "ns = {'__name__': 'gen'}",
       "exec(compile(open(sys.argv[1], encoding='utf8').read(), sys.argv[1], 'exec'), ns)",
       "globals().update(ns)",
-      "atexit.unregister(print_summary)",
+      "if 'print_summary' in ns: atexit.unregister(print_summary)",
       "IN = json.load(open(sys.argv[2], encoding='utf8'))",
       script,
     ].join('\n'), 'utf8');
@@ -289,8 +289,9 @@ test('dp-10 โค้ดที่ gen: ตั้งค่าตรงกล่�
     { type: 'count', params: { mode: 'line', x1: 1, y1: 2, x2: 3, y2: 4, dir: 'out' }, nodeId: 3 },
   ];
   const code = genCode(post, { kind: 'video', maxSide: 0, path: 'v.mp4' });
-  assert.match(code, /CENTROID_ON = True/);
-  assert.match(code, /CENTROID_METHOD = "box"/);
+  assert.match(code, /pts = box_centers\(boxes\)/); // centroid แบบกลางกรอบ → ไม่มีโค้ด Otsu
+  assert.doesNotMatch(code, /def compute_centroids|def otsu_threshold/);
+  assert.match(code, /draw_centroids\(out, pts, scale\)/);
   assert.match(code, /SHOW_COORDS = False/);
   assert.match(code, /STILL = False/);
   assert.match(code, /"name": "Zone 1 \[L\]", "mode": "zone"/); // กรองคลาส → ชื่อมีชนิดต่อท้าย

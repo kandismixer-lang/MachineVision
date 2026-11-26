@@ -94,11 +94,12 @@ test('dc-1 ตั้งค่าจากกล่อง Model Detect ลงห�
   assert.match(code, /^MODEL_PATH = "C:\\\\models\\\\best \(8\)\.onnx"/m);
   assert.match(code, /^NAMES = \["L", "Triangle", "Box"\]/m);
   assert.match(code, /^CONF = 0\.25 /m);
-  assert.match(code, /^TILE_ON = False /m);
-  assert.match(code, /^TILE_OVERLAP = 0\.2 /m);
-  assert.match(code, /^MODEL_KIND = "yolo" /m);
-  assert.match(gen({ tile: { on: true, size: 320, overlap: 35 } }), /^TILE_ON = True[\s\S]*^TILE_SIZE = 320[\s\S]*^TILE_OVERLAP = 0\.35 /m);
-  assert.match(gen({ kind: null }), /^MODEL_KIND = None /m);
+  // ใส่เฉพาะส่วนที่ใช้: yolo ไม่มีโค้ด seg / RF-DETR / tile / เดาชนิด
+  assert.doesNotMatch(code, /TILE_|def detect_tiled|def decode_seg|def decode_rfdetr|def kind_of|def draw_mask|MODEL_KIND|^import re/m);
+  assert.match(gen({ tile: { on: true, size: 320, overlap: 35 } }), /^TILE_SIZE = 320[\s\S]*^TILE_OVERLAP = 0\.35 [\s\S]*boxes = detect_tiled\(img\)|detect_tiled\(img\)\)/m);
+  const auto = gen({ kind: null });
+  for (const fn of ['kind_of', 'decode_seg', 'decode_rfdetr', 'decode_raw_head', 'draw_mask']) assert.match(auto, new RegExp(`def ${fn}\\(`), fn);
+  assert.doesNotMatch(gen({ kind: 'rfdetr' }), /def letterbox|def nms|^IOU/m);
   for (const line of code.split('\n')) {
     const bare = line.replace(/#.*$/, '').replace(/"(?:[^"\\]|\\.)*"/g, '""');
     assert.doesNotMatch(bare, /\b(true|false|null|undefined)\b/, line);
@@ -125,10 +126,11 @@ test('dc-3 Box อื่นบนสาย DL ไม่ถูกใส่ (แ�
 
 test('dc-4 แหล่งภาพ: วิดีโอ → ใช้ส่วนรันเดิมแต่ MAX_SIDE = 0 · ไม่มีแหล่ง → แม่แบบ input.jpg', () => {
   const code = gen({}, [], { kind: 'video', maxSide: 720, path: 'C:\\v\\a.mp4', name: 'a.mp4' });
-  assert.match(code, /^MAX_SIDE = 0 /m);
+  assert.doesNotMatch(code, /MAX_SIDE|fit_size|def read_image/, 'จอ DL ตรวจบนภาพขนาดจริง → ไม่มีส่วนย่อภาพ');
+  assert.match(code, /img = frame\n/);
   assert.match(code, /cap = cv2\.VideoCapture\(VIDEO_PATH\)/);
   assert.match(code, /^VIDEO_PATH = "C:\\\\v\\\\a\.mp4"/m);
-  assert.match(code, /ตรวจบนภาพขนาดจริง \(ไม่ย่อ\)/);
+  assert.match(gen({}, [], { kind: 'image', maxSide: 720, paths: ['a.jpg'], missing: 0 }), /img = read_image\(path\)\n/);
   assert.match(gen(), /result = process\("input\.jpg"\)/);
 });
 
@@ -162,7 +164,7 @@ test('dc-7 decode_nms_baked = decodeNmsBaked ของแอป (YOLO26 / end-to
   const js = decodeNmsBaked([1, n, 6], data, LB.r, LB.dx, LB.dy, 0.25);
   const py = runPy(gen(), `
 o = np.array(IN["data"], np.float32).reshape(1, ${n}, 6)
-print(json.dumps(decode_outputs("yolo", {"output0": o}, {"r": IN["r"], "dx": IN["dx"], "dy": IN["dy"], "conf": 0.25, "iou": 0.45}, 640)))`, { data, ...LB });
+print(json.dumps(decode_outputs({"output0": o}, {"r": IN["r"], "dx": IN["dx"], "dy": IN["dy"], "conf": 0.25, "iou": 0.45}, 640)))`, { data, ...LB });
   sameBoxes(py, js, 1e-4, 'nms-baked');
 });
 
@@ -175,7 +177,7 @@ test('dc-8 decode RF-DETR = decodeOutputs("rfdetr") ของแอป (เล�
     const js = decodeOutputs('rfdetr', names, out, { origW: 320, origH: 180, conf: 0.5 }, 560);
     const py = runPy(gen({ kind: 'rfdetr' }), `
 outs = {n: np.array(IN["out"][n]["data"], np.float32).reshape(IN["out"][n]["dims"]) for n in IN["names"]}
-print(json.dumps(decode_outputs("rfdetr", outs, {"orig_w": 320, "orig_h": 180, "conf": 0.5}, 560)))`, { out, names });
+print(json.dumps(decode_outputs(outs, {"orig_w": 320, "orig_h": 180, "conf": 0.5}, 560)))`, { out, names });
     sameBoxes(py, js, 1e-4, `rfdetr ${names}`);
     assert.ok(js.some((b) => b.score === 0.5), 'คะแนน = CONF พอดีต้องนับ');
   }
@@ -187,7 +189,7 @@ test('dc-9 tile_grid / merge_tile_boxes = tileGrid / mergeTileBoxes ของแ
   cases.push([1200, 900, 301, 0.5]);
   const R = rng(5), boxes = [];
   for (let i = 0; i < 30; i++) { const x = R() * 600, y = R() * 400; boxes.push({ x, y, w: 20 + R() * 150, h: 20 + R() * 150, score: Math.round(R() * 20) / 20, cls: i % 2 }); }
-  const py = runPy(gen(), `
+  const py = runPy(gen({ tile: { on: true, size: 640, overlap: 20 } }), `
 grids = [[list(r) for r in tile_grid(*c)] for c in IN["cases"]]
 print(json.dumps({"grids": grids, "merged": merge_tile_boxes([dict(b) for b in IN["boxes"]], 0.5)}))`, { cases, boxes });
   cases.forEach((c, i) => assert.deepEqual(py.grids[i], tileGrid(...c).map((r) => [r.x, r.y, r.w, r.h]), `tileGrid ${c}`));
