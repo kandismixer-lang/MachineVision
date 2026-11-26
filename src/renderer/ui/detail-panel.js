@@ -789,6 +789,7 @@ export function createDetailPanel(container, cb) {
       row.append(rl, rs, sw);
       row.addEventListener("click", () => set("showCoords", !on, true));
       container.appendChild(row);
+      container.appendChild(dlSlider("ขนาดตัวหนังสือบนภาพ (%)", 30, 200, 10, 100, p.fontPct ?? 100, (v) => set("fontPct", v)));
     } else {
       const mode = p.mode === "zone" ? "zone" : "line";
       container.appendChild(seg("แบบการนับ", [
@@ -850,6 +851,7 @@ export function createDetailPanel(container, cb) {
       th.className = "param-hint";
       th.textContent = "ชิ้นงานวิ่งเร็ว/ตรวจไม่ทัน → เพิ่มระยะติดตาม · ชิ้นงานอยู่ชิดกันแล้วเลขสลับ → ลดระยะติดตาม";
       container.appendChild(th);
+      container.appendChild(dlSlider("ขนาดตัวหนังสือบนภาพ (%) — ป้ายยอดนับ + เลข #", 30, 200, 10, 100, p.fontPct ?? 100, (v) => set("fontPct", v)));
     }
 
     // ผลสด (อัปเดตเองทุก 250 ms จนกว่าแผงจะถูกสร้างใหม่)

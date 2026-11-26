@@ -15,7 +15,7 @@ import { createExportDialog } from "./ui/export-dialog.js";
 import { startCamera, listCameras } from "./camera.js";
 import { startPose, stopPose, pausePose, resumePose, renderStillErgonomics } from "./mediapipe-pose.js";
 import { loadModel as dlLoadModel, isLoaded as dlLoaded, detect as dlDetect, detectTiled as dlDetectTiled, drawDetections as dlDraw, COCO } from "./dl-yolo.js";
-import { computeCentroids, createCounter, normCount, counterName, drawCentroids, drawCounters } from "./dl-post.js";
+import { computeCentroids, createCounter, normCount, countKey, counterName, drawCentroids, drawCounters } from "./dl-post.js";
 import { parseLabels } from "./dl-labels.js";
 import { tileGrid as dlTileGrid } from "./dl-tiles.js";
 import { FILTERS, isParamVisible, orderParamsControllersFirst } from "./filters/registry.js";
@@ -2751,7 +2751,7 @@ function runPost(frame, boxes, w, h, frameTime) {
       if (s.type !== "count") continue;
       const key = `${d.displayId}:${s.nodeId}`;
       used.add(key);
-      const pk = JSON.stringify(normCount(s.params));
+      const pk = countKey(s.params); // เปลี่ยนแค่ขนาดตัวหนังสือ = ไม่เริ่มนับใหม่
       let e = postCounters.get(key);
       if (!e) { e = { counter: createCounter(), key: pk }; postCounters.set(key, e); }
       if (e.key !== pk) { e.counter.reset(); e.key = pk; }

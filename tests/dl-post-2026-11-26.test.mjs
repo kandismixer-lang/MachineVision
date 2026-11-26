@@ -16,7 +16,7 @@ import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { buildDLPythonCode } from '../src/renderer/codegen-dl.js';
 import {
-  createCounter, createTracker, computeCentroids, shapeCentroidRGBA, otsuThreshold, normCount, counterName, counterText,
+  createCounter, createTracker, computeCentroids, shapeCentroidRGBA, otsuThreshold, normCount, countKey, counterName, counterText,
 } from '../src/renderer/dl-post.js';
 
 let python = false;
@@ -300,4 +300,29 @@ test('dp-10 โค้ดที่ gen: ตั้งค่าตรงกล่�
   assert.doesNotMatch(plain, /COUNTERS|atexit|class Counter/);
   assert.match(plain, /def process_image\(img\):\n    # ตรวจด้วยโมเดล/);
   assert.equal(counterName(normCount({ mode: 'zone' }), 2), 'Zone 2');
+});
+
+test('dp-11 ขนาดตัวหนังสือ: เปลี่ยนแล้วไม่เริ่มนับใหม่ (countKey เท่าเดิม) · ติดไปในโค้ด Python · บีบช่วง 30–200%', { skip: !python }, () => {
+  assert.equal(countKey({ ...VLINE, fontPct: 40 }), countKey(VLINE));
+  assert.notEqual(countKey({ ...VLINE, x1: 40 }), countKey(VLINE));
+  assert.equal(normCount({ fontPct: 5 }).fontPct, 30);
+  assert.equal(normCount({ fontPct: 999 }).fontPct, 200);
+  const code = genCode([
+    { type: 'centroid', params: { fontPct: 60 }, nodeId: 1 },
+    { type: 'count', params: { ...VLINE, fontPct: 50 }, nodeId: 2 },
+  ], { kind: 'video', maxSide: 0, path: 'v.mp4' });
+  assert.match(code, /CENTROID_FONT = 0\.6/);
+  assert.match(code, /"font": 0\.5\}/);
+  // วาดได้จริงทั้งขนาดเล็กสุด/ใหญ่สุด (ไม่ error ใน cv2.putText)
+  const out = runPy(code, [
+    'img = np.zeros((180, 320, 3), np.uint8)',
+    'for f in (0.3, 2.0):',
+    '    COUNTER_OBJS[0].cfg["font"] = f',
+    '    globals()["CENTROID_FONT"] = f',
+    '    COUNTER_OBJS[0].update([{"x": 100.0, "y": 90.0, "cls": 0, "label": "L"}], 320, 180)',
+    '    draw_centroids(img, [{"x": 100.0, "y": 90.0, "label": "L"}], 1.0)',
+    '    draw_counters(img, 1.0)',
+    'print(json.dumps(int(img.sum() > 0)))',
+  ].join('\n'));
+  assert.equal(out, 1);
 });

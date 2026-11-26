@@ -9,7 +9,8 @@
 //   line:      นับเมื่อชิ้นงาน (track) ข้ามเส้นตรง A→B · ชิ้นละครั้งต่อหนึ่งเส้น · แยกทิศ IN / OUT
 //   zone:      NOW = จำนวนชิ้นในกรอบตอนนี้ · TOTAL = ชิ้น (track) ที่เคยเข้ากรอบ นับชิ้นละครั้ง
 
-export const CENTROID_DEFAULTS = Object.freeze({ method: "shape", showCoords: true });
+export const CENTROID_DEFAULTS = Object.freeze({ method: "shape", showCoords: true, fontPct: 100 });
+export const FONT_PCT_MIN = 30, FONT_PCT_MAX = 200; // ขนาดตัวหนังสือบนภาพ (% ของขนาดปกติ)
 export const COUNT_DEFAULTS = Object.freeze({
   mode: "line", // "line" | "zone"
   // เส้นนับ (เปอร์เซ็นต์ของกว้าง/สูงภาพ) — ค่าเริ่ม = เส้นตั้งกลางภาพ
@@ -20,6 +21,7 @@ export const COUNT_DEFAULTS = Object.freeze({
   cls: "", // "" = ทุกคลาส · ไม่งั้น = ชื่อคลาสที่จะนับ
   maxDist: 12, // ระยะจับคู่ชิ้นเดิมข้ามเฟรม (% ของเส้นทแยงภาพ)
   maxMissed: 10, // ชิ้นหายจากการตรวจได้กี่ครั้งก่อนลืม
+  fontPct: 100, // ขนาดตัวหนังสือบนภาพ (ป้ายยอดนับ + เลข #id) — ไม่มีผลกับการนับ
 });
 
 export const FRAME_DT = 1 / 30; // ช่วงเวลาอ้างอิงของ maxDist (1 เฟรมที่ 30 fps)
@@ -27,10 +29,20 @@ export const MAX_GATE_SCALE = 4; // ตรวจห่างมาก → ขย
 const num = (v, d) => (Number.isFinite(Number(v)) ? Number(v) : d);
 const clamp = (v, lo, hi) => Math.min(hi, Math.max(lo, v));
 
+const fontPctOf = (p) => Math.round(clamp(num(p.fontPct, 100), FONT_PCT_MIN, FONT_PCT_MAX));
+
+// ค่าที่มีผลกับการนับ (ไม่รวมขนาดตัวหนังสือ) — เปลี่ยนค่าพวกนี้ = เริ่มนับใหม่
+export function countKey(params) {
+  const { fontPct, ...rest } = normCount(params);
+  void fontPct;
+  return JSON.stringify(rest);
+}
+
 export function normCentroid(p = {}) {
   return {
     method: p.method === "box" ? "box" : "shape",
     showCoords: p.showCoords !== false,
+    fontPct: fontPctOf(p),
   };
 }
 
@@ -45,6 +57,7 @@ export function normCount(p = {}) {
     cls: typeof p.cls === "string" ? p.cls : "",
     maxDist: clamp(num(p.maxDist, d.maxDist), 1, 100),
     maxMissed: Math.round(clamp(num(p.maxMissed, d.maxMissed), 0, 300)),
+    fontPct: fontPctOf(p),
   };
 }
 
@@ -301,8 +314,9 @@ export const POST_COLORS = Object.freeze({
 
 export function drawCentroids(ctx, pts, params, scale = 1) {
   const p = normCentroid(params);
+  const ts = scale * (p.fontPct / 100); // ขนาดตัวหนังสือ (จุดยังเท่าเดิม)
   ctx.save();
-  ctx.font = `${12 * scale}px sans-serif`;
+  ctx.font = `${12 * ts}px sans-serif`;
   ctx.textBaseline = "alphabetic";
   for (const c of pts) {
     ctx.beginPath();
@@ -318,7 +332,7 @@ export function drawCentroids(ctx, pts, params, scale = 1) {
       const tw = ctx.measureText(text).width;
       const cw = ctx.canvas?.width || Infinity;
       const tx = c.x + 6 * scale + tw > cw ? c.x - 6 * scale - tw : c.x + 6 * scale;
-      ctx.lineWidth = 3 * scale;
+      ctx.lineWidth = 3 * ts;
       ctx.strokeStyle = "rgba(0,0,0,0.75)";
       ctx.strokeText(text, tx, c.y - 6 * scale);
       ctx.fillStyle = "#ffffff";
@@ -364,7 +378,7 @@ export function drawCounterShape(ctx, params, W, H, scale = 1, flash = false) {
       ctx.moveTo(hx, hy);
       ctx.lineTo(hx - nx * 6 * scale - ny * 5 * scale, hy - ny * 6 * scale + nx * 5 * scale);
       ctx.stroke();
-      ctx.font = `bold ${11 * scale}px sans-serif`;
+      ctx.font = `bold ${11 * scale * (p.fontPct / 100)}px sans-serif`;
       ctx.fillText("IN", hx + nx * 4 * scale, hy + ny * 4 * scale + 4 * scale);
     }
   }
@@ -377,28 +391,32 @@ export function drawCounters(ctx, counters, W, H, scale = 1) {
   for (const c of counters) drawCounterShape(ctx, c.params, W, H, scale, c.flash);
   const first = counters[0];
   if (first && first.tracks) {
-    ctx.font = `bold ${11 * scale}px sans-serif`;
+    const ts = scale * (normCount(first.params).fontPct / 100);
+    ctx.font = `bold ${11 * ts}px sans-serif`;
     for (const t of first.tracks) {
       if (t.missed !== 0) continue;
-      ctx.lineWidth = 3 * scale;
+      ctx.lineWidth = 3 * ts;
       ctx.strokeStyle = "rgba(0,0,0,0.75)";
-      ctx.strokeText(`#${t.id}`, t.x + 6 * scale, t.y + 14 * scale);
+      ctx.strokeText(`#${t.id}`, t.x + 6 * scale, t.y + 14 * ts);
       ctx.fillStyle = "#ffd60a";
-      ctx.fillText(`#${t.id}`, t.x + 6 * scale, t.y + 14 * scale);
+      ctx.fillText(`#${t.id}`, t.x + 6 * scale, t.y + 14 * ts);
     }
   }
-  ctx.font = `bold ${13 * scale}px sans-serif`;
+  // ป้ายยอดนับมุมซ้ายบน — ขนาดตามค่า "ขนาดตัวหนังสือ" ของแต่ละกล่อง
   ctx.textBaseline = "alphabetic";
   let y = 6 * scale;
-  const rowH = 20 * scale;
   for (const c of counters) {
+    const p = normCount(c.params);
+    const ts = scale * (p.fontPct / 100);
+    const rowH = 20 * ts;
+    ctx.font = `bold ${13 * ts}px sans-serif`;
     const text = counterText(c.name, c.params, c.state);
-    const tw = ctx.measureText(text).width + 12 * scale;
+    const tw = ctx.measureText(text).width + 12 * ts;
     ctx.fillStyle = POST_COLORS.panel;
     ctx.fillRect(6 * scale, y, tw, rowH);
-    ctx.fillStyle = normCount(c.params).mode === "zone" ? POST_COLORS.zone : POST_COLORS.line;
-    ctx.fillText(text, 12 * scale, y + rowH - 6 * scale);
-    y += rowH + 4 * scale;
+    ctx.fillStyle = p.mode === "zone" ? POST_COLORS.zone : POST_COLORS.line;
+    ctx.fillText(text, 6 * scale + 6 * ts, y + rowH - 6 * ts);
+    y += rowH + 4 * ts;
   }
   ctx.restore();
 }

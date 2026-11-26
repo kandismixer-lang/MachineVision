@@ -637,14 +637,15 @@ def draw_centroids(img, pts, scale):
         cv2.circle(img, (x, y), max(2, js_round(4 * scale)), CENTROID_BGR, -1, cv2.LINE_AA)
         cv2.circle(img, (x, y), max(2, js_round(4 * scale)), (255, 255, 255), 1, cv2.LINE_AA)
         if SHOW_COORDS:
+            fs = 0.4 * scale * CENTROID_FONT
             text = "(%d, %d)" % (x, y)
-            tw = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, 0.4 * scale, 1)[0][0]
+            tw = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, fs, 1)[0][0]
             tx = p["x"] + 6 * scale
             if tx + tw > img.shape[1]:   # ชิดขอบขวา → เขียนทางซ้ายของจุด
                 tx = p["x"] - 6 * scale - tw
             org = (js_round(tx), js_round(p["y"] - 6 * scale))
-            cv2.putText(img, text, org, cv2.FONT_HERSHEY_SIMPLEX, 0.4 * scale, (0, 0, 0), 3, cv2.LINE_AA)
-            cv2.putText(img, text, org, cv2.FONT_HERSHEY_SIMPLEX, 0.4 * scale, (255, 255, 255), 1, cv2.LINE_AA)
+            cv2.putText(img, text, org, cv2.FONT_HERSHEY_SIMPLEX, fs, (0, 0, 0), 3, cv2.LINE_AA)
+            cv2.putText(img, text, org, cv2.FONT_HERSHEY_SIMPLEX, fs, (255, 255, 255), 1, cv2.LINE_AA)
 
 
 def draw_counters(img, scale):
@@ -671,23 +672,26 @@ def draw_counters(img, scale):
                 head = (js_round(mx + nx * 16 * scale), js_round(my + ny * 16 * scale))
                 cv2.arrowedLine(img, tail, head, LINE_BGR, max(1, js_round(2 * scale)), cv2.LINE_AA, tipLength=0.35)
     if COUNTER_OBJS:   # เลข id ของชิ้นที่ติดตามอยู่ (ของกล่องนับกล่องแรก)
+        ts = scale * COUNTER_OBJS[0].cfg.get("font", 1.0)
         for t in COUNTER_OBJS[0].tracker.tracks:
             if t["missed"] == 0:
-                org = (js_round(t["x"] + 6 * scale), js_round(t["y"] + 14 * scale))
-                cv2.putText(img, "#%d" % t["id"], org, cv2.FONT_HERSHEY_SIMPLEX, 0.4 * scale, (0, 0, 0), 3, cv2.LINE_AA)
-                cv2.putText(img, "#%d" % t["id"], org, cv2.FONT_HERSHEY_SIMPLEX, 0.4 * scale, LINE_BGR, 1, cv2.LINE_AA)
+                org = (js_round(t["x"] + 6 * scale), js_round(t["y"] + 14 * ts))
+                cv2.putText(img, "#%d" % t["id"], org, cv2.FONT_HERSHEY_SIMPLEX, 0.4 * ts, (0, 0, 0), 3, cv2.LINE_AA)
+                cv2.putText(img, "#%d" % t["id"], org, cv2.FONT_HERSHEY_SIMPLEX, 0.4 * ts, LINE_BGR, 1, cv2.LINE_AA)
     y = js_round(6 * scale)
-    row = js_round(20 * scale)
-    for k in COUNTER_OBJS:
+    for k in COUNTER_OBJS:   # ป้ายยอดนับมุมซ้ายบน (ขนาดตาม "font" ของแต่ละกล่อง)
+        ts = scale * k.cfg.get("font", 1.0)
+        row = max(6, js_round(20 * ts))
         text = k.text()
-        fs = 0.45 * scale
-        tw = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, fs, 1)[0][0] + js_round(12 * scale)
+        fs = 0.45 * ts
+        tw = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, fs, 1)[0][0] + js_round(12 * ts)
         over = img.copy()
         cv2.rectangle(over, (js_round(6 * scale), y), (js_round(6 * scale) + tw, y + row), (0, 0, 0), -1)
         cv2.addWeighted(over, 0.6, img, 0.4, 0, img)
         color = ZONE_BGR if k.cfg["mode"] == "zone" else LINE_BGR
-        cv2.putText(img, text, (js_round(12 * scale), y + row - js_round(6 * scale)), cv2.FONT_HERSHEY_SIMPLEX, fs, color, 1, cv2.LINE_AA)
-        y += row + js_round(4 * scale)
+        cv2.putText(img, text, (js_round(6 * scale + 6 * ts), y + row - js_round(6 * ts)),
+                    cv2.FONT_HERSHEY_SIMPLEX, fs, color, 1, cv2.LINE_AA)
+        y += row + js_round(4 * ts)
 
 
 _FRAME = [0]
@@ -736,6 +740,7 @@ function postSettingsLines(post, still) {
     `CENTROID_ON = ${cen ? "True" : "False"}   # มีกล่อง Centroid บนสาย (ไม่มี = นับด้วยจุดกึ่งกลางกรอบ)`,
     `CENTROID_METHOD = ${pyStr(cp.method)}   # "shape" = จุดศูนย์ถ่วงของรูปทรงชิ้นงานในกรอบ · "box" = กึ่งกลางกรอบ`,
     `SHOW_COORDS = ${cp.showCoords ? "True" : "False"}   # เขียนพิกัด (x, y) ข้างจุด`,
+    `CENTROID_FONT = ${cp.fontPct / 100}   # ขนาดตัวหนังสือพิกัด (1 = ปกติ · 0.5 = ครึ่งหนึ่ง)`,
     `STILL = ${still ? "True" : "False"}   # True = ภาพนิ่ง (นับใหม่ทุกภาพ ไม่ติดตามข้ามภาพ) · วิดีโอ/กล้อง = False`,
     "# พิกัดเส้น/โซนเป็น % ของกว้าง/สูงภาพ · max_dist = ระยะจับคู่ชิ้นเดิมข้ามเฟรม (% ของเส้นทแยงภาพ)",
     "COUNTERS = [",
@@ -747,7 +752,8 @@ function postSettingsLines(post, still) {
       `    {"name": ${pyStr(name)}, "mode": ${pyStr(p.mode)},   # ${p.mode === "zone" ? "โซนนับ" : "เส้นนับ"}`,
       `     "x1": ${p.x1}, "y1": ${p.y1}, "x2": ${p.x2}, "y2": ${p.y2}, "dir": ${pyStr(p.dir)},   # เส้น A(x1,y1) → B(x2,y2) · dir = "both" | "in" | "out"`,
       `     "zx": ${p.zx}, "zy": ${p.zy}, "zw": ${p.zw}, "zh": ${p.zh},   # โซน: มุมซ้ายบน + กว้าง/สูง`,
-      `     "cls": ${pyStr(p.cls)}, "max_dist": ${p.maxDist}, "max_missed": ${p.maxMissed}},   # cls "" = ทุกคลาส`,
+      `     "cls": ${pyStr(p.cls)}, "max_dist": ${p.maxDist}, "max_missed": ${p.maxMissed},   # cls "" = ทุกคลาส`,
+      `     "font": ${p.fontPct / 100}},   # ขนาดตัวหนังสือป้ายยอดนับ + เลข # (1 = ปกติ · 0.5 = ครึ่งหนึ่ง)`,
     );
   }
   lines.push("]");
